@@ -26,7 +26,7 @@ KAIROS_MARKER = "KAIROS-lite"
 CONFIG_DIR = Path.home() / ".claude" / "config"
 CONFIG_FILE = CONFIG_DIR / "kairos.json"
 LOG_DIR = Path.home() / ".claude" / "logs"
-TOOLKIT_DIR = Path("/home/feedgen/claude-code-toolkit")
+TOOLKIT_DIR = Path(__file__).resolve().parent.parent
 
 
 # ---------------------------------------------------------------------------

@@ -71,6 +71,20 @@
             "description": "Inject most recent KAIROS monitoring briefing (opt-in: CLAUDE_KAIROS_ENABLED=true)",
             "timeout": 2000,
             "once": true
+          },
+          {
+            "type": "command",
+            "command": "python3 \"$HOME/.claude/hooks/rules-distill-injector.py\"",
+            "description": "Inject pending rules-distillation candidates into session context",
+            "timeout": 2000,
+            "once": true
+          },
+          {
+            "type": "command",
+            "command": "python3 \"$HOME/.claude/hooks/session-adr-health-check.py\"",
+            "description": "Detect orphaned .adr-session.json files and warn before synthesis gate deadlocks",
+            "timeout": 2000,
+            "once": true
           }
         ]
       }
@@ -105,6 +119,12 @@
             "command": "python3 \"$HOME/.claude/hooks/codex-auto-review.py\"",
             "description": "Auto-inject Codex cross-model review for PR review operations",
             "timeout": 3000
+          },
+          {
+            "type": "command",
+            "command": "python3 \"$HOME/.claude/hooks/perses-mcp-injector.py\"",
+            "description": "Detect Perses/percli prompts and inject MCP tool discovery instructions",
+            "timeout": 3000
           }
         ]
       }
@@ -134,6 +154,18 @@
             "type": "command",
             "command": "python3 \"$HOME/.claude/hooks/ci-merge-gate.py\"",
             "description": "Gate: block merge to main/master when CI checks are red",
+            "timeout": 3000
+          },
+          {
+            "type": "command",
+            "command": "python3 \"$HOME/.claude/hooks/pretool-ruff-format-gate.py\"",
+            "description": "Block git push when ruff format --check finds violations",
+            "timeout": 3000
+          },
+          {
+            "type": "command",
+            "command": "python3 \"$HOME/.claude/hooks/perses-lint-gate.py\"",
+            "description": "Block percli apply without percli lint — redirect to perses-lint skill",
             "timeout": 3000
           }
         ]
@@ -169,6 +201,24 @@
             "command": "python3 \"$HOME/.claude/hooks/pretool-prompt-injection-scanner.py\"",
             "description": "Advisory scan for prompt injection patterns in agent context files (ADR-070)",
             "timeout": 3000
+          },
+          {
+            "type": "command",
+            "command": "python3 \"$HOME/.claude/hooks/pretool-config-protection.py\"",
+            "description": "Block Write/Edit on linter/formatter config files — fix source instead",
+            "timeout": 3000
+          },
+          {
+            "type": "command",
+            "command": "python3 \"$HOME/.claude/hooks/reference-loading-gate.py\"",
+            "description": "Advisory: remind to load reference files before editing agent/skill components",
+            "timeout": 3000
+          },
+          {
+            "type": "command",
+            "command": "python3 \"$HOME/.claude/hooks/pipeline-phase-gate.py\"",
+            "description": "Block phase-advancing writes when prerequisite pipeline artifacts are absent",
+            "timeout": 3000
           }
         ]
       },
@@ -190,6 +240,17 @@
             "type": "command",
             "command": "python3 \"$HOME/.claude/hooks/pretool-file-backup.py\"",
             "description": "Backup files before Edit tool modifies them",
+            "timeout": 3000
+          }
+        ]
+      },
+      {
+        "matcher": "mcp__",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"$HOME/.claude/hooks/mcp-health-check.py\"",
+            "description": "Block MCP tool calls when server is unhealthy within backoff window",
             "timeout": 3000
           }
         ]
@@ -243,6 +304,12 @@
             "command": "python3 \"$HOME/.claude/hooks/posttool-security-scan.py\"",
             "description": "Advisory scan for credentials and SQL injection in Write/Edit output",
             "timeout": 3000
+          },
+          {
+            "type": "command",
+            "command": "python3 \"$HOME/.claude/hooks/posttool-docs-drift-alert.py\"",
+            "description": "Alert when INDEX.json or routing-tables.md may be out of sync after writes",
+            "timeout": 3000
           }
         ]
       },
@@ -260,6 +327,18 @@
             "command": "python3 \"$HOME/.claude/hooks/adr-lifecycle-on-merge.py\"",
             "description": "Check ADR implementation status after merge operations",
             "timeout": 5000
+          },
+          {
+            "type": "command",
+            "command": "python3 \"$HOME/.claude/hooks/posttool-bash-injection-scan.py\"",
+            "description": "Advisory scan for prompt injection in Bash-written context files",
+            "timeout": 3000
+          },
+          {
+            "type": "command",
+            "command": "python3 \"$HOME/.claude/hooks/posttool-rename-sweep.py\"",
+            "description": "After git mv, warn about stale references to the old filename",
+            "timeout": 3000
           }
         ]
       },

@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import argparse
 import importlib.util
+import os
 import re
 import shutil
 import struct
@@ -44,8 +45,8 @@ from scipy.spatial.transform import Rotation as ScipyRotation
 # Constants
 # ---------------------------------------------------------------------------
 
-_BVH_PATH = Path("/tmp/mocap/07_01_walk.bvh")
-_GLB_PATH = Path("/home/feedgen/road-to-aew/public/assets/prototype/models/ScottHall.glb")
+_BVH_PATH = Path(os.environ.get("BVH_PATH", str(Path.home() / "mocap/07_01_walk.bvh")))
+_GLB_PATH = Path(os.environ.get("GLB_PATH", str(Path.home() / "road-to-aew/public/assets/prototype/models/ScottHall.glb")))
 _PIPELINE_PATH = Path(__file__).parent / "motion-pipeline.py"
 
 # Scale BVH positions from cm to metres (same convention as generate-move-ts.py)

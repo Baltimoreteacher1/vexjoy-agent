@@ -23,6 +23,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 from datetime import date
 from pathlib import Path
 
@@ -30,7 +31,7 @@ sys.path.insert(0, str(Path(__file__).parent / "lib"))
 from hook_utils import context_output, empty_output
 from stdin_timeout import read_stdin
 
-DEBUG_LOG = Path("/tmp/claude_hook_debug.log")
+DEBUG_LOG = Path(tempfile.gettempdir()) / "claude_hook_debug.log"
 EVENT_NAME = "PostToolUse"
 
 # Patterns to identify ADR references in branch names / commit messages
