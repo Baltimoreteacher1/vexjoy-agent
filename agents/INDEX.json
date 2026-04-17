@@ -79,7 +79,7 @@
         "database-engineer",
         "data-analysis"
       ],
-      "complexity": "Medium",
+      "complexity": "Medium-Complex",
       "category": "infrastructure"
     },
     "database-engineer": {
@@ -817,7 +817,7 @@
       "pairs_with": [
         "verification-before-completion"
       ],
-      "complexity": "Complex",
+      "complexity": "Medium-Complex",
       "category": "documentation"
     },
     "technical-journalist-writer": {
@@ -833,7 +833,7 @@
       "pairs_with": [
         "voice-writer"
       ],
-      "complexity": "Comprehensive",
+      "complexity": "Medium",
       "category": "content"
     },
     "testing-automation-engineer": {
