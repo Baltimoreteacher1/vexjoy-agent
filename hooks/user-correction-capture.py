@@ -79,7 +79,7 @@ def main():
                     project_path=cwd,
                     session_id=session_id,
                 )
-                print(f"[user-correction] captured: {prompt[:80]}")
+                print(f"[user-correction] captured: {prompt[:80]}", file=sys.stderr)
                 empty_output(EVENT_NAME).print_and_exit()
 
         # Check capability gaps
@@ -97,7 +97,7 @@ def main():
                     project_path=cwd,
                     session_id=session_id,
                 )
-                print(f"[capability-gap] captured: {prompt[:80]}")
+                print(f"[capability-gap] captured: {prompt[:80]}", file=sys.stderr)
                 empty_output(EVENT_NAME).print_and_exit()
 
         # No match — silent exit

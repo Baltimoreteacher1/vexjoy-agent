@@ -26,7 +26,7 @@ sys.path.insert(0, str(Path(__file__).parent / "lib"))
 from hook_utils import context_output, empty_output, log_warning
 from stdin_timeout import read_stdin
 
-__EVENT_NAME = "PostToolUse"
+_EVENT_NAME = "PostToolUse"
 
 # Pipeline component files that trigger enforcement (matched against repo-relative paths)
 _PIPELINE_COMPONENT_PATTERNS = [
@@ -46,8 +46,8 @@ _EXCLUDE_PATTERNS = [
 ]
 
 # Reference files used by adr-compliance.py
-__STEP_MENU = str(Path.home() / ".claude/skills/pipeline-scaffolder/references/step-menu.md")
-__SPEC_FORMAT = str(Path.home() / ".claude/skills/pipeline-scaffolder/references/pipeline-spec-format.md")
+_STEP_MENU = str(Path.home() / ".claude/skills/pipeline-scaffolder/references/step-menu.md")
+_SPEC_FORMAT = str(Path.home() / ".claude/skills/pipeline-scaffolder/references/pipeline-spec-format.md")
 
 
 def is_pipeline_component(file_path: str) -> bool:

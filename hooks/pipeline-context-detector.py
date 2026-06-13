@@ -58,7 +58,7 @@ def get_user_prompt() -> str:
     """Extract user prompt from stdin JSON."""
     try:
         data = json.loads(read_stdin(timeout=2))
-        return data.get("userMessage", "")
+        return data.get("prompt") or data.get("userMessage", "")
     except (json.JSONDecodeError, KeyError):
         return ""
 

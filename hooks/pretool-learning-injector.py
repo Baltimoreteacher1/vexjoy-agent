@@ -217,4 +217,12 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except SystemExit:
+        raise
+    except Exception as e:
+        if os.environ.get("CLAUDE_HOOKS_DEBUG"):
+            print(f"[pretool] Fatal: {type(e).__name__}: {e}", file=sys.stderr)
+    finally:
+        sys.exit(0)  # ALWAYS exit 0 — non-blocking requirement

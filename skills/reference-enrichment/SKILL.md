@@ -48,9 +48,11 @@ produces filler, not depth.
 **Trigger**: Invoke with `--decompose` argument, or when the request matches "decompose", "extract references", "slim down", "too long", or "move to references".
 
 1. Run the detection script to identify extractable content:
+
    ```bash
-   python3 scripts/detect-decomposition-targets.py --skill {name}
+   python3 ~/.claude/scripts/detect-decomposition-targets.py --skill {name}
    ```
+
    (or `--agent {name}`)
 
 2. If no extractable blocks found, report "nothing to decompose" and stop
@@ -60,12 +62,12 @@ produces filler, not depth.
 4. For each extractable block identified by the detection script:
    a. Read the content block and its surrounding context
    b. Determine the best reference filename:
-      - Use the detection script's suggestion as a starting point
-      - If a reference file with related content already exists, MERGE into it
-      - Follow naming convention: `references/{topic}.md` (lowercase, hyphens)
-   c. Create or update the reference file following `references/reference-file-template.md`
-   d. Remove the content from the body (MOVE, not copy)
-   e. Add a loading table entry in the body that maps task signals to the new reference file
+   - Use the detection script's suggestion as a starting point
+   - If a reference file with related content already exists, MERGE into it
+   - Follow naming convention: `references/{topic}.md` (lowercase, hyphens)
+     c. Create or update the reference file following `references/reference-file-template.md`
+     d. Remove the content from the body (MOVE, not copy)
+     e. Add a loading table entry in the body that maps task signals to the new reference file
 
 5. Ensure the body retains:
    - YAML frontmatter
@@ -76,8 +78,9 @@ produces filler, not depth.
    - References section
 
 6. Validate the decomposition:
+
    ```bash
-   python3 scripts/validate-decomposition.py \
+   python3 ~/.claude/scripts/validate-decomposition.py \
        --before /tmp/decomp-before-{name}.md \
        --after {path} \
        --refs {refs_dir}/
@@ -87,8 +90,8 @@ produces filler, not depth.
 
 8. If validation PASSES: run structural checks:
    ```bash
-   python3 scripts/validate-references.py --skill {name}  # or --agent {name}
-   python3 scripts/audit-reference-depth.py --skill {name} --verbose  # or --agent {name}
+   python3 ~/.claude/scripts/validate-references.py --skill {name}  # or --agent {name}
+   python3 ~/.claude/scripts/audit-reference-depth.py --skill {name} --verbose  # or --agent {name}
    ```
 
 **Gate**: Validation passes. Body line count reduced. All extracted content exists in reference files. Loading table entries exist for all new references.
@@ -106,6 +109,7 @@ produces filler, not depth.
 4. Compare stated domains against covered domains to identify gaps
 
 Output format:
+
 ```
 DISCOVER: {name}
   Current level: {0-3}
@@ -125,6 +129,7 @@ report and stop — over-generating creates noise, not signal.
 **Goal**: Compile concrete, domain-specific content for each gap.
 
 For each identified gap:
+
 1. Read existing Level 3 reference files in this repo as exemplars — golang-general-engineer's
    references/ is the benchmark: version-specific patterns, grep commands, error-fix mappings
 2. Identify: version-specific patterns (what changed in version X.Y), common anti-patterns with
@@ -145,6 +150,7 @@ patterns, code examples). Generic advice ("follow best practices") does not coun
 **Goal**: Assemble research into structured reference files.
 
 For each gap, create one reference file following `references/reference-file-template.md`:
+
 - One file per major sub-domain (not one monolithic file) because focused files are faster to
   load and easier to update as language versions change
 - Max 500 lines per file (CLAUDE.md standard) — split into sub-topics if content exceeds this
@@ -155,7 +161,7 @@ For each gap, create one reference file following `references/reference-file-tem
 Write files to: `agents/{name}/references/` or `skills/{name}/references/`
 
 **Gate**: Each generated file is between 80-500 lines. Run
-`scripts/validate-references.py --agent {name}` if it exists.
+`~/.claude/scripts/validate-references.py --agent {name}` if it exists.
 
 ---
 
@@ -164,9 +170,11 @@ Write files to: `agents/{name}/references/` or `skills/{name}/references/`
 **Goal**: Confirm the reference files meet Level 3+ depth before integrating.
 
 **Tier 1 (Deterministic):**
+
 ```bash
-python3 scripts/audit-reference-depth.py --agent {name} --json
+python3 ~/.claude/scripts/audit-reference-depth.py --agent {name} --json
 ```
+
 Verify the `level` field is 3 in the output. If still below Level 3, the files are too
 generic — return to Phase 2 for the weak sub-domain.
 
@@ -194,8 +202,8 @@ that gap only (not all gaps). Maximum 2 loops per gap before flagging for manual
 3. Write the updated .md file
 4. Run validation:
    ```bash
-   python3 scripts/validate-references.py --agent {name}
-   python3 -m pytest scripts/tests/test_reference_loading.py -k {name} -v
+   python3 ~/.claude/scripts/validate-references.py --agent {name}
+   python3 -m pytest ~/.claude/scripts/tests/test_reference_loading.py -k {name} -v
    ```
 5. Stage all changes: `git add agents/{name}/ skills/{name}/`
 
@@ -208,11 +216,11 @@ each new file with its line count.
 
 Load when the task type matches:
 
-| Task type | Load |
-|-----------|------|
-| Understanding Level 0-3 criteria | `references/quality-rubric.md` |
-| Creating new reference files | `references/reference-file-template.md` |
-| Decomposing bloated components | Run `python3 scripts/detect-decomposition-targets.py --skill {name}` first |
+| Task type                        | Load                                                                                 |
+| -------------------------------- | ------------------------------------------------------------------------------------ |
+| Understanding Level 0-3 criteria | `references/quality-rubric.md`                                                       |
+| Creating new reference files     | `references/reference-file-template.md`                                              |
+| Decomposing bloated components   | Run `python3 ~/.claude/scripts/detect-decomposition-targets.py --skill {name}` first |
 
 ---
 

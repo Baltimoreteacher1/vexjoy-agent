@@ -112,7 +112,7 @@ def _synthesis_verdict(synthesis_path: Path) -> str | None:
     except OSError:
         return None
 
-    if "PROCEED" in text:
+    if re.search(r"^\s*VERDICT:.*PROCEED", text, re.MULTILINE):
         return "PROCEED"
     if "BLOCKED" in text:
         return "BLOCKED"

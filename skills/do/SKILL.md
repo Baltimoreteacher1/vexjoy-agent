@@ -56,7 +56,7 @@ This is not aspirational. It is the execution standard for every agent dispatche
 
 Every phase MUST display a banner BEFORE executing: `/do > Phase N: PHASE_NAME — description...`
 
-After Phase 2, display the full routing decision banner (`===` block). Phase banners tell the user *where they are*; the routing banner tells them *what was decided*. Both required.
+After Phase 2, display the full routing decision banner (`===` block). Phase banners tell the user _where they are_; the routing banner tells them _what was decided_. Both required.
 
 ---
 
@@ -66,12 +66,12 @@ After Phase 2, display the full routing decision banner (`===` block). Phase ban
 
 Read and follow the repository CLAUDE.md before making any routing decision, because it contains project-specific conventions that affect agent selection and skill pairing.
 
-| Complexity | Agent | Skill | Direct Action |
-|------------|-------|-------|---------------|
-| Trivial | No | No | **ONLY reading a file the user named by exact path** |
-| Simple | **Yes** | Yes | Route to agent |
-| Medium | **Required** | **Required** | Route to agent |
-| Complex | Required (2+) | Required (2+) | Route to agent |
+| Complexity | Agent         | Skill         | Direct Action                                        |
+| ---------- | ------------- | ------------- | ---------------------------------------------------- |
+| Trivial    | No            | No            | **ONLY reading a file the user named by exact path** |
+| Simple     | **Yes**       | Yes           | Route to agent                                       |
+| Medium     | **Required**  | **Required**  | Route to agent                                       |
+| Complex    | Required (2+) | Required (2+) | Route to agent                                       |
 
 **Trivial = reading a file the user named by exact path.** Everything else is Simple+ and MUST use an agent, skill, or pipeline. When uncertain, classify UP not down. Routing up finds the agent who ships it complete; tokens are cheap, and an agent that actually ships is what the user came for.
 
@@ -88,11 +88,13 @@ Read and follow the repository CLAUDE.md before making any routing decision, bec
 **Creation Request Detection** (MANDATORY scan before Gate):
 
 Scan the request for creation signals before completing Phase 1:
+
 - Explicit creation verbs: "create", "scaffold", "build", "add new", "new [component]", "implement new"
 - Domain object targets: agent, skill, pipeline, hook, feature, plugin, workflow, voice profile
 - Implicit creation: "I need a [component]", "we need a [component]", "build me a [component]"
 
 If ANY creation signal is found AND complexity is Simple+:
+
 1. Set an internal flag: `is_creation = true`
 2. **Phase 4 Step 0 is MANDATORY** — write ADR before dispatching any agent
 
@@ -117,7 +119,7 @@ All routing goes through a single Haiku agent dispatch. The manifest includes `F
 Generate the routing manifest, then dispatch the Haiku agent:
 
 ```bash
-python3 scripts/routing-manifest.py
+python3 ~/.claude/scripts/routing-manifest.py
 ```
 
 Dispatch the Agent tool with `model: "haiku"` and this prompt structure:
@@ -219,27 +221,27 @@ Valid categories: `error, pivot, review, design, debug, gotcha, effectiveness, m
 
 Retro knowledge is auto-injected by the `session-context` hook at SessionStart via the dream system's pre-built payload (nightly consolidation by `auto-dream`). If a `<retro-knowledge>` block is already in conversation context, skip — the hook handled it. Only manually inject if the hook did not fire (benchmark: +5.3 avg, 67% win rate). Relevance-gated by LLM curation during the nightly dream cycle.
 
-| Signal in Request | Enhancement to Add |
-|-------------------|-------------------|
+| Signal in Request                         | Enhancement to Add                                                                              |
+| ----------------------------------------- | ----------------------------------------------------------------------------------------------- |
 | Any substantive work (code, design, plan) | **Auto-inject retro knowledge** (via `session-context` hook, pre-built by nightly `auto-dream`) |
-| "comprehensive" / "thorough" / "full" | Add parallel reviewers (security + business + quality) |
-| "with tests" / "production ready" | Append test-driven-development + verification-before-completion |
-| "research needed" / "investigate first" | Prepend research-coordinator-engineer |
-| "review" with 5+ files | Use parallel-code-review (3 reviewers) |
-| Complex implementation | Offer subagent-driven-development |
+| "comprehensive" / "thorough" / "full"     | Add parallel reviewers (security + business + quality)                                          |
+| "with tests" / "production ready"         | Append test-driven-development + verification-before-completion                                 |
+| "research needed" / "investigate first"   | Prepend research-coordinator-engineer                                                           |
+| "review" with 5+ files                    | Use parallel-code-review (3 reviewers)                                                          |
+| Complex implementation                    | Offer subagent-driven-development                                                               |
 
 Before stacking any enhancement, check the target skill's `pairs_with` field in `skills/INDEX.json`. Some skills ship with their own verification gates and work best on their own terms. Specifically: empty `pairs_with: []` means no stacking allowed. Skills with built-in verification gates handle their own verification. The `quick --trivial` mode handles its own testing. Stack only compatible enhancements.
 
 **Auto-inject anti-rationalization** for these task types, because these categories reward pattern-reinforced rigor with the highest quality gains:
 
-| Task Type | Patterns Injected |
-|-----------|-------------------|
-| Code modification | anti-rationalization-core, verification-checklist |
-| Code review | anti-rationalization-core, anti-rationalization-review |
-| Security work | anti-rationalization-core, anti-rationalization-security |
-| Testing | anti-rationalization-core, anti-rationalization-testing |
-| Debugging | anti-rationalization-core, verification-checklist |
-| External content evaluation | **untrusted-content-handling** |
+| Task Type                   | Patterns Injected                                        |
+| --------------------------- | -------------------------------------------------------- |
+| Code modification           | anti-rationalization-core, verification-checklist        |
+| Code review                 | anti-rationalization-core, anti-rationalization-review   |
+| Security work               | anti-rationalization-core, anti-rationalization-security |
+| Testing                     | anti-rationalization-core, anti-rationalization-testing  |
+| Debugging                   | anti-rationalization-core, verification-checklist        |
+| External content evaluation | **untrusted-content-handling**                           |
 
 For explicit maximum rigor, use `/with-anti-rationalization [task]`.
 
@@ -271,6 +273,7 @@ When quality-loop applies, it absorbs Step 0 (ADR creation) and Step 1 (plan cre
 The router still selects the best agent+skill in Phase 2 (e.g., `golang-general-engineer` + `go-patterns`). That selection becomes the implementation agent for quality-loop PHASE 1. Force-route skills like `go-patterns` are used INSIDE the loop, not excluded from it — a Go implementation gets Go-specific patterns AND testing, review, and PR gates.
 
 The quality-loop does NOT apply when:
+
 - Complexity is Trivial or Simple (use fast/quick instead)
 - The task is review-only, research, debugging, or content creation
 - The user explicitly requests a simpler flow
@@ -310,6 +313,7 @@ When uncertain which route: **ROUTE ANYWAY.** Add verification-before-completion
 **Goal**: Ensure session insights are captured to `learning.db`.
 
 **Routing outcome recording** (Simple+ tasks, observable facts only — no self-grading):
+
 ```bash
 python3 ~/.claude/scripts/learning-db.py record \
     routing "{selected_agent}:{selected_skill}" \
@@ -322,6 +326,7 @@ Record only observable facts (tool_errors, user_rerouted). Routing outcome quali
 **Auto-capture** (hooks, zero LLM cost): `error-learner.py` (PostToolUse), `review-capture.py` (PostToolUse), `session-learning-recorder.py` (Stop).
 
 **Skill-scoped recording** (preferred — one-liner):
+
 ```bash
 python3 ~/.claude/scripts/learning-db.py learn --skill go-patterns "insight about testing"
 python3 ~/.claude/scripts/learning-db.py learn --agent golang-general-engineer "insight about agent"
@@ -337,14 +342,17 @@ python3 ~/.claude/scripts/learning-db.py learn "general insight without scope"
 ## Error Handling
 
 ### Error: "No Agent Matches Request"
+
 Cause: Request domain not covered by any agent
 Solution: Check INDEX files and `references/routing-tables.md` for near-matches. Route to closest agent with verification-before-completion. Report the gap.
 
 ### Error: "Force-Route Conflict"
+
 Cause: Multiple force-route triggers match the same request
 Solution: Apply most specific force-route first. Stack secondary routes as enhancements if compatible.
 
 ### Error: "Plan Required But Not Created"
+
 Cause: Simple+ task attempted without task_plan.md
 Solution: Stop execution. Create `task_plan.md`. Resume routing after plan is in place.
 
@@ -353,6 +361,7 @@ Solution: Stop execution. Create `task_plan.md`. Resume routing after plan is in
 ## References
 
 ### Reference Files
+
 - `${CLAUDE_SKILL_DIR}/references/routing-tables.md`: Complete category-specific skill routing
 - `${CLAUDE_SKILL_DIR}/references/progressive-depth.md`: Progressive depth escalation protocol
 - `agents/INDEX.json`: Agent triggers and metadata

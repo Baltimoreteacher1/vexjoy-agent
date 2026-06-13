@@ -23,7 +23,7 @@ routing:
 
 # Headless Cron Creator Skill
 
-Generate headless Claude Code cron jobs from a task description and schedule. Creates a wrapper script with safety mechanisms (lockfile, budget cap, dry-run default, logging) and installs crontab entries. All crontab mutations go through `scripts/crontab-manager.py`, which writes to temp files and creates timestamped backups in `~/.claude/crontab-backups/` before every change -- never pipe directly to `crontab -` because a mid-stream pipe failure wipes the entire crontab.
+Generate headless Claude Code cron jobs from a task description and schedule. Creates a wrapper script with safety mechanisms (lockfile, budget cap, dry-run default, logging) and installs crontab entries. All crontab mutations go through `~/.claude/scripts/crontab-manager.py`, which writes to temp files and creates timestamped backups in `~/.claude/crontab-backups/` before every change -- never pipe directly to `crontab -` because a mid-stream pipe failure wipes the entire crontab.
 
 ## Instructions
 
@@ -32,11 +32,13 @@ Generate headless Claude Code cron jobs from a task description and schedule. Cr
 Extract job parameters from the user's request.
 
 **Required parameters**:
+
 - **name** -- short kebab-case identifier (e.g., `reddit-automod`, `feed-health-check`)
 - **prompt** -- what Claude should do each run (natural language)
 - **schedule** -- cron expression or human-readable interval
 
 **Optional parameters** (with defaults):
+
 - **workdir** -- where to `cd` before running (default: current repo root)
 - **budget** -- max USD per run (default: `2.00`; user may override)
 - **allowed-tools** -- which tools the headless session can use (default: `Bash Read`; user may override)
@@ -44,14 +46,14 @@ Extract job parameters from the user's request.
 
 **Human-readable schedule conversion** -- use off-minutes (7, 23, 47) instead of `:00`/`:30` because every cron job on the system fires at round minutes, creating load spikes:
 
-| Human Input | Cron Expression |
-|-------------|----------------|
-| every 12 hours | `7 */12 * * *` |
-| twice daily | `7 8,20 * * *` |
-| hourly | `23 * * * *` |
-| daily at 6am | `7 6 * * *` |
-| weekly on sunday | `7 9 * * 0` |
-| every 30 minutes | `*/30 * * * *` |
+| Human Input      | Cron Expression |
+| ---------------- | --------------- |
+| every 12 hours   | `7 */12 * * *`  |
+| twice daily      | `7 8,20 * * *`  |
+| hourly           | `23 * * * *`    |
+| daily at 6am     | `7 6 * * *`     |
+| weekly on sunday | `7 9 * * 0`     |
+| every 30 minutes | `*/30 * * * *`  |
 
 **Gate**: All required parameters extracted. Proceed to Phase 2.
 
@@ -70,6 +72,7 @@ python3 ~/.claude/scripts/crontab-manager.py generate-wrapper \
 ```
 
 Review the generated script. Verify it contains:
+
 - [ ] `set -euo pipefail`
 - [ ] `flock` lockfile -- prevents concurrent runs of the same job
 - [ ] `--permission-mode auto` -- never use `--dangerously-skip-permissions` (auto is sufficient) or `--bare` (breaks OAuth/keychain auth)
@@ -89,6 +92,7 @@ Do not use the `CronCreate` tool -- it is session-scoped (dies when the session 
 Verify the generated script meets cron best practices.
 
 1. Run the script in dry-run mode:
+
    ```bash
    bash -n scripts/{name}-cron.sh  # syntax check
    ```
@@ -108,6 +112,7 @@ Verify the generated script meets cron best practices.
 Install the crontab entry. Every entry gets a `# claude-cron: <tag>` marker so `crontab-manager.py` can identify and manage only its own entries without touching non-Claude crontab lines. All paths in the crontab entry must be absolute because cron has minimal PATH.
 
 1. Show the proposed entry:
+
    ```bash
    python3 ~/.claude/scripts/crontab-manager.py add \
      --tag "{name}" \
@@ -119,6 +124,7 @@ Install the crontab entry. Every entry gets a `# claude-cron: <tag>` marker so `
 2. **Ask the user for confirmation** before installing. Never install without explicit approval.
 
 3. If confirmed:
+
    ```bash
    python3 ~/.claude/scripts/crontab-manager.py add \
      --tag "{name}" \
@@ -138,6 +144,7 @@ Install the crontab entry. Every entry gets a `# claude-cron: <tag>` marker so `
 Summarize the created cron job and print the exact commands to test and manage it.
 
 Output:
+
 - Script path
 - Cron schedule (human-readable + expression)
 - Log directory
@@ -155,19 +162,22 @@ To modify an existing wrapper script, regenerate it with `--force` rather than e
 ## Error Handling
 
 ### Error: "tag already exists"
+
 Cause: A cron entry with this tag is already installed.
 Solution: Either `remove --tag {name}` first, or choose a different name.
 
 ### Error: "claude: command not found" in cron
+
 Cause: Cron has minimal PATH; `claude` isn't in it.
 Solution: `generate-wrapper` resolves the absolute path to `claude` at generation time.
 If the path changes, regenerate the wrapper with `--force`.
 
 ### Error: "crontab install failed"
+
 Cause: System crontab service issue.
 Solution: Check `crontab -l` manually. Restore from `~/.claude/crontab-backups/`.
 
 ## References
 
-- `scripts/crontab-manager.py` -- all crontab mutations (add, remove, list, verify, generate-wrapper)
+- `~/.claude/scripts/crontab-manager.py` -- all crontab mutations (add, remove, list, verify, generate-wrapper)
 - `skills/cron-job-auditor/SKILL.md` -- validation checks for generated scripts

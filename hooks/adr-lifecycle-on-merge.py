@@ -183,9 +183,12 @@ def update_adr_status(adr_path: Path, adr_number: str) -> None:
         dest = completed_dir / adr_path.name
         dest.write_text(updated)
 
-        # Remove original
-        adr_path.unlink()
-        debug_log(f"Moved {adr_path.name} to adr/completed/ with status Completed ({today})")
+        # Leave the original in place — do not auto-delete. The completed copy
+        # has been written to adr/completed/; the source ADR stays for manual review.
+        debug_log(
+            f"Copied {adr_path.name} to adr/completed/ with status Completed ({today}); "
+            f"original left in place — archive {adr_path} manually if desired"
+        )
     except Exception as e:
         debug_log(f"Failed to update/move ADR: {e}")
 

@@ -25,8 +25,8 @@ MAX_INJECTION_CHARS = 1600  # ~400 tokens
 
 
 def _debug(message: str) -> None:
-    """Write debug message to stderr only when CLAUDE_HOOK_DEBUG is set."""
-    if os.environ.get("CLAUDE_HOOK_DEBUG"):
+    """Write debug message to stderr only when CLAUDE_HOOKS_DEBUG is set."""
+    if os.environ.get("CLAUDE_HOOKS_DEBUG"):
         print(f"[kairos-briefing] {message}", file=sys.stderr)
 
 
@@ -170,7 +170,7 @@ if __name__ == "__main__":
     try:
         main()
     except Exception as e:
-        if os.environ.get("CLAUDE_HOOK_DEBUG"):
+        if os.environ.get("CLAUDE_HOOKS_DEBUG"):
             print(f"[kairos-briefing] Fatal: {type(e).__name__}: {e}", file=sys.stderr)
     finally:
         sys.exit(0)  # ALWAYS exit 0 — non-blocking requirement
