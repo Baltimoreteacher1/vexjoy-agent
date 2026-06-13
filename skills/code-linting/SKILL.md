@@ -1,7 +1,7 @@
 ---
 name: code-linting
 user-invocable: false
-description: "Run Python (ruff) and JavaScript (Biome) linting."
+description: "Run Python (ruff) and JavaScript (Biome) linting. Use when the user wants to lint or auto-fix Python or JS/TS code, check style/formatting violations, or gate a change on linter output before commit."
 allowed-tools:
   - Read
   - Grep
@@ -79,11 +79,13 @@ Auto-fixes can occasionally remove imports that are still needed, reformat code 
 For violations that cannot be auto-fixed, explain each one and how to resolve it:
 
 **Python common fixes:**
+
 - Unused import (F401): Remove or use the import
 - Import order (I001): Run `ruff check --fix`
 - Line too long (E501): Break into multiple lines or adjust line-length config
 
 **JavaScript common fixes:**
+
 - noVar: Replace `var` with `let`/`const`
 - useConst: Use `const` for unchanging values
 - noDoubleEquals: Use `===` instead of `==`
@@ -113,10 +115,10 @@ make lint-fix   # Fix both Python and JS
 
 ### Configuration Reference
 
-| Tool | Config | Typical Line Width |
-|------|--------|-------------------|
-| ruff | pyproject.toml | 88-120 |
-| biome | biome.json | 80-120 |
+| Tool  | Config         | Typical Line Width |
+| ----- | -------------- | ------------------ |
+| ruff  | pyproject.toml | 88-120             |
+| biome | biome.json     | 80-120             |
 
 ### Optional Modes
 
@@ -127,17 +129,21 @@ make lint-fix   # Fix both Python and JS
 ## Error Handling
 
 ### Error: "ruff not found"
+
 **Cause**: Virtual environment not activated or ruff not installed
 **Solution**:
+
 - Use virtual environment path: `./venv/bin/ruff` or `./env/bin/ruff`
 - Or install globally: `pip install ruff`
 - Or use pipx: `pipx run ruff check .`
 
 ### Error: "biome not found"
+
 **Cause**: Biome not installed in project
 **Solution**: Run `npx @biomejs/biome` to use npx-based execution
 
 ### Error: "Configuration file not found"
+
 **Cause**: Running from wrong directory
 **Solution**: cd to project root where pyproject.toml/biome.json exist
 
@@ -145,13 +151,13 @@ make lint-fix   # Fix both Python and JS
 
 Load these files when the task involves the corresponding domain:
 
-| Task type | Reference file |
-|-----------|---------------|
-| Python violations, ruff rules, F401/E711/B006/UP errors | `references/ruff-rules-reference.md` |
-| ruff not found, pyproject.toml config, ruff version differences | `references/ruff-rules-reference.md` |
-| JavaScript/TypeScript violations, Biome rules, noVar/useConst/noDoubleEquals | `references/biome-rules-reference.md` |
-| biome not found, biome.json config, migrating from ESLint | `references/biome-rules-reference.md` |
-| Linting CI failures, format check vs lint check differences | `references/ruff-rules-reference.md` + `references/biome-rules-reference.md` |
+| Task type                                                                    | Reference file                                                               |
+| ---------------------------------------------------------------------------- | ---------------------------------------------------------------------------- |
+| Python violations, ruff rules, F401/E711/B006/UP errors                      | `references/ruff-rules-reference.md`                                         |
+| ruff not found, pyproject.toml config, ruff version differences              | `references/ruff-rules-reference.md`                                         |
+| JavaScript/TypeScript violations, Biome rules, noVar/useConst/noDoubleEquals | `references/biome-rules-reference.md`                                        |
+| biome not found, biome.json config, migrating from ESLint                    | `references/biome-rules-reference.md`                                        |
+| Linting CI failures, format check vs lint check differences                  | `references/ruff-rules-reference.md` + `references/biome-rules-reference.md` |
 
 ## References
 

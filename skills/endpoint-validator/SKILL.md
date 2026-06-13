@@ -36,6 +36,7 @@ Check for and follow any repository-level CLAUDE.md before running validation. I
 **Step 2: Search for endpoint configuration**
 
 Look for definitions in priority order:
+
 1. `endpoints.json` in project root
 2. `tests/endpoints.json`
 3. Inline specification provided by user or calling agent
@@ -50,14 +51,15 @@ Configuration must contain `base_url` and at least one endpoint:
 {
   "base_url": "http://localhost:8000",
   "endpoints": [
-    {"path": "/health", "expect_status": 200},
-    {"path": "/api/v1/users", "expect_key": "data", "timeout": 10},
-    {"path": "/api/v1/search?q=test", "max_time": 2.0}
+    { "path": "/health", "expect_status": 200 },
+    { "path": "/api/v1/users", "expect_key": "data", "timeout": 10 },
+    { "path": "/api/v1/search?q=test", "max_time": 2.0 }
   ]
 }
 ```
 
 Each endpoint supports these fields:
+
 - `path` (required): URL path appended to base_url
 - `expect_status` (default: 200): Expected HTTP status code
 - `expect_key` (optional): Top-level JSON key that must exist in response. Only top-level key presence is checked -- full JSON schema validation is out of scope.
@@ -83,6 +85,7 @@ Make a single request to `base_url` before running the full suite. If unreachabl
 **Step 1: Execute requests sequentially**
 
 Test endpoints one at a time for predictable, reproducible output. For each endpoint:
+
 1. Construct full URL from `base_url` + `path`
 2. Send request with configured method (GET by default) and timeout
 3. Record status code, response time, and body
@@ -93,6 +96,7 @@ This skill sends one request per endpoint. It is not a load tester or stress tes
 **Step 2: Evaluate against expectations**
 
 For each response, check in order:
+
 1. **Status code**: Does it match `expect_status`? If not, mark FAIL.
 2. **JSON key**: If `expect_key` set, parse JSON and check key exists. If missing or not valid JSON, mark FAIL.
 3. **Response time**: If `max_time` set and elapsed exceeds it, mark SLOW. Flag slow endpoints -- they indicate degradation that becomes failure under load.
@@ -157,42 +161,52 @@ SUMMARY:
 ### Examples
 
 #### Example 1: Pre-Deployment Health Check
+
 User says: "Validate all endpoints before we deploy"
 Actions:
+
 1. Find `endpoints.json` in project root (DISCOVER)
 2. Test each endpoint, collect status codes and times (VALIDATE)
 3. Print report, exit 0 if all pass (REPORT)
-Result: Structured pass/fail report with CI-compatible exit code
+   Result: Structured pass/fail report with CI-compatible exit code
 
 #### Example 2: Smoke Test After Migration
+
 User says: "Check if the API is still working after the database migration"
 Actions:
+
 1. Read endpoint config, confirm base URL reachable (DISCOVER)
 2. Hit each endpoint, check status and expected keys (VALIDATE)
 3. Surface any failures with error details (REPORT)
-Result: Quick verification that migration did not break API contracts
+   Result: Quick verification that migration did not break API contracts
 
 ---
 
 ## Error Handling
 
 ### Error: "Base URL Unreachable"
+
 Cause: Service not running, wrong port, or network issue
 Solution:
+
 1. Verify service is running (`ps aux`, `docker ps`, or equivalent)
 2. Confirm port matches config (`netstat -tlnp` or `ss -tlnp`)
 3. Check for firewall rules or container networking issues
 
 ### Error: "All Endpoints Timeout"
+
 Cause: Service overwhelmed, wrong host, or proxy misconfiguration
 Solution:
+
 1. Test a single endpoint manually with `curl -v`
 2. Increase timeout values in config if service is legitimately slow
 3. Check if a reverse proxy or load balancer is intercepting requests
 
 ### Error: "JSON Parse Failure on expect_key Check"
+
 Cause: Endpoint returns HTML, XML, or empty body instead of JSON
 Solution:
+
 1. Verify endpoint actually returns JSON (check Content-Type header)
 2. Remove `expect_key` if endpoint legitimately returns non-JSON
 3. Check if authentication is required (HTML login page returned)
@@ -201,11 +215,11 @@ Solution:
 
 ## Reference Loading
 
-| Task Type | Load This Reference |
-|-----------|-------------------|
-| Security header WARNs, HSTS/CSP/X-Frame issues | `references/security-headers.md` |
+| Task Type                                      | Load This Reference                           |
+| ---------------------------------------------- | --------------------------------------------- |
+| Security header WARNs, HSTS/CSP/X-Frame issues | `references/security-headers.md`              |
 | Config errors, hardcoded IPs, timeout problems | `references/endpoint-config-anti-patterns.md` |
-| 401/403 failures, Bearer/API-key/cookie auth | `references/auth-endpoint-patterns.md` |
+| 401/403 failures, Bearer/API-key/cookie auth   | `references/auth-endpoint-patterns.md`        |
 
 ---
 
@@ -213,10 +227,11 @@ Solution:
 
 ### CI/CD Integration
 
+Validation is performed directly with `curl` and `jq` against the endpoint
+inventory in `endpoints.json` — no helper script is required.
+
 ```yaml
-# GitHub Actions example
-# TODO: scripts/validate_endpoints.py not yet implemented
-# Manual alternative: use curl to validate endpoints from endpoints.json
+# GitHub Actions example: validate every endpoint listed in endpoints.json
 - name: Validate API endpoints
   run: |
     jq -r '.endpoints[].path' endpoints.json | while read path; do
@@ -225,9 +240,7 @@ Solution:
 ```
 
 ```bash
-# Pre-deployment gate
-# TODO: scripts/validate_endpoints.py not yet implemented
-# Manual alternative: iterate endpoints.json with curl
+# Pre-deployment gate: fail the build if any endpoint does not return 2xx
 jq -r '.endpoints[].path' endpoints.json | while read path; do
   curl -sf "http://localhost:8000$path" > /dev/null || { echo "FAIL: $path"; exit 1; }
 done

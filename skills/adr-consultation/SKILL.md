@@ -1,6 +1,6 @@
 ---
 name: adr-consultation
-description: "Multi-agent consultation for architecture decisions."
+description: "Multi-agent consultation for architecture decisions. Use when weighing a significant architectural choice (framework, datastore, API style, service boundary) and you want multiple expert perspectives synthesized before writing an ADR."
 model: sonnet
 user-invocable: false
 allowed-tools:
@@ -38,6 +38,7 @@ Multi-agent architecture consultation that dispatches 3 specialized reviewers in
 **Step 1: Locate the ADR**
 
 Check for ADR path in this order:
+
 1. User-provided path (e.g., `adr/intent-based-routing.md`)
 2. Active session context from adr-system hook (`.adr-session.json`)
 3. Ask the user which ADR to consult on
@@ -90,6 +91,7 @@ Even when there is time pressure, do not skip consultation because blocking conc
 **Complex mode (5 agents)**: For Complex decisions (new subsystem, major API change), add `reviewer-system` and a second domain expert. Enable with "complex consultation" or "full consultation". See `references/agent-prompts.md` § Complex Mode.
 
 Each agent receives:
+
 1. The full ADR content as context
 2. Its specific lens and analysis focus
 3. Explicit output path: `adr/{adr-name}/{agent-name}.md`
@@ -121,12 +123,12 @@ Track every concern raised by any agent in `adr/{adr-name}/concerns.md`. See `re
 
 Do not treat NEEDS_CHANGES as equivalent to PROCEED. Multiple NEEDS_CHANGES aggregates to a higher concern level, not a softer approval.
 
-| Pattern | Meaning |
-|---------|---------|
-| All 3 PROCEED | Strong consensus -- proceed with confidence |
-| 2 PROCEED, 1 NEEDS_CHANGES | Soft consensus -- address changes, then proceed |
-| Any BLOCK | Hard block -- must resolve before proceeding |
-| Mixed NEEDS_CHANGES | Significant concerns -- address before proceeding |
+| Pattern                    | Meaning                                           |
+| -------------------------- | ------------------------------------------------- |
+| All 3 PROCEED              | Strong consensus -- proceed with confidence       |
+| 2 PROCEED, 1 NEEDS_CHANGES | Soft consensus -- address changes, then proceed   |
+| Any BLOCK                  | Hard block -- must resolve before proceeding      |
+| Mixed NEEDS_CHANGES        | Significant concerns -- address before proceeding |
 
 The synthesizer can also identify cross-cutting concerns that individual agents missed. Document any orchestrator-level concern in concerns.md and factor it into the verdict.
 
@@ -178,28 +180,28 @@ The consultation directory is auto-created by Phase 1 (`mkdir -p adr/{adr-name}`
 
 > See `references/error-handling.md` for full error recovery procedures.
 
-| Error | Quick Resolution |
-|-------|-----------------|
-| No ADR found / ADR path unclear | `ls adr/*.md`, ask user to specify |
-| Agent times out or fails to write file | Re-run failed agents individually; do not synthesize until all 3 files exist |
-| All agents PROCEED but synthesizer detects deeper issue | Document as orchestrator-level concern in concerns.md; factor into verdict |
-| Consultation directory already exists with prior agent files | Report timestamps; ask user whether to overwrite or use existing results |
+| Error                                                        | Quick Resolution                                                             |
+| ------------------------------------------------------------ | ---------------------------------------------------------------------------- |
+| No ADR found / ADR path unclear                              | `ls adr/*.md`, ask user to specify                                           |
+| Agent times out or fails to write file                       | Re-run failed agents individually; do not synthesize until all 3 files exist |
+| All agents PROCEED but synthesizer detects deeper issue      | Document as orchestrator-level concern in concerns.md; factor into verdict   |
+| Consultation directory already exists with prior agent files | Report timestamps; ask user whether to overwrite or use existing results     |
 
 ---
 
 ## Reference Loading
 
-| Signal | Load |
-|--------|------|
-| Dispatching agents, structuring Task calls | `references/agent-prompts.md` |
-| Complex mode (5-agent) dispatch | `references/agent-prompts.md` |
-| Synthesizing verdicts, aggregating PROCEED/BLOCK/NEEDS_CHANGES | `references/consultation-patterns.md` |
-| Classifying concern severity, writing concerns.md or synthesis.md | `references/consultation-patterns.md` |
-| Issuing BLOCKED or PROCEED verdict display | `references/consultation-patterns.md` |
+| Signal                                                              | Load                                       |
+| ------------------------------------------------------------------- | ------------------------------------------ |
+| Dispatching agents, structuring Task calls                          | `references/agent-prompts.md`              |
+| Complex mode (5-agent) dispatch                                     | `references/agent-prompts.md`              |
+| Synthesizing verdicts, aggregating PROCEED/BLOCK/NEEDS_CHANGES      | `references/consultation-patterns.md`      |
+| Classifying concern severity, writing concerns.md or synthesis.md   | `references/consultation-patterns.md`      |
+| Issuing BLOCKED or PROCEED verdict display                          | `references/consultation-patterns.md`      |
 | Agent file missing, consultation incomplete, prior work overwritten | `references/consultation-anti-patterns.md` |
 | Rationalizing a blocking concern, treating NEEDS_CHANGES as PROCEED | `references/consultation-anti-patterns.md` |
-| Agent times out, empty file, output written to wrong path | `references/error-handling.md` |
-| concerns.md has blocking severity but synthesis says PROCEED | `references/error-handling.md` |
+| Agent times out, empty file, output written to wrong path           | `references/error-handling.md`             |
+| concerns.md has blocking severity but synthesis says PROCEED        | `references/error-handling.md`             |
 
 ## References
 

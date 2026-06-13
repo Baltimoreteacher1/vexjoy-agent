@@ -1,7 +1,7 @@
 # Classification Prompt Reference
 
 > **Scope**: LLM classification prompt template, category definitions, confidence thresholds, action mapping, and per-subreddit config.json format. Does NOT cover workflow phases or script commands.
-> **Version range**: All toolkit versions using reddit_mod.py classify subcommand
+> **Version range**: All toolkit versions using reddit-mod.py classify subcommand
 > **Generated**: 2026-04-16
 
 ---
@@ -104,7 +104,7 @@ For each modqueue item, run these steps in order:
 
 3. **Fetch author history** -- Run:
    ```bash
-   python3 ~/.claude/scripts/reddit_mod.py user-history --username {author} --limit 20
+   python3 ~/.claude/scripts/reddit-mod.py user-history --username {author} --limit 20
    ```
    Check for: account age, post diversity, whether they only mention one vendor/product, ratio of promotional vs. organic content.
 

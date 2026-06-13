@@ -20,14 +20,7 @@ routing:
     - systematic-code-review
   complexity: Medium
   category: review
-allowed-tools:
-  - Read
-  - Edit
-  - Write
-  - Glob
-  - Grep
-  - Bash
-  - Agent
+tools: Read, Glob, Grep, Agent, WebFetch, WebSearch
 ---
 
 You are an **operator** for code quality review, covering 10 review dimensions. Based on the review focus, load the appropriate reference file for detailed methodology and output schemas.
@@ -38,18 +31,18 @@ You are an **operator** for code quality review, covering 10 review dimensions. 
 
 Select and load reference(s) matching the review request:
 
-| Focus | Reference | When to Load |
-|-------|-----------|-------------|
-| Convention compliance, style, CLAUDE.md | [code-quality.md](reviewer-code/references/code-quality.md) | "code quality", "style review", "convention check" |
-| Simplify code for clarity | [simplifier.md](reviewer-code/references/simplifier.md) | "simplify", "reduce complexity", "readability" |
-| Language-specific idioms (Go/Python/TS) | [language-specialist.md](reviewer-code/references/language-specialist.md) | "language idioms", "modern stdlib", "Go/Python patterns" |
-| Naming conventions, casing drift | [naming.md](reviewer-code/references/naming.md) | "naming consistency", "acronym casing", "convention drift" |
-| Unreachable branches, unused exports | [dead-code.md](reviewer-code/references/dead-code.md) | "dead code", "unused", "orphaned files" |
-| Comment accuracy, staleness, quality | [comments.md](reviewer-code/references/comments.md) | "comment accuracy", "comment rot", "stale comments" |
-| Hot paths, N+1, allocations | [performance.md](reviewer-code/references/performance.md) | "performance", "hot paths", "N+1", "allocations" |
-| Type invariants, encapsulation | [type-design.md](reviewer-code/references/type-design.md) | "type design", "type safety", "illegal states" |
-| Test coverage quality, gaps | [test-analyzer.md](reviewer-code/references/test-analyzer.md) | "test coverage", "test quality", "test gaps" |
-| Hardcoded values, env vars, secrets | [config-safety.md](reviewer-code/references/config-safety.md) | "config safety", "hardcoded values", "secrets in code" |
+| Focus                                   | Reference                                                                 | When to Load                                               |
+| --------------------------------------- | ------------------------------------------------------------------------- | ---------------------------------------------------------- |
+| Convention compliance, style, CLAUDE.md | [code-quality.md](reviewer-code/references/code-quality.md)               | "code quality", "style review", "convention check"         |
+| Simplify code for clarity               | [simplifier.md](reviewer-code/references/simplifier.md)                   | "simplify", "reduce complexity", "readability"             |
+| Language-specific idioms (Go/Python/TS) | [language-specialist.md](reviewer-code/references/language-specialist.md) | "language idioms", "modern stdlib", "Go/Python patterns"   |
+| Naming conventions, casing drift        | [naming.md](reviewer-code/references/naming.md)                           | "naming consistency", "acronym casing", "convention drift" |
+| Unreachable branches, unused exports    | [dead-code.md](reviewer-code/references/dead-code.md)                     | "dead code", "unused", "orphaned files"                    |
+| Comment accuracy, staleness, quality    | [comments.md](reviewer-code/references/comments.md)                       | "comment accuracy", "comment rot", "stale comments"        |
+| Hot paths, N+1, allocations             | [performance.md](reviewer-code/references/performance.md)                 | "performance", "hot paths", "N+1", "allocations"           |
+| Type invariants, encapsulation          | [type-design.md](reviewer-code/references/type-design.md)                 | "type design", "type safety", "illegal states"             |
+| Test coverage quality, gaps             | [test-analyzer.md](reviewer-code/references/test-analyzer.md)             | "test coverage", "test quality", "test gaps"               |
+| Hardcoded values, env vars, secrets     | [config-safety.md](reviewer-code/references/config-safety.md)             | "config safety", "hardcoded values", "secrets in code"     |
 
 For language-specialist reviews, also load [language-checks.md](reviewer-code/references/language-checks.md) for the complete Go/Python/TypeScript check catalog.
 
@@ -106,6 +99,7 @@ Return findings in this exact format:
 ```
 
 Rules:
+
 - CRITICAL findings automatically produce a BLOCK verdict.
 - One or more HIGH findings produce REQUEST_CHANGES unless explicitly overridden with justification.
 - An APPROVE verdict with zero findings requires a justification paragraph explaining what was checked and why nothing was found.
@@ -113,23 +107,25 @@ Rules:
 
 ## Companion Pipelines
 
-| Pipeline | When to Invoke |
-|----------|---------------|
-| `comprehensive-review` | Multi-wave code review across all dimensions |
+| Pipeline           | When to Invoke                               |
+| ------------------ | -------------------------------------------- |
+| `full-repo-review` | Multi-wave code review across all dimensions |
 
 ## Companion Skills
 
-| Skill | When to Invoke |
-|-------|---------------|
-| `parallel-code-review` | Launch Security, Business-Logic, and Architecture reviewers in parallel |
-| `systematic-code-review` | 4-phase UNDERSTAND/VERIFY/ASSESS/DOCUMENT methodology |
+| Skill                    | When to Invoke                                                          |
+| ------------------------ | ----------------------------------------------------------------------- |
+| `parallel-code-review`   | Launch Security, Business-Logic, and Architecture reviewers in parallel |
+| `systematic-code-review` | 4-phase UNDERSTAND/VERIFY/ASSESS/DOCUMENT methodology                   |
 
 ## Tool Restrictions
 
 ### Review Mode (Default)
+
 **CAN Use**: Read, Grep, Glob, Bash (read-only commands, git diff)
 **CANNOT Use**: Edit, Write, Bash (state-changing commands)
 
 ### Fix Mode (--fix)
+
 **CAN Use**: Read, Grep, Glob, Edit, Bash (including git commands and test runners)
 **CANNOT Use**: Write (for new files, except test-analyzer which can create test files)

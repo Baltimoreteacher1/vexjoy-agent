@@ -20,15 +20,19 @@ Interact with the learning database: view stats, search entries, and graduate ma
 ## Subcommands
 
 ### status (default)
+
 Shows learning system health: entry counts, categories, graduation status, injection method.
 
 ### list
+
 Displays all accumulated knowledge grouped by category from the learning database.
 
 ### search
+
 Full-text search (FTS5) across all learnings. Returns results ranked by relevance.
 
 ### graduate
+
 AI-driven evaluation of mature learning entries for embedding into specific agents/skills. Queries design/gotcha entries, evaluates each for prescriptive readiness, drafts modifications to the target agent/skill, and applies after user approval.
 
 ## Instructions for Claude
@@ -36,6 +40,7 @@ AI-driven evaluation of mature learning entries for embedding into specific agen
 When the user invokes `/retro`, load and follow the skill at `skills/retro/SKILL.md`.
 
 Parse the argument to select the subcommand:
+
 - No argument or "status" → run status subcommand
 - "list" → run list subcommand
 - "search TERM" → run search subcommand
@@ -47,4 +52,4 @@ All retro operations go through `python3 ~/.claude/scripts/learning-db.py` — n
 
 - `scripts/learning-db.py` — Python CLI for all database operations
 - `hooks/session-context.py` — Injects pre-built dream payload and high-confidence patterns at session start
-- `scripts/learning.db` — SQLite database with FTS5 search index
+- `learning/learning.db` — SQLite database with FTS5 search index

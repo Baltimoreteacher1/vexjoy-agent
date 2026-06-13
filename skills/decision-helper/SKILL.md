@@ -1,6 +1,6 @@
 ---
 name: decision-helper
-description: "Weighted decision scoring for architectural choices."
+description: "Weighted decision scoring for architectural choices. Use when choosing between several concrete options (libraries, vendors, designs) and you want a transparent weighted-criteria scoring matrix to rank them rather than an ad-hoc gut call."
 user-invocable: false
 allowed-tools:
   - Read
@@ -47,15 +47,15 @@ If the user's request is too vague to frame, ask clarifying questions. Do not gu
 
 Present the default criteria table unless the user provides custom criteria. Ask if they want to adjust weights or add/remove criteria.
 
-| Criterion | Weight | What It Measures |
-|-----------|--------|-----------------|
-| Correctness | 5 | Does it solve the actual problem? |
-| Complexity | 3 | How much complexity does it add? (lower = better) |
-| Maintainability | 3 | How easy to change/debug later? |
-| Risk | 3 | What can go wrong? How bad is the failure mode? |
-| Effort | 2 | Implementation time and difficulty |
-| Familiarity | 2 | Team/user comfort with this approach |
-| Ecosystem | 1 | Library support, documentation, community |
+| Criterion       | Weight | What It Measures                                  |
+| --------------- | ------ | ------------------------------------------------- |
+| Correctness     | 5      | Does it solve the actual problem?                 |
+| Complexity      | 3      | How much complexity does it add? (lower = better) |
+| Maintainability | 3      | How easy to change/debug later?                   |
+| Risk            | 3      | What can go wrong? How bad is the failure mode?   |
+| Effort          | 2      | Implementation time and difficulty                |
+| Familiarity     | 2      | Team/user comfort with this approach              |
+| Ecosystem       | 1      | Library support, documentation, community         |
 
 WHY these defaults: Correctness dominates because a wrong solution has zero value regardless of other factors. Complexity/Maintainability/Risk form a middle tier because they determine long-term cost. Effort/Familiarity are lower because they're temporary (teams learn, effort is one-time). Ecosystem is lowest because it rarely decides between otherwise-equal options.
 
@@ -135,14 +135,17 @@ The user can skip persistence for informal exploration by requesting it.
 ## Error Handling
 
 ### Error: "Too many options"
+
 **Cause**: User presents 5+ options
 **Solution**: Help decompose. Group similar options or eliminate clearly inferior ones first. Then score the remaining 2-4.
 
 ### Error: "Criteria don't fit this decision"
+
 **Cause**: Default criteria aren't relevant (e.g., scoring a content strategy, not a technical choice)
 **Solution**: Ask the user to define custom criteria. Suggest domain-appropriate alternatives.
 
 ### Error: "Scores feel wrong"
+
 **Cause**: User disagrees with a score after seeing the matrix
 **Solution**: Adjust the score and recalculate. The matrix is a tool for the user, not an authority over them. If many scores feel wrong, the criteria may need revisiting.
 
@@ -156,8 +159,8 @@ The user can skip persistence for informal exploration by requesting it.
 
 Load these files when the corresponding signals appear in the decision request:
 
-| Signal | Reference File | What It Adds |
-|--------|---------------|-------------|
-| "build vs buy", "vendor", "SaaS", "self-host", database, cloud provider, framework, library, API design | `references/decision-archetypes.md` | Archetype-specific criteria weight adjustments, hard-constraint checklists, detection commands |
-| User adjusts weights after scoring, adds options mid-scoring, scores feel arbitrary, "something feels off" | `references/decision-anti-patterns.md` | Anti-pattern identification, intervention scripts, error-fix mappings |
-| 5+ options presented, close call (<0.5 margin), repeated score changes | `references/decision-anti-patterns.md` | Structural anti-patterns and fixes |
+| Signal                                                                                                     | Reference File                         | What It Adds                                                                                   |
+| ---------------------------------------------------------------------------------------------------------- | -------------------------------------- | ---------------------------------------------------------------------------------------------- |
+| "build vs buy", "vendor", "SaaS", "self-host", database, cloud provider, framework, library, API design    | `references/decision-archetypes.md`    | Archetype-specific criteria weight adjustments, hard-constraint checklists, detection commands |
+| User adjusts weights after scoring, adds options mid-scoring, scores feel arbitrary, "something feels off" | `references/decision-anti-patterns.md` | Anti-pattern identification, intervention scripts, error-fix mappings                          |
+| 5+ options presented, close call (<0.5 margin), repeated score changes                                     | `references/decision-anti-patterns.md` | Structural anti-patterns and fixes                                                             |

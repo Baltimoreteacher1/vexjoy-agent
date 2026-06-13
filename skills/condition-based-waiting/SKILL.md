@@ -1,6 +1,6 @@
 ---
 name: condition-based-waiting
-description: "Polling, retry, and backoff patterns."
+description: "Polling, retry, and backoff patterns. Use when writing code that must wait for an async condition (service ready, job finished, file present) and you need to replace fixed sleeps with poll-until-true, exponential backoff, or bounded retry logic."
 user-invocable: false
 allowed-tools:
   - Read
@@ -25,13 +25,13 @@ routing:
 
 Implement condition-based polling and retry patterns with bounded timeouts, jitter, and error classification. Select the right pattern for the scenario, implement it with safety bounds, and verify both success and failure paths.
 
-| Pattern | Use When | Key Safety Bound |
-|---------|----------|-----------------|
-| Simple Poll | Wait for condition to become true | Timeout + min poll interval |
-| Exponential Backoff | Retry with increasing delays | Max retries + jitter + delay cap |
-| Rate Limit Recovery | API returns 429 | Retry-After header + default fallback |
-| Health Check | Wait for service(s) to be ready | All-pass requirement + per-check status |
-| Circuit Breaker | Prevent cascade failures | Failure threshold + recovery timeout |
+| Pattern             | Use When                          | Key Safety Bound                        |
+| ------------------- | --------------------------------- | --------------------------------------- |
+| Simple Poll         | Wait for condition to become true | Timeout + min poll interval             |
+| Exponential Backoff | Retry with increasing delays      | Max retries + jitter + delay cap        |
+| Rate Limit Recovery | API returns 429                   | Retry-After header + default fallback   |
+| Health Check        | Wait for service(s) to be ready   | All-pass requirement + per-check status |
+| Circuit Breaker     | Prevent cascade failures          | Failure threshold + recovery timeout    |
 
 ## Instructions
 
@@ -68,12 +68,12 @@ Wait for a condition to become true with bounded timeout.
 1. Define the condition function (returns truthy when ready).
 2. Set timeout and poll interval based on target type. Use `time.monotonic()` for elapsed time measurement -- never `time.time()`, which drifts with clock adjustments.
 
-| Target Type | Min Interval | Typical Interval | Example |
-|-------------|-------------|-----------------|---------|
-| In-process state | 10ms | 50-100ms | Flag, queue, state machine |
-| Local file/socket | 100ms | 500ms | File exists, port open |
-| Local service | 500ms | 1-2s | Database, cache |
-| Remote API | 1s | 5-10s | HTTP endpoint, cloud service |
+| Target Type       | Min Interval | Typical Interval | Example                      |
+| ----------------- | ------------ | ---------------- | ---------------------------- |
+| In-process state  | 10ms         | 50-100ms         | Flag, queue, state machine   |
+| Local file/socket | 100ms        | 500ms            | File exists, port open       |
+| Local service     | 500ms        | 1-2s             | Database, cache              |
+| Remote API        | 1s           | 5-10s            | HTTP endpoint, cloud service |
 
 Never busy-wait (tight loop with no sleep). The minimum poll interval is 10ms for local operations, 100ms for external services. Tighter loops burn CPU, cause thermal throttling, and starve other processes.
 
@@ -97,6 +97,7 @@ raise TimeoutError(f"Timeout waiting for: {description}")
 ### Step 3: Verify Before Proceeding
 
 After implementing any pattern from Steps 2-7, verify:
+
 - Success path works as expected
 - Failure/timeout path produces a descriptive error
 - Logging captures each attempt with failure reason and attempt number
@@ -151,11 +152,11 @@ Wait for services to become healthy before proceeding.
 
 1. Define health checks by type:
 
-| Type | Check | Example |
-|------|-------|---------|
-| TCP | Port accepting connections | `localhost:5432` |
-| HTTP | Endpoint returns 2xx | `http://localhost:8080/health` |
-| Command | Exit code 0 | `pgrep -f 'celery worker'` |
+| Type    | Check                      | Example                        |
+| ------- | -------------------------- | ------------------------------ |
+| TCP     | Port accepting connections | `localhost:5432`               |
+| HTTP    | Endpoint returns 2xx       | `http://localhost:8080/health` |
+| Command | Exit code 0                | `pgrep -f 'celery worker'`     |
 
 2. Set appropriate timeouts (services often need 30-120s to start). Use poll intervals from the target type table in Step 2.
 3. Poll all checks, succeed only when ALL pass. Report status of each check during waiting so the caller can see which service is lagging.
@@ -199,24 +200,30 @@ See `references/implementation-patterns.md` for full `CircuitBreaker` class.
 ## Error Handling
 
 ### Error: "Timeout expired before condition met"
+
 Cause: Condition never became true within timeout window.
 Solution:
+
 1. Verify condition function logic is correct
 2. Increase timeout if operation legitimately needs more time
 3. Add logging inside condition to observe state changes
 4. Check for deadlocks or blocked resources
 
 ### Error: "All retries exhausted"
+
 Cause: Operation failed on every attempt including retries.
 Solution:
+
 1. Distinguish transient from permanent errors in retryable_exceptions
 2. Verify external service is actually reachable
 3. Check if authentication/configuration is correct
 4. Increase max_retries only if error is genuinely transient
 
 ### Error: "Circuit breaker open"
+
 Cause: Failure threshold exceeded, circuit rejecting calls.
 Solution:
+
 1. Investigate why underlying service is failing
 2. Implement fallback behavior for CircuitOpenError
 3. Wait for recovery_timeout to elapse before testing
@@ -226,14 +233,15 @@ Solution:
 
 ### Loading Table
 
-| Task Type | Signal Keywords | Load |
-|-----------|----------------|------|
-| Implementing any pattern | "implement", "add retry", "write polling", "create backoff" | `implementation-patterns.md` |
-| Reviewing existing code | "review", "check for", "find issues", "audit", "detect" | `anti-patterns.md` |
-| Replacing `sleep()` in tests | "sleep", "flaky test", "CI hang", "test timeout" | `anti-patterns.md` |
-| Writing tests for retry/wait code | "test", "pytest", "mock", "verify retry", "unit test" | `testing-patterns.md` |
+| Task Type                         | Signal Keywords                                             | Load                         |
+| --------------------------------- | ----------------------------------------------------------- | ---------------------------- |
+| Implementing any pattern          | "implement", "add retry", "write polling", "create backoff" | `implementation-patterns.md` |
+| Reviewing existing code           | "review", "check for", "find issues", "audit", "detect"     | `anti-patterns.md`           |
+| Replacing `sleep()` in tests      | "sleep", "flaky test", "CI hang", "test timeout"            | `anti-patterns.md`           |
+| Writing tests for retry/wait code | "test", "pytest", "mock", "verify retry", "unit test"       | `testing-patterns.md`        |
 
 ### Reference Files
+
 - `${CLAUDE_SKILL_DIR}/references/implementation-patterns.md`: Complete Python/Bash implementations for all patterns
 - `${CLAUDE_SKILL_DIR}/references/anti-patterns.md`: Detection commands and fixes for common wait/retry mistakes
 - `${CLAUDE_SKILL_DIR}/references/testing-patterns.md`: pytest patterns for testing polling, backoff, and circuit breaker code

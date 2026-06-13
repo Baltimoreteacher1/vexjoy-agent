@@ -1,6 +1,6 @@
 ---
 name: code-cleanup
-description: "Detect stale TODOs, unused imports, and dead code."
+description: "Detect stale TODOs, unused imports, and dead code. Use when the user asks to clean up a file or directory, remove dead/unreachable code, prune unused imports, or surface aging TODO/FIXME comments before a refactor or release."
 user-invocable: false
 argument-hint: "[<path-or-scope>]"
 allowed-tools:
@@ -54,10 +54,12 @@ Scan repositories for 9 categories of technical debt (TODOs, unused imports, dea
 **Goal**: Determine what to scan and verify tooling is available.
 
 **Step 1: Read project context**
+
 - Check for CLAUDE.md, .gitignore, pyproject.toml, go.mod, package.json -- read and follow any repository CLAUDE.md before doing anything else, since it may contain project-specific exclusions or conventions that override defaults
 - Identify primary languages and project structure
 
 **Step 2: Determine scan scope**
+
 - If the user specified a directory or issue type, use that exactly -- only scan for requested issue types or smart defaults, never build elaborate reporting dashboards or speculative features
 - If the user specified only an issue type (e.g., "find unused imports"), scan all source directories for that type only
 - If the request is vague ("clean up code"), ask the user for a target area rather than scanning the entire codebase, because unfocused scans produce overwhelming noise that users cannot act on
@@ -89,19 +91,16 @@ If critical tools are missing, offer to proceed with partial scan using availabl
 Run applicable scans based on language and scope. See `references/scan-commands.md` for full command reference.
 
 **Core scans (all languages)**:
+
 1. **Stale TODOs**: grep for TODO/FIXME/HACK/XXX, then age every match with git blame -- a 180-day-old TODO about a data race is fundamentally different from yesterday's "TODO: add test case", so age-based triage is essential for prioritization
 2. **Unused imports**: ruff (Python), goimports (Go)
 3. **Dead code**: vulture (Python), staticcheck (Go)
 4. **Complexity**: radon (Python), gocyclo (Go)
 
-**Extended scans (if tools available)**:
-5. Missing type hints (Python: ruff --select ANN)
-6. Deprecated function usage (staticcheck, grep for known patterns)
-7. Naming inconsistencies (grep for convention violations)
-8. Duplicate code (pylint --enable=duplicate-code)
-9. Missing docstrings (ruff --select D)
+**Extended scans (if tools available)**: 5. Missing type hints (Python: ruff --select ANN) 6. Deprecated function usage (staticcheck, grep for known patterns) 7. Naming inconsistencies (grep for convention violations) 8. Duplicate code (pylint --enable=duplicate-code) 9. Missing docstrings (ruff --select D)
 
 Collect all output with exact file:line references -- never summarize away specifics, because the user needs precise locations to act on findings. For each scan, record:
+
 - Number of findings
 - Files affected
 - Whether findings are auto-fixable
@@ -116,20 +115,21 @@ If a scan tool is unavailable, note it as skipped and continue with remaining sc
 
 **Step 1: Assign impact and effort**
 
-| Issue Type | Impact | Effort | Priority Score |
-|------------|--------|--------|----------------|
-| Stale TODOs (>90 days) | High | Low | 8 |
-| Unused imports | Medium | Trivial | 10 |
-| Deprecated functions | High | Medium | 6 |
-| High complexity (>20) | High | High | 5 |
-| Dead code | Medium | Low | 7 |
-| Missing type hints | Medium | Medium | 5 |
-| Duplicate code | High | High | 5 |
-| Missing docstrings | Medium | Medium | 5 |
-| Naming inconsistencies | Low | Medium | 3 |
-| Magic numbers | Low | Low | 5 |
+| Issue Type             | Impact | Effort  | Priority Score |
+| ---------------------- | ------ | ------- | -------------- |
+| Stale TODOs (>90 days) | High   | Low     | 8              |
+| Unused imports         | Medium | Trivial | 10             |
+| Deprecated functions   | High   | Medium  | 6              |
+| High complexity (>20)  | High   | High    | 5              |
+| Dead code              | Medium | Low     | 7              |
+| Missing type hints     | Medium | Medium  | 5              |
+| Duplicate code         | High   | High    | 5              |
+| Missing docstrings     | Medium | Medium  | 5              |
+| Naming inconsistencies | Low    | Medium  | 3              |
+| Magic numbers          | Low    | Low     | 5              |
 
 **Step 2: Group into tiers**
+
 - **Quick Wins** (High priority, low effort): Unused imports, stale TODOs, dead code -- present auto-fixable issues first so the user gets immediate value
 - **Important** (High impact, medium+ effort): Deprecated functions, high complexity, duplicates
 - **Polish** (Lower impact): Missing types, docstrings, naming, magic numbers
@@ -138,18 +138,18 @@ If a scan tool is unavailable, note it as skipped and continue with remaining sc
 
 Include time estimates so the user can plan their cleanup budget:
 
-| Issue Type | Time per Instance |
-|------------|-------------------|
-| Unused imports | 1-2 min (auto-fix) |
-| Stale TODOs | 5-15 min each |
-| Dead code removal | 5-10 min each |
-| Magic numbers | 2-5 min each |
-| Missing type hints | 10-20 min per function |
-| Missing docstrings | 5-15 min per function |
-| Naming fixes | 10-30 min per violation |
-| High complexity refactor | 30-120 min per function |
-| Duplicate code elimination | 30-90 min per instance |
-| Deprecated function replacement | 15-60 min per usage |
+| Issue Type                      | Time per Instance       |
+| ------------------------------- | ----------------------- |
+| Unused imports                  | 1-2 min (auto-fix)      |
+| Stale TODOs                     | 5-15 min each           |
+| Dead code removal               | 5-10 min each           |
+| Magic numbers                   | 2-5 min each            |
+| Missing type hints              | 10-20 min per function  |
+| Missing docstrings              | 5-15 min per function   |
+| Naming fixes                    | 10-30 min per violation |
+| High complexity refactor        | 30-120 min per function |
+| Duplicate code elimination      | 30-90 min per instance  |
+| Deprecated function replacement | 15-60 min per usage     |
 
 Multiply by instance count for tier totals.
 
@@ -162,6 +162,7 @@ Multiply by instance count for tier totals.
 This skill defaults to read-only scan and report. Do not modify any files during this phase.
 
 Generate report with this structure:
+
 1. Executive summary (total issues, tier counts, estimated effort)
 2. Quick Wins with auto-fix commands where available
 3. Important issues with specific suggestions
@@ -175,6 +176,7 @@ Print complete report to stdout. Do NOT summarize or truncate findings.
 If the user provided `--output {file}` flag, also write report to the specified file.
 
 For each finding in the report:
+
 - Include exact file:line reference
 - Show 3 lines of surrounding context for quick comprehension
 - Provide specific fix suggestion or auto-fix command
@@ -193,8 +195,10 @@ MUST have explicit user permission before proceeding. Never auto-enter this phas
 **Step 1: Confirm scope with user**
 
 Before applying any fixes, confirm exactly what will be changed:
+
 ```markdown
 Will apply these auto-fixes:
+
 - Remove {N} unused imports across {N} files
 - Sort imports in {N} files
 - Format {N} files
@@ -242,8 +246,10 @@ git diff               # Full diff for review
 ```
 
 Present results:
+
 ```markdown
 ## Fix Results
+
 - Files modified: {N}
 - Imports removed: {N}
 - Tests: PASS ({N} tests)
@@ -255,6 +261,7 @@ Review diff above. Commit when satisfied.
 **Step 5: Handle failures**
 
 If tests fail after auto-fix:
+
 1. Roll back ALL changes immediately: `git checkout .`
 2. Report exactly which test(s) failed and why
 3. Suggest applying fixes incrementally (one file at a time) with testing between each
@@ -268,26 +275,33 @@ Do NOT leave the repository in a broken state.
 ## Error Handling
 
 ### Error: "Required analysis tool not found"
+
 Cause: ruff, vulture, gocyclo, or other tool not installed
 Solution:
+
 1. Report which tools are missing with install commands
 2. Offer to proceed with partial scan using available tools
 3. grep and git blame are always available as fallback
 
 ### Error: "Not a git repository"
+
 Cause: Cannot use git blame for TODO aging
 Solution: Continue scan but mark all TODO ages as "unknown". Warn user that age-based triage is unavailable.
 
 ### Error: "Tests fail after auto-fix"
+
 Cause: Auto-fix changed behavior that tests depend on
 Solution:
+
 1. Roll back all changes immediately: `git checkout .`
 2. Report which fixes caused failures
 3. Suggest applying fixes file-by-file with incremental testing
 
 ### Error: "Permission denied modifying files"
+
 Cause: Files are read-only, locked, or user did not grant write permission
 Solution:
+
 1. Do NOT attempt to bypass permissions
 2. Report which files could not be modified and why
 3. Provide the fix commands so user can run them manually
@@ -297,6 +311,7 @@ Solution:
 ## References
 
 ### Reference Files
+
 - `${CLAUDE_SKILL_DIR}/references/scan-commands.md`: Language-specific scan commands and expected output
 - `${CLAUDE_SKILL_DIR}/references/report-template.md`: Full structured report template
 - `${CLAUDE_SKILL_DIR}/references/tools.md`: Tool installation, versions, and capabilities

@@ -1,6 +1,6 @@
 ---
 name: integration-checker
-description: "Verify cross-component wiring and data flow."
+description: "Verify cross-component wiring and data flow. Use after adding or changing a component to confirm it is actually wired into the system end-to-end (imports, registration, routes, config, callers) and that data flows through, not just that the code compiles."
 user-invocable: false
 command: /integration-checker
 allowed-tools:
@@ -45,6 +45,7 @@ This is a read-only analysis skill -- it reads and reports but does not fix wiri
 **Step 2: Detect execution context**
 
 Determine if running within the feature pipeline or standalone:
+
 - **Pipeline**: Check for `.feature/state/implement/` artifact. If present, load it to understand what was built and scope the check to changed/added files. Scoping to changed files prevents wasting time analyzing unchanged code in large repositories.
 - **Standalone**: Scope to the current working directory or user-specified path. Analyze all source files.
 
@@ -79,6 +80,7 @@ Record each export as: `{file, name, kind (function/type/const/var), line}`.
 **Step 2: Discover imports and usages**
 
 For each export found, search the codebase for:
+
 1. **Import**: The symbol is imported (appears in an import statement referencing the exporting module)
 2. **Usage**: The imported symbol is actually used (called, referenced, assigned, passed as argument) beyond the import statement itself
 
@@ -148,6 +150,7 @@ If running within the feature pipeline and a task plan exists in `.feature/state
 # Integration Check Report
 
 ## Summary
+
 - Components checked: [N]
 - WIRED: [N]
 - IMPORTED_NOT_USED: [N]
@@ -163,18 +166,23 @@ WARN: No ORPHANED, but has IMPORTED_NOT_USED or low-confidence contract findings
 FAIL: Has ORPHANED components, data flow issues, or high-confidence contract mismatches
 
 ## Export/Import Map
+
 [From Phase 1 — only issues, unless verbose mode]
 
 ## Data Flow Issues
+
 [From Phase 2 — data flow findings]
 
 ## Contract Mismatches
+
 [From Phase 2 — contract findings with confidence level]
 
 ## Requirements Integration Map
+
 [From Step 1 — if in pipeline mode]
 
 ## Recommended Actions
+
 1. [Specific action for each ORPHANED component]
 2. [Specific action for each IMPORTED_NOT_USED]
 3. [Specific action for each data flow issue]
@@ -185,11 +193,11 @@ Only fail the verdict on high-confidence contract mismatches. Low-confidence fin
 
 **Step 3: Verdict and next steps**
 
-| Verdict | Next Step |
-|---------|-----------|
-| **PASS** | Proceed to /feature-lifecycle (validate phase) |
+| Verdict  | Next Step                                                                                                         |
+| -------- | ----------------------------------------------------------------------------------------------------------------- |
+| **PASS** | Proceed to /feature-lifecycle (validate phase)                                                                    |
 | **WARN** | Review warnings. Proceed if warnings are intentional (unused imports for future use, etc.). Fix if unintentional. |
-| **FAIL** | Route back to /feature-lifecycle (implement phase) with specific wiring tasks. Do NOT proceed to validation. |
+| **FAIL** | Route back to /feature-lifecycle (implement phase) with specific wiring tasks. Do NOT proceed to validation.      |
 
 **Gate**: Report produced with verdict and actionable recommendations.
 
@@ -197,14 +205,14 @@ Only fail the verdict on high-confidence contract mismatches. Low-confidence fin
 
 ## Error Handling
 
-| Error | Cause | Solution |
-|-------|-------|----------|
-| No source files found | Wrong scope path or empty project | Verify working directory, check scope parameter |
-| Language not detected | No recognizable build files or source extensions | Specify language manually or check project structure |
-| Too many exports to analyze | Large monorepo or library with thousands of exports | Narrow scope to changed files (use `git diff --name-only` against base branch) |
-| False positive ORPHANED | Library code, plugin interfaces, or entry points | Check exclusion patterns. If legitimate public API, add to exclusions. |
-| Circular import detected | Python circular imports or Go import cycles | Report as separate finding -- circular imports are integration issues themselves |
-| No implementation artifact | Running in pipeline mode but implement phase didn't checkpoint | Fall back to standalone mode using git diff to identify changed files |
+| Error                       | Cause                                                          | Solution                                                                         |
+| --------------------------- | -------------------------------------------------------------- | -------------------------------------------------------------------------------- |
+| No source files found       | Wrong scope path or empty project                              | Verify working directory, check scope parameter                                  |
+| Language not detected       | No recognizable build files or source extensions               | Specify language manually or check project structure                             |
+| Too many exports to analyze | Large monorepo or library with thousands of exports            | Narrow scope to changed files (use `git diff --name-only` against base branch)   |
+| False positive ORPHANED     | Library code, plugin interfaces, or entry points               | Check exclusion patterns. If legitimate public API, add to exclusions.           |
+| Circular import detected    | Python circular imports or Go import cycles                    | Report as separate finding -- circular imports are integration issues themselves |
+| No implementation artifact  | Running in pipeline mode but implement phase didn't checkpoint | Fall back to standalone mode using git diff to identify changed files            |
 
 ## References
 

@@ -1,6 +1,6 @@
 ---
 name: forensics
-description: "Post-mortem diagnostic analysis of failed workflows."
+description: "Post-mortem diagnostic analysis of failed workflows. Use when a pipeline, agent run, or multi-step workflow has failed and the user wants a root-cause post-mortem from logs and artifacts rather than a quick retry."
 user-invocable: false
 command: /forensics
 allowed-tools:
@@ -45,6 +45,7 @@ This is a **read-only diagnostic**. The tool restriction to Read/Grep/Glob enfor
 **Step 1: Identify the investigation target**
 
 Accept the target from one of these sources (in priority order):
+
 1. **Explicit branch**: User specifies a branch name to investigate
 2. **Current branch**: Use the current git branch if no branch specified
 3. **Explicit plan**: User points to a specific `task_plan.md`
@@ -54,6 +55,7 @@ Before analysis, read the repository's CLAUDE.md if present. Repository conventi
 **Step 2: Locate the plan file**
 
 Search for the plan that governed the workflow:
+
 - Check `task_plan.md` in the repository root
 - Check `.feature/state/plan/` for feature plans
 - Check `plan/active/` for workflow-orchestrator plans
@@ -63,10 +65,12 @@ Record whether a plan exists. If no plan is found, note this -- it limits scope 
 **Step 3: Collect git history**
 
 Read the git log for the target branch. Extract:
+
 - Commit hashes, messages, timestamps, and files changed
 - The branch's divergence point from main/master
 
 Use Grep to search git log output for patterns. Focus on:
+
 - Commits on this branch since divergence from the base branch
 - File change frequency across commits
 - Commit message patterns (similarity, repetition)
@@ -76,6 +80,7 @@ If the branch has hundreds of commits, focus on the most recent 50 and note the 
 **Step 4: Check working tree state**
 
 Examine the current state:
+
 - Are there uncommitted changes? (look for modified/untracked indicators)
 - Are there orphaned `.claude/worktrees/` directories?
 - Is there an active `task_plan.md` with incomplete phases?
@@ -103,6 +108,7 @@ Run detectors 1-5 in order: Stuck Loop, Missing Artifacts, Abandoned Work, Scope
 **Step 1: Scrub sensitive content**
 
 Before assembling the report, scan all evidence strings for:
+
 - API keys, tokens, passwords (patterns: `sk-`, `ghp_`, `token=`, `password=`, `secret=`, `key=`, bearer tokens, base64-encoded credentials)
 - Absolute home directory paths
 
@@ -123,6 +129,7 @@ Order findings by confidence (High first, then by detector number) so the reader
 ```
 
 If no anomalies detected:
+
 ```
 ### Anomalies Detected
 No anomalies detected. The workflow appears to have executed normally.
@@ -131,11 +138,13 @@ No anomalies detected. The workflow appears to have executed normally.
 **Step 3: Synthesize root cause hypothesis**
 
 Connect the anomalies into a coherent narrative. Look for causal chains:
+
 - Stuck loop + scope drift = agent tried to fix a problem, drifted into unrelated files looking for the root cause
 - Missing artifacts + abandoned work = session crashed before producing outputs
 - Crash/interruption + stuck loop = agent exhausted retries and was terminated
 
 The hypothesis must be specific, testable, and grounded in evidence from the anomaly findings -- never speculate beyond what the data supports:
+
 - BAD: "Something went wrong during execution"
 - GOOD: "Agent entered a lint fix loop on server.go (4 consecutive commits with 'fix lint' messages), which consumed the session's context budget before Phase 3 VERIFY could execute, leaving test artifacts missing"
 
@@ -143,13 +152,13 @@ The hypothesis must be specific, testable, and grounded in evidence from the ano
 
 Provide specific, actionable recommendations. Each recommendation should reference the anomaly it addresses. Remediation is advisory text only -- never execute fixes, even if the user asks. Remediation requires understanding intent, not just detecting anomalies.
 
-| Anomaly Type | Typical Remediation |
-|--------------|-------------------|
-| Stuck loop | Identify the root cause of the loop (often a lint/type error the agent can't resolve). Fix manually, then resume from the last successful phase. |
-| Missing artifacts | Re-run the phase that failed to produce artifacts. Check if the phase definition is clear enough for the executor. |
-| Abandoned work | Resume from the last completed phase. Check `.debug-session.md` or plan status for where to pick up. |
-| Scope drift | Review out-of-scope changes for necessity. Revert unrelated changes. Re-scope the plan if the drift was needed. |
-| Crash/interruption | Check for uncommitted changes worth preserving. Clean up orphaned worktrees. Resume from last committed state. |
+| Anomaly Type       | Typical Remediation                                                                                                                              |
+| ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Stuck loop         | Identify the root cause of the loop (often a lint/type error the agent can't resolve). Fix manually, then resume from the last successful phase. |
+| Missing artifacts  | Re-run the phase that failed to produce artifacts. Check if the phase definition is clear enough for the executor.                               |
+| Abandoned work     | Resume from the last completed phase. Check `.debug-session.md` or plan status for where to pick up.                                             |
+| Scope drift        | Review out-of-scope changes for necessity. Revert unrelated changes. Re-scope the plan if the drift was needed.                                  |
+| Crash/interruption | Check for uncommitted changes worth preserving. Clean up orphaned worktrees. Resume from last committed state.                                   |
 
 **Step 5: Format final report**
 
@@ -202,13 +211,13 @@ Include relevant git log excerpts, file snippets, and timestamps as evidence for
 
 ## Error Handling
 
-| Error | Cause | Solution |
-|-------|-------|----------|
-| No git history on branch | Branch has zero commits or just forked | Report "insufficient evidence" -- forensics needs commit history to analyze |
-| No plan file found | Workflow ran without a plan | Note limitation in report. Detectors 2 (missing artifacts), 3 (abandoned work), and 4 (scope drift) operate in degraded mode or skip. Detectors 1 (stuck loop) and 5 (crash) still function. |
-| Worktree access fails | Orphaned worktree with broken symlinks | Report the orphaned worktree as crash/interruption evidence. Do not attempt cleanup. |
-| Git log too large | Long-lived branch with hundreds of commits | Focus analysis on the most recent 50 commits. Note truncation in report. |
-| Ambiguous branch target | User request doesn't clearly identify which branch | Ask: "Which branch should I investigate? Current branch is [X]." |
+| Error                    | Cause                                              | Solution                                                                                                                                                                                     |
+| ------------------------ | -------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| No git history on branch | Branch has zero commits or just forked             | Report "insufficient evidence" -- forensics needs commit history to analyze                                                                                                                  |
+| No plan file found       | Workflow ran without a plan                        | Note limitation in report. Detectors 2 (missing artifacts), 3 (abandoned work), and 4 (scope drift) operate in degraded mode or skip. Detectors 1 (stuck loop) and 5 (crash) still function. |
+| Worktree access fails    | Orphaned worktree with broken symlinks             | Report the orphaned worktree as crash/interruption evidence. Do not attempt cleanup.                                                                                                         |
+| Git log too large        | Long-lived branch with hundreds of commits         | Focus analysis on the most recent 50 commits. Note truncation in report.                                                                                                                     |
+| Ambiguous branch target  | User request doesn't clearly identify which branch | Ask: "Which branch should I investigate? Current branch is [X]."                                                                                                                             |
 
 ## References
 

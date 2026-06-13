@@ -1,10 +1,18 @@
+---
+description: "Extract programming rules and coding conventions from a GitHub user's public profile (repos + PR reviews) via API, then synthesize, validate, and output CLAUDE.md-ready rules."
+argument-hint: "<github-username>"
+---
+
 # GitHub Profile Rules Pipeline
 
 ## Domain
+
 `github-profile-rules` — extract programming rules and coding conventions from a GitHub user's public profile via API.
 
 ## Agent
+
 `github-profile-rules-engineer` (new)
+
 - Triggers: github rules, profile analysis, coding style extraction, github conventions, programming rules
 - Category: meta
 - Complexity: Medium
@@ -12,30 +20,35 @@
 ## Skills
 
 ### github-profile-rules (main orchestration)
+
 - Triggers: github rules, profile analysis, coding style extraction, github conventions, programming rules extraction
 - 7-phase pipeline: PROFILE SCAN -> CODE ANALYSIS -> REVIEW MINING -> PATTERN SYNTHESIS -> RULES GENERATION -> VALIDATION -> OUTPUT
 - User-invocable: yes
 
 ### Subdomain Skills
-| Skill | Triggers | Task Type |
-|-------|----------|-----------|
-| github-profile-rules-repo-analysis | github repo analysis, code pattern extraction, api repo scanning | analysis |
-| github-profile-rules-pr-review | pr review mining, review pattern analysis, developer preference extraction | analysis |
-| github-profile-rules-synthesis | rules compilation, pattern deduplication, confidence scoring | analysis |
-| github-profile-rules-validation | rules validation, contradiction detection, rule quality check | analysis |
+
+| Skill                              | Triggers                                                                   | Task Type |
+| ---------------------------------- | -------------------------------------------------------------------------- | --------- |
+| github-profile-rules-repo-analysis | github repo analysis, code pattern extraction, api repo scanning           | analysis  |
+| github-profile-rules-pr-review     | pr review mining, review pattern analysis, developer preference extraction | analysis  |
+| github-profile-rules-synthesis     | rules compilation, pattern deduplication, confidence scoring               | analysis  |
+| github-profile-rules-validation    | rules validation, contradiction detection, rule quality check              | analysis  |
 
 ## Scripts
-| Script | Purpose |
-|--------|---------|
-| `scripts/github-api-fetcher.py` | GitHub REST API client: repos, file contents, PR reviews |
-| `scripts/rules-compiler.py` | Deduplication, confidence scoring, markdown/JSON formatting |
+
+| Script                          | Purpose                                                     |
+| ------------------------------- | ----------------------------------------------------------- |
+| `scripts/github-api-fetcher.py` | GitHub REST API client: repos, file contents, PR reviews    |
+| `scripts/rules-compiler.py`     | Deduplication, confidence scoring, markdown/JSON formatting |
 
 ## Reference Files
-| File | Location |
-|------|----------|
+
+| File                 | Location                                                      |
+| -------------------- | ------------------------------------------------------------- |
 | `rule-categories.md` | `skills/workflow/references/github-profile-rules/references/` |
 
 ## Component Graph
+
 ```
 github-profile-rules-engineer (agent)
   ├── github-profile-rules (main skill)
@@ -49,6 +62,7 @@ github-profile-rules-engineer (agent)
 ```
 
 ## Usage
+
 ```
 /do extract programming rules from github user {username}
 /do analyze coding style of github profile {username}

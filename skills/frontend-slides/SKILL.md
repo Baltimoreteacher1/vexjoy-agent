@@ -1,6 +1,6 @@
 ---
 name: frontend-slides
-description: "Browser-based HTML presentation generation."
+description: "Browser-based HTML presentation generation. Use when the user wants to build a slide deck or presentation that runs in the browser as self-contained HTML/CSS/JS (reveal.js-style), rather than a PowerPoint or PDF."
 user-invocable: false
 agent: typescript-frontend-engineer
 model: sonnet
@@ -45,11 +45,11 @@ Generate browser-based HTML presentations as a single self-contained `.html` fil
 
 Identify which of the three paths applies:
 
-| Path | Signal | Action |
-|------|--------|--------|
-| **New build** | User provides topic, outline, or notes -- no existing file | Proceed to Phase 2 to gather content |
-| **PPTX conversion** | User provides a `.pptx` file path | Extract with `python-pptx`; collect slides, notes, and asset order; then proceed to Phase 3 |
-| **HTML enhancement** | User provides an existing `.html` deck | Read the file; identify what needs improving; skip to Phase 4 |
+| Path                 | Signal                                                     | Action                                                                                      |
+| -------------------- | ---------------------------------------------------------- | ------------------------------------------------------------------------------------------- |
+| **New build**        | User provides topic, outline, or notes -- no existing file | Proceed to Phase 2 to gather content                                                        |
+| **PPTX conversion**  | User provides a `.pptx` file path                          | Extract with `python-pptx`; collect slides, notes, and asset order; then proceed to Phase 3 |
+| **HTML enhancement** | User provides an existing `.html` deck                     | Read the file; identify what needs improving; skip to Phase 4                               |
 
 **GATE 1**: Do not proceed without identifying the path. If the input is ambiguous (e.g., "make me a deck" with no file and no topic), ask one question to resolve it.
 
@@ -113,6 +113,7 @@ Build the presentation as a single `.html` file with all CSS and JS inline (no e
 9. **PPTX path**: If converting from PPTX, use `python-pptx` to extract text, notes, and asset paths. Preserve slide notes and maintain asset order. If `python-pptx` is unavailable, print a clear error and ask the user to install it (`pip install python-pptx`) or provide content manually -- do not silently skip content.
 
 **Optional features** (off by default, add only when user requests):
+
 - Speaker notes panel toggled by `n` key
 - `@media print` CSS for PDF-via-browser export
 - Configurable countdown timer overlay
@@ -130,6 +131,7 @@ python3 skills/frontend-slides/scripts/validate-slides.py path/to/output.html
 ```
 
 **Exit codes**:
+
 - `0` -- All slides pass at all 9 breakpoints. Proceed to Phase 6.
 - `1` -- Overflow detected. The script prints which slides overflow at which breakpoints. Fix by splitting the overflowing slides. Re-run validation. Do not proceed until exit code is 0. Content that fits at 1920x1080 but overflows at 375x667 still fails -- `clamp()` sizing solves most cases; if not, split the slide.
 - `2` -- Playwright unavailable. Fall back to the manual checklist gate below. Tell the user validation is running in manual mode and is less reliable.
@@ -152,6 +154,7 @@ For every slide, verify all of the following. If any item fails, fix it before p
 ### Phase 6: DELIVER
 
 1. Delete `.design/slide-previews/` unless the user explicitly asked to keep them:
+
    ```bash
    rm -rf .design/slide-previews/
    ```
@@ -173,18 +176,18 @@ For every slide, verify all of the following. If any item fails, fix it before p
 
 ## Error Handling
 
-| Error | Cause | Resolution |
-|-------|-------|------------|
-| `-clamp(...)` in CSS | CSS negation of `clamp()` is silently ignored by browsers -- it computes to `0` | Replace every instance with `calc(-1 * clamp(...))`. Run a grep search for `-clamp` before delivery. |
-| Font load failure / FOUT | External font CDN unreachable, or `@font-face` src missing `format()` hint | Use `font-display: swap` on every `@font-face`. Include a system font stack fallback. Test offline. |
-| PPTX extraction error | `python-pptx` unavailable, or PPTX uses embedded OLE objects | Print a clear error message naming the missing dependency. Ask the user to `pip install python-pptx` or provide content manually. Do not silently skip slides. |
-| Playwright unavailable (exit 2) | `playwright` not installed or Chromium browser not available | Fall back to the manual checklist gate in Phase 5. Explicitly tell the user validation is running in manual mode and is less reliable. |
-| Overflow at one breakpoint only | Content fits at 1920x1080 but overflows at 375x667 | `clamp()` sizing solves most cases. If not, split the slide. Never set a smaller viewport as "not important." |
-| Reveal animations not triggering | Intersection Observer threshold too high, or slides hidden with `display:none` | Use `display: flex` with `opacity: 0` + `transform` for hidden slides. Never use `display: none` on slides that need IO callbacks. |
-| JS controller not advancing | `wheel` event not debounced, causing multi-slide jumps | Enforce 150ms debounce on wheel. Add a `navigating` flag that blocks re-entry during transition. |
+| Error                            | Cause                                                                           | Resolution                                                                                                                                                     |
+| -------------------------------- | ------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `-clamp(...)` in CSS             | CSS negation of `clamp()` is silently ignored by browsers -- it computes to `0` | Replace every instance with `calc(-1 * clamp(...))`. Run a grep search for `-clamp` before delivery.                                                           |
+| Font load failure / FOUT         | External font CDN unreachable, or `@font-face` src missing `format()` hint      | Use `font-display: swap` on every `@font-face`. Include a system font stack fallback. Test offline.                                                            |
+| PPTX extraction error            | `python-pptx` unavailable, or PPTX uses embedded OLE objects                    | Print a clear error message naming the missing dependency. Ask the user to `pip install python-pptx` or provide content manually. Do not silently skip slides. |
+| Playwright unavailable (exit 2)  | `playwright` not installed or Chromium browser not available                    | Fall back to the manual checklist gate in Phase 5. Explicitly tell the user validation is running in manual mode and is less reliable.                         |
+| Overflow at one breakpoint only  | Content fits at 1920x1080 but overflows at 375x667                              | `clamp()` sizing solves most cases. If not, split the slide. Never set a smaller viewport as "not important."                                                  |
+| Reveal animations not triggering | Intersection Observer threshold too high, or slides hidden with `display:none`  | Use `display: flex` with `opacity: 0` + `transform` for hidden slides. Never use `display: none` on slides that need IO callbacks.                             |
+| JS controller not advancing      | `wheel` event not debounced, causing multi-slide jumps                          | Enforce 150ms debounce on wheel. Add a `navigating` flag that blocks re-entry during transition.                                                               |
 
 ## References
 
-| File | Load At | Contains |
-|------|---------|----------|
+| File                                                 | Load At                                      | Contains                                                                                                                              |
+| ---------------------------------------------------- | -------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
 | `skills/frontend-slides/references/STYLE_PRESETS.md` | Phase 3 (DISCOVER STYLE) and Phase 4 (BUILD) | Mandatory CSS base block, 12 named presets, mood mapping, animation feel mapping, CSS gotchas, density limits, validation breakpoints |

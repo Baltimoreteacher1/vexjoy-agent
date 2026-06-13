@@ -47,7 +47,7 @@ python3 ~/.claude/skills/routing-table-updater/scripts/scan.py --repo $HOME/clau
 
 **Step 2: Validate scan output**
 
-Expected output is JSON with `skills_found`, `agents_found`, `skills` (array of paths to skills/*/SKILL.md), `agents` (array of paths to agents/*.md).
+Expected output is JSON with `skills_found`, `agents_found`, `skills` (array of paths to skills/_/SKILL.md), `agents` (array of paths to agents/_.md).
 
 **Step 3: Check for gaps**
 
@@ -150,7 +150,7 @@ The script validates pipe alignment, header separator rows, consistent column co
 **Step 1: Run update script with backup**
 
 ```bash
-python3 ~/.claude/skills/routing-table-updater/scripts/update_commands.py --commands-dir $HOME/claude-code-toolkit/commands --metadata metadata.json --backup
+python3 ~/.claude/skills/routing-table-updater/scripts/update_routing.py --input routing_entries.json --target $HOME/claude-code-toolkit/commands/do.md --backup
 ```
 
 **Step 2: Understand the update process**
@@ -212,6 +212,7 @@ This skill is typically invoked after other creation skills complete:
 - **After pipeline-scaffolder Phase 3**: N skills created for a domain, all need routing (batch mode)
 
 Invocation by other skills:
+
 ```
 skill: routing-table-updater
 ```

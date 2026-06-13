@@ -51,6 +51,7 @@ This skill identifies and fixes common testing mistakes across unit, integration
 **Step 1: Locate test files**
 
 Use Grep/Glob to find test files in the relevant area. If user pointed to specific files, start there. Common patterns:
+
 - Go: `*_test.go`
 - Python: `test_*.py` or `*_test.py`
 - JavaScript/TypeScript: `*.test.ts`, `*.spec.ts`, `*.test.js`, `*.spec.js`
@@ -63,18 +64,18 @@ Check for project-specific testing conventions before flagging quality issues. S
 
 For each test file, scan for these 10 categories (detailed examples in `references/anti-pattern-catalog.md`):
 
-| # | Pattern to Fix | Detection Signal |
-|---|-------------|-----------------|
-| 1 | Testing implementation details | Asserts on private fields, internal regex, spy on private methods |
-| 2 | Over-mocking / brittle selectors | Mock setup > 50% of test code, CSS nth-child selectors |
-| 3 | Order-dependent tests | Shared mutable state, class-level variables, numbered test names |
-| 4 | Incomplete assertions | `!= nil`, `> 0`, `toBeTruthy()`, no value checks |
-| 5 | Over-specification | Exact timestamps, hardcoded IDs, asserting every default field |
-| 6 | Ignored failures | `@skip`, `.skip`, `xit`, empty catch blocks, `_ = err` |
-| 7 | Poor naming | `testFunc2`, `test_new`, `it('works')`, `it('handles case')` |
-| 8 | Missing edge cases | Only happy path, no empty/null/boundary/error tests |
-| 9 | Slow test suites | Full DB reset per test, no parallelization, no fixture sharing |
-| 10 | Flaky tests | `sleep()`, `time.Sleep()`, `setTimeout()`, unsynchronized goroutines |
+| #   | Pattern to Fix                   | Detection Signal                                                     |
+| --- | -------------------------------- | -------------------------------------------------------------------- |
+| 1   | Testing implementation details   | Asserts on private fields, internal regex, spy on private methods    |
+| 2   | Over-mocking / brittle selectors | Mock setup > 50% of test code, CSS nth-child selectors               |
+| 3   | Order-dependent tests            | Shared mutable state, class-level variables, numbered test names     |
+| 4   | Incomplete assertions            | `!= nil`, `> 0`, `toBeTruthy()`, no value checks                     |
+| 5   | Over-specification               | Exact timestamps, hardcoded IDs, asserting every default field       |
+| 6   | Ignored failures                 | `@skip`, `.skip`, `xit`, empty catch blocks, `_ = err`               |
+| 7   | Poor naming                      | `testFunc2`, `test_new`, `it('works')`, `it('handles case')`         |
+| 8   | Missing edge cases               | Only happy path, no empty/null/boundary/error tests                  |
+| 9   | Slow test suites                 | Full DB reset per test, no parallelization, no fixture sharing       |
+| 10  | Flaky tests                      | `sleep()`, `time.Sleep()`, `setTimeout()`, unsynchronized goroutines |
 
 **Step 4: Document findings**
 
@@ -82,6 +83,7 @@ For each test file, scan for these 10 categories (detailed examples in `referenc
 ## Pattern Quality Report
 
 ### [File:Line] - [Pattern Name]
+
 - **Severity**: HIGH / MEDIUM / LOW
 - **Issue**: [What is wrong]
 - **Impact**: [Flaky / slow / false-confidence / maintenance burden]
@@ -94,6 +96,7 @@ For each test file, scan for these 10 categories (detailed examples in `referenc
 **Goal**: Rank findings by impact to fix the most damaging patterns first.
 
 **Priority order:**
+
 1. **HIGH** - Flaky tests, order-dependent tests, ignored failures (erode trust in suite)
 2. **MEDIUM** - Over-mocking, incomplete assertions, missing edge cases (false confidence)
 3. **LOW** - Poor naming, over-specification, slow suites (maintenance burden)
@@ -132,6 +135,7 @@ Priority: [HIGH/MEDIUM/LOW]
 **Constraint: Show real examples.** Point to actual code when identifying quality issues, not abstract descriptions. Check for rationalization — if a test breaks during refactoring, that test was relying on buggy behavior. Investigate and fix the root cause, investigate and fix the root cause.
 
 **Constraint: Guide toward behavior testing.** Always recommend testing observable behavior, not implementation internals. For example:
+
 - ISSUE: Test asserts on private fields → FIX: Test the public behavior that those fields enable
 - ISSUE: Test spies on `_getUser()` → FIX: Test what happens when a user exists or doesn't exist
 - ISSUE: Test checks exact regex → FIX: Test that validation succeeds/fails for representative inputs
@@ -153,11 +157,13 @@ Change only what is needed to fix the anti-pattern. Consult `references/fix-stra
 **Step 1**: Run full test suite — all pass
 
 **Step 2**: Verify previously-flaky tests are now deterministic (run 3x if applicable)
+
 - Go: `go test -count=3 -run TestFixed ./...`
 - Python: `pytest --count=3 tests/test_fixed.py`
 - JS: Run test file 3 times sequentially
 
 **Step 3**: Confirm no test was accidentally deleted or skipped
+
 - Compare test count before and after fixes
 - Search for any new `@skip` or `.skip` annotations introduced
 
@@ -165,6 +171,7 @@ Change only what is needed to fix the anti-pattern. Consult `references/fix-stra
 
 ```markdown
 ## Fix Summary
+
 Anti-patterns fixed: [count]
 Files modified: [list]
 Tests affected: [count]
@@ -197,7 +204,7 @@ See `references/quick-reference.md` for the quick reference table, red flags dur
 - `${CLAUDE_SKILL_DIR}/references/quality-catalog.md`: Detailed descriptions of all 10 anti-patterns
 - `${CLAUDE_SKILL_DIR}/references/error-handling.md`: Ambiguous patterns and large-scale cleanup guidance
 - `${CLAUDE_SKILL_DIR}/references/quick-reference.md`: Quick reference table, red flags, TDD relationship
-- `${CLAUDE_SKILL_DIR}/references/pattern-catalog.md`: Detailed code examples for all 10 anti-patterns (Go, Python, JavaScript)
+- `${CLAUDE_SKILL_DIR}/references/anti-pattern-catalog.md`: Detailed code examples for all 10 anti-patterns (Go, Python, JavaScript)
 - `${CLAUDE_SKILL_DIR}/references/fix-strategies.md`: Language-specific fix patterns and tooling
 - `${CLAUDE_SKILL_DIR}/references/blind-spot-taxonomy.md`: 6-category taxonomy of what high-coverage test suites commonly miss (concurrency, state, boundaries, security, integration, resilience)
 - `${CLAUDE_SKILL_DIR}/references/load-test-scenarios.md`: 6 load test scenario types (smoke, load, stress, spike, soak, breakpoint) with configurations and critical endpoint priorities

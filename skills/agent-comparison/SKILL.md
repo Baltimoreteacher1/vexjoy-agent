@@ -1,6 +1,6 @@
 ---
 name: agent-comparison
-description: "A/B test agent variants for quality and token cost."
+description: "A/B test agent variants for quality and token cost. Use when comparing two or more versions of an agent or prompt on the same task to decide which one produces better output at lower token cost."
 user-invocable: false
 allowed-tools:
   - Read
@@ -37,20 +37,22 @@ Read and follow the repository CLAUDE.md before starting any execution.
 
 **Step 1: Analyze original agent**
 
-```bash
+````bash
 wc -l agents/{original-agent}.md
 grep "^## " agents/{original-agent}.md
 grep -c '```' agents/{original-agent}.md
-```
+````
 
 **Step 2: Create or validate compact variant**
 
 If creating a compact variant, preserve:
+
 - YAML frontmatter (name, description, routing)
 - Core patterns and principles
 - Error handling philosophy
 
 Remove or condense:
+
 - Lengthy code examples (keep 1-2 representative per pattern)
 - Verbose explanations (condense to bullet points)
 - Redundant instructions and changelogs
@@ -106,6 +108,7 @@ Run in parallel to avoid caching effects or system load variance skewing results
 Use production-style problems that require concurrency, error handling, edge case anticipation — these are where quality differences emerge because simple tasks mask differences in edge case handling. See `references/benchmark-tasks.md` for standard tasks.
 
 Recommended complex tasks:
+
 - **Worker Pool**: Rate limiting, graceful shutdown, panic recovery
 - **LRU Cache with TTL**: Generics, background goroutines, zero-value semantics
 - **HTTP Service**: Middleware chains, structured errors, health checks
@@ -114,15 +117,15 @@ Recommended complex tasks:
 
 Record immediately after each agent completes — delayed recording loses precision. Track input/output token counts per turn where visible, since total session cost (not just prompt size) is what matters.
 
-| Metric | Full Agent | Compact Agent |
-|--------|------------|---------------|
-| Tests pass | X/X | X/X |
-| Race conditions | X | X |
-| Code lines (main) | X | X |
-| Test lines | X | X |
-| Session tokens | X | X |
-| Wall-clock time | Xm Xs | Xm Xs |
-| Retry cycles | X | X |
+| Metric            | Full Agent | Compact Agent |
+| ----------------- | ---------- | ------------- |
+| Tests pass        | X/X        | X/X           |
+| Race conditions   | X          | X             |
+| Code lines (main) | X          | X             |
+| Test lines        | X          | X             |
+| Session tokens    | X          | X             |
+| Wall-clock time   | Xm Xs      | Xm Xs         |
+| Retry cycles      | X          | X             |
 
 **Step 4: Run tests with race detector**
 
@@ -143,13 +146,13 @@ Use `-count=1` to disable test caching. All generated code must pass the same te
 
 Define criteria before seeing results to prevent bias — inventing criteria after seeing one agent's output skews the comparison. See `references/grading-rubric.md` for standard rubrics.
 
-| Criterion | 5/5 | 3/5 | 1/5 |
-|-----------|-----|-----|-----|
-| Correctness | All tests pass, no race conditions | Some failures | Broken |
-| Error Handling | Comprehensive, production-ready | Adequate | None |
-| Idioms | Exemplary for the language | Acceptable | Anti-patterns |
-| Documentation | Thorough | Adequate | None |
-| Testing | Comprehensive coverage | Basic | Minimal |
+| Criterion      | 5/5                                | 3/5           | 1/5           |
+| -------------- | ---------------------------------- | ------------- | ------------- |
+| Correctness    | All tests pass, no race conditions | Some failures | Broken        |
+| Error Handling | Comprehensive, production-ready    | Adequate      | None          |
+| Idioms         | Exemplary for the language         | Acceptable    | Anti-patterns |
+| Documentation  | Thorough                           | Adequate      | None          |
+| Testing        | Comprehensive coverage             | Basic         | Minimal       |
 
 **Step 2: Score each solution independently**
 
@@ -158,14 +161,14 @@ Grade each agent's code on all five criteria. Score one agent completely before 
 ```markdown
 ## {Agent} Solution - {Task}
 
-| Criterion | Score | Notes |
-|-----------|-------|-------|
-| Correctness | X/5 | |
-| Error Handling | X/5 | |
-| Idioms | X/5 | |
-| Documentation | X/5 | |
-| Testing | X/5 | |
-| **Total** | **X/25** | |
+| Criterion      | Score    | Notes |
+| -------------- | -------- | ----- |
+| Correctness    | X/5      |       |
+| Error Handling | X/5      |       |
+| Idioms         | X/5      |       |
+| Documentation  | X/5      |       |
+| Testing        | X/5      |       |
+| **Total**      | **X/25** |       |
 ```
 
 **Step 3: Document specific bugs with production impact**
@@ -174,6 +177,7 @@ For each bug found, record:
 
 ```markdown
 ### Bug: {description}
+
 - Agent: {which agent}
 - What happened: {behavior}
 - Correct behavior: {expected}
@@ -200,6 +204,7 @@ An agent using 194k tokens with 0 bugs has better economics than one using 119k 
 **Step 1: Generate comparison report**
 
 Use the report template from `references/report-template.md`. Include:
+
 - Executive summary with clear winner per metric
 - Per-task results with metrics tables
 - Token economics analysis (one-time prompt cost vs session cost)
@@ -216,16 +221,17 @@ python3 ${CLAUDE_SKILL_DIR}/scripts/compare.py benchmark/{task-name}/
 
 The key economic insight: agent prompts are a one-time cost per session. Everything after — reasoning, code generation, debugging, retries — costs tokens on every turn. When a micro agent produces correct code, it uses approximately the same total tokens. The savings appear only when it cuts corners.
 
-| Pattern | Description |
-|---------|-------------|
-| Large agent, low churn | High initial cost, fewer retries, less debugging |
-| Small agent, high churn | Low initial cost, more retries, more debugging |
+| Pattern                 | Description                                      |
+| ----------------------- | ------------------------------------------------ |
+| Large agent, low churn  | High initial cost, fewer retries, less debugging |
+| Small agent, high churn | Low initial cost, more retries, more debugging   |
 
 Our data showed a 57-line agent used 69.5k tokens vs 69.6k for a 3,529-line agent on the same correct solution — prompt size alone does not determine cost.
 
 **Step 4: State verdict with evidence**
 
 The verdict must be backed by data. Include:
+
 - Which agent won on simple tasks (expected: equivalent)
 - Which agent won on complex tasks (expected: full agent)
 - Total session cost comparison

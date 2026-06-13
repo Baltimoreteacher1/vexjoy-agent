@@ -1,6 +1,6 @@
 ---
 name: fish-shell-config
-description: "Fish shell configuration and PATH management."
+description: "Fish shell configuration and PATH management. Use when editing fish config (config.fish, fish_variables, functions), setting or fixing PATH and universal/exported variables, or adding aliases, abbreviations, and completions in the fish shell."
 user-invocable: false
 allowed-tools:
   - Read
@@ -51,6 +51,7 @@ If none of these hold, stop — this skill does not apply to Bash, Zsh, or POSIX
 Place configuration in `conf.d/` modules with numeric prefixes for ordering — keep `config.fish` minimal. A monolithic `config.fish` with hundreds of lines is slow to load, hard to maintain, and impossible to selectively disable.
 
 **Directory layout**:
+
 ```
 ~/.config/fish/
 ├── config.fish              # Minimal — interactive-only init
@@ -125,6 +126,7 @@ end
 ```
 
 Functions with argument parsing:
+
 ```fish
 function backup --description "Create timestamped backup"
     argparse 'd/dest=' 'h/help' -- $argv
@@ -145,11 +147,11 @@ end
 
 ### Step 6: Choose Between Abbreviations, Functions, and Aliases
 
-| Use Case | Mechanism | Why |
-|----------|-----------|-----|
-| Simple shortcut | `abbr -a g git` | Expands in-place, visible in history |
-| Needs arguments/logic | `function` in `functions/` | Full programming, works in scripts |
-| Wrapping a command | `alias ll "ls -la"` | Convenience; creates function internally |
+| Use Case              | Mechanism                  | Why                                      |
+| --------------------- | -------------------------- | ---------------------------------------- |
+| Simple shortcut       | `abbr -a g git`            | Expands in-place, visible in history     |
+| Needs arguments/logic | `function` in `functions/` | Full programming, works in scripts       |
+| Wrapping a command    | `alias ll "ls -la"`        | Convenience; creates function internally |
 
 Abbreviations are interactive-only — they do not work in scripts. Always wrap them in an interactive guard because they have no effect during non-interactive sourcing:
 
@@ -238,14 +240,18 @@ end
 ## Reference Material
 
 ### Example: Setting Up a New Fish Config
+
 User says: "Set up my Fish shell config"
+
 1. Confirm Fish context
 2. Create modular structure in `~/.config/fish/`
 3. Write `conf.d/00-path.fish`, `conf.d/10-env.fish`, `conf.d/20-abbreviations.fish`
 4. Syntax-check all files
 
 ### Example: Migrating a Bash Alias File
+
 User says: "Convert my .bash_aliases to Fish"
+
 1. Read `.bash_aliases`, confirm Fish target
 2. Determine which become abbreviations vs functions
 3. Write abbreviations to `conf.d/`, functions to `functions/`
@@ -256,18 +262,22 @@ User says: "Convert my .bash_aliases to Fish"
 ## Error Handling
 
 ### Error: "Unknown command" for new function
+
 Cause: Filename does not match function name
 Solution: Ensure `functions/foo.fish` contains exactly `function foo`. Check for typos in both the filename and the function declaration.
 
 ### Error: PATH changes not persisting across sessions
+
 Cause: Used `set -gx PATH` (session-only) instead of `fish_add_path` (writes to universal `fish_user_paths`)
 Solution: Use `fish_add_path /new/path` which persists by default, or use `set -U fish_user_paths /path $fish_user_paths` explicitly.
 
 ### Error: Abbreviations not expanding in scripts
+
 Cause: Abbreviations are interactive-only by design
 Solution: Use a function instead. Move the logic from `abbr` to a file in `functions/`.
 
 ### Error: Variable not visible to child process
+
 Cause: Missing `-x` (export) flag on `set`
 Solution: Use `set -gx VAR value` to make variable visible to subprocesses. Check with `set --show VAR` to inspect current scope and export status.
 

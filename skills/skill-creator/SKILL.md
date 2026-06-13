@@ -66,6 +66,7 @@ covers this domain. This is mandatory -- skipping it leads to system prompt bloa
 and routing degradation.
 
 **Step 1**: Search for existing domain coverage.
+
 ```bash
 grep -i "<domain-keyword>" skills/INDEX.json
 ls skills/ | grep "<domain-prefix>"
@@ -75,7 +76,7 @@ ls skills/ | grep "<domain-prefix>"
 sub-concern of the existing skill. Sub-concerns MUST be added as reference files
 on the existing skill, not created as separate skills.
 
-Pattern (correct): `skills/perses/references/plugins.md`
+Pattern (correct): `skills/perses/references/plugin.md`
 Anti-pattern (wrong): `skills/perses-plugin-creator/SKILL.md`
 
 **Step 3**: If no domain skill exists and the domain has multiple sub-concerns,
@@ -130,6 +131,7 @@ reads `references/` on demand as phases execute. See
 extraction decision tree.
 
 Key rules:
+
 - SKILL.md: brief overview, phase structure with gates, one-line pointers to
   reference files, error handling
 - `references/`: checklists, rubrics, agent dispatch prompts, report templates,
@@ -157,11 +159,11 @@ For skills that spawn subagents with specialized roles, bundle agent prompts in
 `agents/`. These are not registered in the routing system -- they are internal to
 the skill's workflow.
 
-| Scenario | Approach |
-|----------|----------|
-| Agent used only by this skill | Bundle in `agents/` |
-| Agent shared across skills | Keep in repo `agents/` directory |
-| Agent needs routing metadata | Keep in repo `agents/` directory |
+| Scenario                      | Approach                         |
+| ----------------------------- | -------------------------------- |
+| Agent used only by this skill | Bundle in `agents/`              |
+| Agent shared across skills    | Keep in repo `agents/` directory |
+| Agent needs routing metadata  | Keep in repo `agents/` directory |
 
 ---
 
@@ -199,17 +201,20 @@ execute the task. Save outputs to the workspace.
 Evaluation has three tiers, applied in order:
 
 **Tier 1: Deterministic checks** -- run automatically where applicable:
+
 - Does the code compile? (`go build`, `tsc --noEmit`, `python -m py_compile`)
 - Do tests pass? (`go test -race`, `pytest`, `vitest`)
 - Does the linter pass? (`go vet`, `ruff`, `biome`)
 
 **Tier 2: Agent blind review** -- dispatch using `agents/comparator.md`:
+
 - Comparator receives both outputs labeled "Output 1" / "Output 2"
 - It does NOT know which is the skill version
 - Scores on relevant dimensions, picks a winner with reasoning
 - Save results to `blind_comparison.json`
 
 **Tier 3: Human review (optional)** -- generate the comparison viewer:
+
 ```bash
 python3 scripts/eval_compare.py path/to/workspace
 open path/to/workspace/compare_report.html
@@ -228,6 +233,7 @@ help and pass when it does. Non-discriminating assertions ("file exists") provid
 false confidence.
 
 Run the grader (`agents/grader.md`) to evaluate assertions against outputs:
+
 - PASS requires genuine substance, not surface compliance
 - The grader also critiques the assertions themselves -- flagging ones that would
   pass regardless of skill quality
@@ -259,6 +265,7 @@ This is the iterative heart of the process.
 5. Repeat until results plateau or the user is satisfied
 
 Stop iterating when:
+
 - Feedback is empty (outputs look good)
 - Pass rates aren't improving between iterations
 - The user says they're satisfied
@@ -280,6 +287,7 @@ has thin `references/`, no `scripts/`, and passes an eval by luck rather than
 by containing domain knowledge that changes behavior.
 
 Indicators this mode is appropriate:
+
 - `references/` has fewer than 2 files, or none at all
 - No `scripts/` directory
 - Eval outputs look plausible but lack domain idioms, concrete examples, or
@@ -324,26 +332,31 @@ Six phases: AUDIT (measure current depth), RESEARCH (find gaps), ENRICH (add ref
 ## Error handling
 
 ### Skill doesn't trigger when it should
+
 Cause: Description is too vague or missing trigger phrases
 Solution: Add explicit "Use for" phrases matching what users actually say.
 Test with `scripts/optimize_description.py`.
 
 ### Test run produces empty output
+
 Cause: The `claude -p` subprocess didn't load the skill, or the skill path is wrong
 Solution: Verify the skill directory contains SKILL.md (exact case). Check
 the `--skill-path` argument points to the directory, not the file.
 
 ### Grading results show all-pass regardless of skill
+
 Cause: Assertions are non-discriminating (e.g., "file exists")
 Solution: Write assertions that test behavior, not structure. The grader's
 eval critique section flags these -- read it.
 
 ### Iteration loop doesn't converge
+
 Cause: Changes are overfitting to test cases rather than improving the skill
 Solution: Expand the test set with more diverse prompts. Focus improvements
 on understanding WHY outputs differ, not on patching specific failures.
 
 ### Description optimization overfits to train set
+
 Cause: Test set is too small or train/test queries are too similar
 Solution: Ensure should-trigger and should-not-trigger queries are realistic
 near-misses, not obviously different. The 60/40 split guards against this,

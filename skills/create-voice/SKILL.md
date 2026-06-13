@@ -1,6 +1,6 @@
 ---
 name: create-voice
-description: "Create voice profiles from writing samples."
+description: "Create voice profiles from writing samples. Use when the user provides example writing and wants a reusable voice profile (tone, vocabulary, sentence rhythm, dos/don'ts) extracted so later content can be generated in that author's style."
 user-invocable: false
 argument-hint: "<voice-name> <sample-files...>"
 command: /create-voice
@@ -46,15 +46,15 @@ Read and follow the repository CLAUDE.md before starting any work.
 
 The pipeline has 7 phases. Each phase produces artifacts saved to files (because context is ephemeral; files persist) and has a gate that must pass before proceeding. Report progress with phase status banners at each gate (templates in `references/phase-banners.md`). Be direct about what passed or failed, not congratulatory.
 
-| Phase | Name | Artifact | Gate |
-|-------|------|----------|------|
-| 1 | COLLECT | `skills/voice-{name}/references/samples/*.md` | 50+ samples exist |
-| 2 | EXTRACT | `skills/voice-{name}/profile.json` | Script exits 0, metrics present |
-| 3 | PATTERN | Pattern analysis document | 10+ phrase fingerprints identified |
-| 4 | RULE | Voice rules document | Rules have contrastive examples |
-| 5 | GENERATE | `skills/voice-{name}/SKILL.md` + `config.json` | SKILL.md has 2000+ lines, samples section has 400+ lines |
-| 6 | VALIDATE | Validation report | Score >= 70, no banned pattern violations |
-| 7 | ITERATE | Final validated skill | 4/5 authorship match (or 3 iteration limit reached) |
+| Phase | Name     | Artifact                                       | Gate                                                     |
+| ----- | -------- | ---------------------------------------------- | -------------------------------------------------------- |
+| 1     | COLLECT  | `skills/voice-{name}/references/samples/*.md`  | 50+ samples exist                                        |
+| 2     | EXTRACT  | `skills/voice-{name}/profile.json`             | Script exits 0, metrics present                          |
+| 3     | PATTERN  | Pattern analysis document                      | 10+ phrase fingerprints identified                       |
+| 4     | RULE     | Voice rules document                           | Rules have contrastive examples                          |
+| 5     | GENERATE | `skills/voice-{name}/SKILL.md` + `config.json` | SKILL.md has 2000+ lines, samples section has 400+ lines |
+| 6     | VALIDATE | Validation report                              | Score >= 70, no banned pattern violations                |
+| 7     | ITERATE  | Final validated skill                          | 4/5 authorship match (or 3 iteration limit reached)      |
 
 ---
 
@@ -98,13 +98,13 @@ The text report gives a human-readable summary. Save it for reference during Ste
 
 #### What the Analyzer Extracts
 
-| Category | Metrics | Why It Matters |
-|----------|---------|---------------|
-| Sentence metrics | Length distribution, average, variance | Rhythm fingerprint |
-| Punctuation | Comma density, question rate, exclamation rate, em-dash count, semicolons | Punctuation signature |
-| Word metrics | Contraction rate, first-person rate, second-person rate | Formality and perspective |
-| Structure | Fragment rate, sentence starters by type | Structural patterns |
-| Function words | Top 20 function word frequencies | Unconscious language fingerprint |
+| Category         | Metrics                                                                   | Why It Matters                   |
+| ---------------- | ------------------------------------------------------------------------- | -------------------------------- |
+| Sentence metrics | Length distribution, average, variance                                    | Rhythm fingerprint               |
+| Punctuation      | Comma density, question rate, exclamation rate, em-dash count, semicolons | Punctuation signature            |
+| Word metrics     | Contraction rate, first-person rate, second-person rate                   | Formality and perspective        |
+| Structure        | Fragment rate, sentence starters by type                                  | Structural patterns              |
+| Function words   | Top 20 function word frequencies                                          | Unconscious language fingerprint |
 
 #### Verify the Output
 

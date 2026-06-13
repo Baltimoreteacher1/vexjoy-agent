@@ -1,6 +1,6 @@
 ---
 name: anti-ai-editor
-description: "Remove AI-sounding patterns from content."
+description: "Remove AI-sounding patterns from content. Use when editing prose, docs, or marketing copy to strip telltale AI tics (em-dash overuse, 'delve', 'in today's fast-paced world', hedging, listy summaries) and make it read like a human wrote it."
 user-invocable: false
 command: /edit
 allowed-tools:
@@ -42,29 +42,30 @@ If a voice profile is specified, also check voice-specific anti-patterns alongsi
 
 **Step 2: Scan for issues by category**
 
-| Category | What to Find | Reference |
-|----------|--------------|-----------|
-| AI Cliches | "delve", "leverage", "utilize", "robust" | `references/cliche-replacements.md` |
-| News AI Tells | "worth sitting with", "consequences extend beyond", "that's the kind of", dramatic rhythm | `references/detection-patterns.md` |
-| Copula Avoidance | "serves as a", "boasts a", "features a" | `references/detection-patterns.md` |
-| Passive Voice | "was done by", "has been", "will be" | `references/detection-patterns.md` |
-| Structural | Monotonous sentence lengths, excessive lists, boldface overuse, dramatic AI rhythm | `references/detection-rules.md` |
-| Meta-commentary | "In this article", "Let me explain", "As we've discussed" | `references/cliche-replacements.md` |
-| Dangling -ing | "highlighting its importance", "underscoring the significance" | `references/detection-patterns.md` |
-| Puffery/Legacy | "testament to", "indelible mark", "enduring legacy" | `references/detection-patterns.md` |
-| Generic Closers | "future looks bright", "continues to evolve" | `references/detection-patterns.md` |
-| Curly Quotes | \u201C \u201D \u2018 \u2019 (ChatGPT-specific) | `references/detection-patterns.md` |
-| Dash-as-Separator | ` -- ` sentence joiner, `—` em-dash in prose (not CLI flags) | `references/detection-patterns.md` |
-| Novelty Inflation | "nobody's naming", "what nobody tells you", engagement bait | `references/detection-patterns.md` |
-| Synonym Cycling | 3+ synonyms for same concept in one paragraph | `references/detection-patterns.md` |
-| False Concession | "While X is impressive, Y remains" (both vague) | `references/detection-patterns.md` |
-| Emotional Flatline | "What surprised me most", "I was fascinated" | `references/detection-patterns.md` |
+| Category           | What to Find                                                                              | Reference                           |
+| ------------------ | ----------------------------------------------------------------------------------------- | ----------------------------------- |
+| AI Cliches         | "delve", "leverage", "utilize", "robust"                                                  | `references/cliche-replacements.md` |
+| News AI Tells      | "worth sitting with", "consequences extend beyond", "that's the kind of", dramatic rhythm | `references/detection-patterns.md`  |
+| Copula Avoidance   | "serves as a", "boasts a", "features a"                                                   | `references/detection-patterns.md`  |
+| Passive Voice      | "was done by", "has been", "will be"                                                      | `references/detection-patterns.md`  |
+| Structural         | Monotonous sentence lengths, excessive lists, boldface overuse, dramatic AI rhythm        | `references/detection-rules.md`     |
+| Meta-commentary    | "In this article", "Let me explain", "As we've discussed"                                 | `references/cliche-replacements.md` |
+| Dangling -ing      | "highlighting its importance", "underscoring the significance"                            | `references/detection-patterns.md`  |
+| Puffery/Legacy     | "testament to", "indelible mark", "enduring legacy"                                       | `references/detection-patterns.md`  |
+| Generic Closers    | "future looks bright", "continues to evolve"                                              | `references/detection-patterns.md`  |
+| Curly Quotes       | \u201C \u201D \u2018 \u2019 (ChatGPT-specific)                                            | `references/detection-patterns.md`  |
+| Dash-as-Separator  | `--` sentence joiner, `—` em-dash in prose (not CLI flags)                                | `references/detection-patterns.md`  |
+| Novelty Inflation  | "nobody's naming", "what nobody tells you", engagement bait                               | `references/detection-patterns.md`  |
+| Synonym Cycling    | 3+ synonyms for same concept in one paragraph                                             | `references/detection-patterns.md`  |
+| False Concession   | "While X is impressive, Y remains" (both vague)                                           | `references/detection-patterns.md`  |
+| Emotional Flatline | "What surprised me most", "I was fascinated"                                              | `references/detection-patterns.md`  |
 
 Some flagged words are appropriate in technical contexts. "Leverage" in "Use a lever to leverage mechanical advantage" is correct -- only flag words when used as corporate-speak, not in their literal or technical sense.
 
 **Step 3: Count and classify issues**
 
 Record each issue with line number, category, and severity weight:
+
 - AI Cliche (Tier 1): weight 3
 - News AI Tell (Tier 1-News): weight 3 (pseudo-profound, philosophizing, meta-significance)
 - Copula Avoidance (Tier 1b): weight 3
@@ -94,12 +95,12 @@ Record each issue with line number, category, and severity weight:
 
 **Step 1: Choose approach by issue count**
 
-| Severity Score | Approach |
-|----------------|----------|
-| 0-5 | Report "Content appears natural". Stop. |
-| 6-15 | Apply targeted fixes |
-| 16-30 | Group by paragraph, fix systematically |
-| 30+ | Paragraph-by-paragraph review |
+| Severity Score | Approach                                |
+| -------------- | --------------------------------------- |
+| 0-5            | Report "Content appears natural". Stop. |
+| 6-15           | Apply targeted fixes                    |
+| 16-30          | Group by paragraph, fix systematically  |
+| 30+            | Paragraph-by-paragraph review           |
 
 **Step 1b: Rewrite-vs-patch threshold** -- If severity score exceeds 30 AND 3+ distinct pattern categories are flagged AND structural rhythm is uniform, advise the user to consider a full rewrite rather than patching individual issues. Patching high-density AI text often introduces new patterns while fixing old ones.
 
@@ -115,6 +116,7 @@ Every fix must be the minimum change needed. Multiple small edits beat one big r
 **Step 3: Wabi-sabi check**
 
 Before proposing any fix, ask: "Would removing this imperfection make it sound MORE robotic?" If yes, preserve it. Preserve:
+
 - Run-on sentences that convey enthusiasm
 - Fragment punches that create rhythm
 - Loose punctuation that matches conversational flow
@@ -186,6 +188,7 @@ Use the Edit tool for each change. Verify each edit applied correctly.
 
 ```markdown
 ## Edit Summary
+
 File: [path]
 Issues Found: [count]
 Issues Fixed: [count]
@@ -200,42 +203,52 @@ Meaning Preserved: Yes/No
 ### Examples
 
 #### Example 1: Blog Post (Heavy Editing)
+
 User says: "De-AI this blog post"
 Actions:
+
 1. Read file, skip frontmatter, scan all categories (ASSESS)
 2. Score 22 -- systematic paragraph-by-paragraph approach (DECIDE)
 3. Generate report with 10 changes, show preview, apply after confirmation (EDIT)
 4. Re-read, verify meaning preserved, no new AI patterns (VERIFY)
-Result: 67% shorter intro, all AI cliches removed, voice preserved
+   Result: 67% shorter intro, all AI cliches removed, voice preserved
 
 #### Example 2: Technical Docs (Light Editing)
+
 User says: "Check this for AI patterns"
 Actions:
+
 1. Read file, identify technical context, scan for patterns (ASSESS)
 2. Score 7 -- targeted fixes only, preserve technical terms (DECIDE)
 3. Replace "utilizes" with "uses", remove throat-clearing, show preview (EDIT)
 4. Verify technical accuracy unchanged (VERIFY)
-Result: Clearer prose, same information, technical terms untouched
+   Result: Clearer prose, same information, technical terms untouched
 
 ## Error Handling
 
 ### Error: "File Not Found"
+
 Cause: Path incorrect or file does not exist
 Solution:
+
 1. Verify path with `ls -la [path]`
 2. Use glob pattern to search: `Glob **/*.md`
 3. Confirm correct working directory
 
 ### Error: "No Issues Found"
+
 Cause: Content is already natural, or scanner missed patterns
 Solution:
+
 1. Report "Content appears natural -- no AI patterns detected"
 2. Show sentence length statistics for manual verification
 3. Check structural patterns (monotony, list overuse) even if no word-level flags
 
 ### Error: "Frontmatter Corrupted After Edit"
+
 Cause: Edit tool matched content inside YAML frontmatter
 Solution:
+
 1. Fall back to treating entire file as content
 2. Re-read file to verify YAML integrity
 3. If corrupted, restore from git: `git checkout -- [file]`
