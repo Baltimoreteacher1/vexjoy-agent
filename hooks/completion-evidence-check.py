@@ -5,11 +5,11 @@ Scans tool output for completion language and checks whether test evidence
 is present. If completion is claimed without evidence, prints an advisory
 warning (ADR-125).
 
-Environment: CLAUDE_TOOL_OUTPUT (set by PostToolUse hooks, first ~500 chars)
+Input: PostToolUse event JSON on stdin; tool output read from `tool_result`.
 Always exits 0 (advisory, never blocking).
 """
 
-import os
+import json
 import re
 import sys
 
@@ -26,9 +26,25 @@ EVIDENCE_PATTERN = re.compile(
 )
 
 
+def _extract_output(event):
+    """Pull text from the PostToolUse `tool_result` field (str or {type,text})."""
+    result = event.get("tool_result", event.get("tool_response", ""))
+    if isinstance(result, dict):
+        return result.get("text", "") or ""
+    if isinstance(result, list):
+        return " ".join(
+            (b.get("text", "") if isinstance(b, dict) else str(b)) for b in result
+        )
+    return str(result or "")
+
+
 def main():
     try:
-        output = os.environ.get("CLAUDE_TOOL_OUTPUT", "")
+        raw = sys.stdin.read()
+        if not raw:
+            return
+        event = json.loads(raw)
+        output = _extract_output(event)
         if not output:
             return
 
@@ -38,8 +54,16 @@ def main():
                     "[completion-check] Completion claimed without test evidence. "
                     "Required: run tests and show output before marking complete."
                 )
+    except (json.JSONDecodeError, ValueError):
+        return
     except Exception as e:
-        print(f"[completion-check] HOOK-CRASH: {type(e).__name__}: {e}", file=sys.stderr)
+        import os
+
+        if os.environ.get("CLAUDE_HOOKS_DEBUG"):
+            print(
+                f"[completion-check] HOOK-ERROR: {type(e).__name__}: {e}",
+                file=sys.stderr,
+            )
 
 
 if __name__ == "__main__":

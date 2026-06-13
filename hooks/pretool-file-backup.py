@@ -27,6 +27,7 @@ import json
 import os
 import shutil
 import sys
+import tempfile
 import time
 from pathlib import Path
 
@@ -39,7 +40,11 @@ _MAX_FILE_SIZE = 10 * 1024 * 1024
 # Session ID from environment, fall back to PID
 _SESSION_ID = os.environ.get("CLAUDE_SESSION_ID", str(os.getpid()))
 
-_BACKUP_ROOT = Path("/tmp/.claude-backups") / _SESSION_ID
+# Per-user backup base. tempfile.gettempdir() is per-user on macOS ($TMPDIR);
+# the uid-suffixed dir + 0700 perms protects on shared /tmp (Linux). Backed-up
+# file contents can include secrets, so the tree must not be world-readable.
+_BACKUP_BASE = Path(tempfile.gettempdir()) / f".claude-backups-{os.getuid()}"
+_BACKUP_ROOT = _BACKUP_BASE / _SESSION_ID
 
 
 def main() -> None:
@@ -70,17 +75,28 @@ def main() -> None:
     except OSError:
         sys.exit(0)
 
-    # Create backup directory
-    _BACKUP_ROOT.mkdir(parents=True, exist_ok=True)
+    # Create backup tree with restrictive perms. Refuse if the per-user base
+    # exists but isn't a dir we own (symlink/pre-create defense).
+    try:
+        _BACKUP_BASE.mkdir(parents=True, exist_ok=True)
+        os.chmod(_BACKUP_BASE, 0o700)
+        st = _BACKUP_BASE.lstat()
+        if st.st_uid != os.getuid() or not _BACKUP_BASE.is_dir():
+            sys.exit(0)
+        _BACKUP_ROOT.mkdir(parents=True, exist_ok=True)
+        os.chmod(_BACKUP_ROOT, 0o700)
+    except OSError:
+        sys.exit(0)
 
     # Timestamp-prefixed filename for ordering
     timestamp_ms = int(time.time() * 1000)
     backup_name = f"{timestamp_ms}-{src.name}"
     dest = _BACKUP_ROOT / backup_name
 
-    # Copy file — silently ignore failures
+    # Copy file — silently ignore failures; restrict perms (may hold secrets)
     try:
         shutil.copy2(str(src), str(dest))
+        os.chmod(dest, 0o600)
     except (OSError, shutil.Error):
         pass
 

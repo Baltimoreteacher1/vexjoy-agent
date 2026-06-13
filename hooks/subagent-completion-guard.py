@@ -150,7 +150,9 @@ def format_worktree_output(meta: dict) -> list[str]:
     commits = meta["commits_ahead"]
     uncommitted = meta["uncommitted_files"]
 
-    lines.append(f"[worktree-result] path={path} branch={branch} commits={commits} uncommitted={uncommitted}")
+    lines.append(
+        f"[worktree-result] path={path} branch={branch} commits={commits} uncommitted={uncommitted}"
+    )
 
     if meta["has_uncommitted"]:
         lines.append(
@@ -159,7 +161,9 @@ def format_worktree_output(meta: dict) -> list[str]:
         )
 
     if commits == 0 and not meta["has_uncommitted"]:
-        lines.append(f"[worktree-empty] Worktree {path} has no changes — safe to remove")
+        lines.append(
+            f"[worktree-empty] Worktree {path} has no changes — safe to remove"
+        )
 
     return lines
 
@@ -192,7 +196,9 @@ def record_worktree_learning(meta: dict, agent_type: str) -> None:
             ),
             category="effectiveness",
             confidence=0.8,
-            tags=["worktree", branch, agent_type] if agent_type else ["worktree", branch],
+            tags=["worktree", branch, agent_type]
+            if agent_type
+            else ["worktree", branch],
             source="hook:subagent-completion-guard",
         )
     except Exception:
@@ -311,7 +317,11 @@ def find_write_tool_in_transcript(transcript_path: str) -> str | None:
         tool_name = entry.get("tool_name")
         if not tool_name and isinstance(entry.get("content"), list):
             for block in entry["content"]:
-                if isinstance(block, dict) and block.get("type") == "tool_use" and block.get("name") in _WRITE_TOOLS:
+                if (
+                    isinstance(block, dict)
+                    and block.get("type") == "tool_use"
+                    and block.get("name") in _WRITE_TOOLS
+                ):
                     tool_name = block["name"]
                     break
         if tool_name in _WRITE_TOOLS:
@@ -516,10 +526,12 @@ def main() -> None:
             separator = "\n" + "=" * 60 + "\n"
             message = separator.join(violations)
             print(message, file=sys.stderr)
-            # SubagentStop uses top-level permissionDecision (not wrapped in hookSpecificOutput)
+            # SubagentStop blocks via top-level {"decision":"block","reason":...}
+            # (verified against current Claude Code hooks schema; the old
+            # permissionDecision/deny shape was a silent no-op).
             deny_output = {
-                "permissionDecision": "deny",
-                "permissionDecisionReason": message,
+                "decision": "block",
+                "reason": message,
             }
             print(json.dumps(deny_output))
             sys.exit(0)
@@ -534,7 +546,10 @@ def main() -> None:
         if os.environ.get("CLAUDE_HOOKS_DEBUG"):
             import traceback
 
-            print(f"[subagent-completion-guard] HOOK-ERROR: {type(e).__name__}: {e}", file=sys.stderr)
+            print(
+                f"[subagent-completion-guard] HOOK-ERROR: {type(e).__name__}: {e}",
+                file=sys.stderr,
+            )
             traceback.print_exc(file=sys.stderr)
         sys.exit(0)
 
