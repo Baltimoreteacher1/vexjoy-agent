@@ -817,13 +817,18 @@ def record_governance_event(
         event_id: Override auto-generated id (for testing / idempotency).
     """
     import json as _json
+    import secrets as _secrets
     import time as _time
 
     try:
         init_db()
 
         ts_ms = int(_time.time() * 1000)
-        suffix = hashlib.md5(f"{event_type}{session_id}{ts_ms}".encode()).hexdigest()[:6]
+        # Random suffix (not a hash of event fields) so rapid same-type events
+        # in the same millisecond get distinct ids — otherwise INSERT OR IGNORE
+        # would silently drop the collisions. An explicit event_id still lets
+        # callers opt into idempotency.
+        suffix = _secrets.token_hex(4)
         eid = event_id or f"gov-{ts_ms}-{suffix}"
 
         payload_str = _json.dumps(payload) if payload else None

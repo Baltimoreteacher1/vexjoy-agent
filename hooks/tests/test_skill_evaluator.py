@@ -11,7 +11,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-HOOK_PATH = Path(__file__).parent.parent / "skill-evaluator.py"
+HOOK_PATH = Path(__file__).parent.parent / "disabled" / "skill-evaluator.py"
 
 
 def run_hook(event: dict) -> tuple[str, str, int]:

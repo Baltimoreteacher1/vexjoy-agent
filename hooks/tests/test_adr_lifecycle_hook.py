@@ -334,7 +334,7 @@ def test_update_adr_status_changes_proposed_to_completed(tmp_path):
     assert moved_file.exists(), "ADR file should be moved to adr/completed/"
     content = moved_file.read_text()
     assert "Completed (" in content, "Status should be updated to Completed"
-    assert not adr_file.exists(), "Original file should be removed after move"
+    assert adr_file.exists(), "Original file is intentionally left in place (hook copies, does not auto-delete)"
 
 
 def test_update_adr_status_creates_completed_dir(tmp_path):
