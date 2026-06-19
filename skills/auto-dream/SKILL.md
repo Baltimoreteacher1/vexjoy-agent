@@ -120,7 +120,6 @@ Note: schedule uses 2:07 AM (off-minute) per cron best practice — avoids load 
 ## Wrapper script details
 
 `~/.claude/scripts/auto-dream-cron.sh` follows the established headless cron pattern (see `~/.claude/scripts/reddit-automod-cron.sh`):
-
 - `flock` lockfile prevents concurrent runs
 - `--permission-mode auto` (never `--dangerously-skip-permissions`)
 - `--max-budget-usd 3.00` caps spend per run
@@ -134,21 +133,21 @@ Note: schedule uses 2:07 AM (off-minute) per cron best practice — avoids load 
 
 Load these references when the task matches the signal:
 
-| Signal / Task                                                                                   | Reference File                         |
-| ----------------------------------------------------------------------------------------------- | -------------------------------------- |
-| Debugging failed cron run, silent failure, empty log, wrong exit code                           | `references/headless-cron-patterns.md` |
+| Signal / Task | Reference File |
+|---------------|----------------|
+| Debugging failed cron run, silent failure, empty log, wrong exit code | `references/headless-cron-patterns.md` |
 | Setting up or modifying wrapper script (`flock`, `--permission-mode`, `envsubst`, `PIPESTATUS`) | `references/headless-cron-patterns.md` |
-| Budget cap, `--max-budget-usd`, unattended Claude invocation                                    | `references/headless-cron-patterns.md` |
-| Writing, updating, or archiving memory files                                                    | `references/memory-file-operations.md` |
-| Updating `MEMORY.md` index, atomic write, `.tmp` rename                                         | `references/memory-file-operations.md` |
-| Staleness detection, duplicate merging, conflict flagging                                       | `references/memory-file-operations.md` |
-| YAML frontmatter structure, `merged_from`, memory file format                                   | `references/memory-file-operations.md` |
-| Testing the dream cycle safely, dry-run validation, output file verification                    | `references/dream-cycle-testing.md`    |
-| Inspecting graduation candidates, snapshot testing, PIPESTATUS in test wrappers                 | `references/dream-cycle-testing.md`    |
-| Reading and interpreting cron run logs, detecting silent failures                               | `references/logging-patterns.md`       |
-| Log rotation, log directory structure, phase completion markers in logs                         | `references/logging-patterns.md`       |
-| `last-dream.md` stale, missing injection payload, cron log empty                                | `references/logging-patterns.md`       |
-| Concurrent dream runs, lockfile already held, duplicate cron invocations                        | `references/concurrency.md`            |
-| `MEMORY.md.tmp` left behind, partial write recovery, atomic rename failure                      | `references/concurrency.md`            |
-| `database is locked`, SQLite WAL mode, `busy_timeout`, concurrent DB access                     | `references/concurrency.md`            |
-| `local changes would be overwritten`, git stash before GRADUATE branch switch                   | `references/concurrency.md`            |
+| Budget cap, `--max-budget-usd`, unattended Claude invocation | `references/headless-cron-patterns.md` |
+| Writing, updating, or archiving memory files | `references/memory-file-operations.md` |
+| Updating `MEMORY.md` index, atomic write, `.tmp` rename | `references/memory-file-operations.md` |
+| Staleness detection, duplicate merging, conflict flagging | `references/memory-file-operations.md` |
+| YAML frontmatter structure, `merged_from`, memory file format | `references/memory-file-operations.md` |
+| Testing the dream cycle safely, dry-run validation, output file verification | `references/dream-cycle-testing.md` |
+| Inspecting graduation candidates, snapshot testing, PIPESTATUS in test wrappers | `references/dream-cycle-testing.md` |
+| Reading and interpreting cron run logs, detecting silent failures | `references/logging-patterns.md` |
+| Log rotation, log directory structure, phase completion markers in logs | `references/logging-patterns.md` |
+| `last-dream.md` stale, missing injection payload, cron log empty | `references/logging-patterns.md` |
+| Concurrent dream runs, lockfile already held, duplicate cron invocations | `references/concurrency.md` |
+| `MEMORY.md.tmp` left behind, partial write recovery, atomic rename failure | `references/concurrency.md` |
+| `database is locked`, SQLite WAL mode, `busy_timeout`, concurrent DB access | `references/concurrency.md` |
+| `local changes would be overwritten`, git stash before GRADUATE branch switch | `references/concurrency.md` |

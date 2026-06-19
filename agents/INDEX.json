@@ -79,7 +79,7 @@
         "database-engineer",
         "data-analysis"
       ],
-      "complexity": "Medium-Complex",
+      "complexity": "Medium",
       "category": "infrastructure"
     },
     "database-engineer": {
@@ -129,7 +129,6 @@
         "focused go"
       ],
       "pairs_with": [
-        "go-patterns",
         "go-patterns"
       ],
       "complexity": "Medium-Complex",
@@ -238,7 +237,7 @@
     },
     "nextjs-ecommerce-engineer": {
       "file": "agents/nextjs-ecommerce-engineer.md",
-      "short_description": "Use this agent when building a NextJS e-commerce site: shopping cart, Stripe payments, product catalogs, order management, and checkout flows",
+      "short_description": "Next",
       "triggers": [
         "next.js e-commerce",
         "nextjs ecommerce",
@@ -257,7 +256,7 @@
     },
     "nodejs-api-engineer": {
       "file": "agents/nodejs-api-engineer.md",
-      "short_description": "Use this agent when you need expert assistance with NodeJS backend API development: REST endpoints, authentication, file uploads, webhooks, middleware, and database integration",
+      "short_description": "Node",
       "triggers": [
         "node.js",
         "nodejs",
@@ -498,6 +497,14 @@
       ],
       "complexity": "Complex",
       "category": "language"
+    },
+    "qa-gate": {
+      "file": "agents/qa-gate.md",
+      "short_description": "MUST BE USED after any notebook, lesson plan, or game generation",
+      "triggers": [
+        "qa-gate",
+        "gate check"
+      ]
     },
     "rabbitmq-messaging-engineer": {
       "file": "agents/rabbitmq-messaging-engineer.md",
@@ -796,11 +803,11 @@
         "apply retro"
       ],
       "pairs_with": [
-        "system-upgrade",
+        "workflow",
         "agent-evaluation",
         "codebase-analyzer",
         "routing-table-updater",
-        "pr-pipeline"
+        "pr-workflow"
       ],
       "complexity": "Complex",
       "category": "meta"
@@ -817,7 +824,7 @@
       "pairs_with": [
         "verification-before-completion"
       ],
-      "complexity": "Medium-Complex",
+      "complexity": "Complex",
       "category": "documentation"
     },
     "technical-journalist-writer": {
@@ -833,7 +840,7 @@
       "pairs_with": [
         "voice-writer"
       ],
-      "complexity": "Medium",
+      "complexity": "Complex",
       "category": "content"
     },
     "testing-automation-engineer": {

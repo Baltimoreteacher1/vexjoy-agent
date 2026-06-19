@@ -8,6 +8,15 @@
       ],
       "palette_name": "Concrete & Voltage",
       "timestamp": "2025-12-04T18:33:42.996738"
+    },
+    {
+      "name": "Neft Teacher Dashboard",
+      "fonts": [
+        "Josefin Sans",
+        "Plus Jakarta Sans"
+      ],
+      "palette_name": "Warm Scholarly",
+      "timestamp": "2026-05-25T07:29:27.250160"
     }
   ]
 }

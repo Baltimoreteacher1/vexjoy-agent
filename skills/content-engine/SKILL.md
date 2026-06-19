@@ -44,13 +44,13 @@ Establish everything needed to write platform-native variants. Do not begin writ
 
 **Required inputs:**
 
-| Input            | Description                                                                                 | If Missing                                        |
-| ---------------- | ------------------------------------------------------------------------------------------- | ------------------------------------------------- |
-| Source asset     | The content being adapted (article text, demo description, launch doc, insight, transcript) | Ask — required                                    |
-| Target platforms | X, LinkedIn, TikTok, YouTube, newsletter — one or many                                      | Ask if not inferable from context                 |
-| Audience         | Builders, investors, customers, operators, general                                          | Infer if a strong signal exists; ask if ambiguous |
-| Goal             | Awareness, conversion, recruiting, authority, launch support, engagement                    | Infer from source if obvious; ask otherwise       |
-| Constraints      | Character limits already observed, brand voice notes, phrases to avoid                      | Skip if none stated                               |
+| Input | Description | If Missing |
+|-------|-------------|------------|
+| Source asset | The content being adapted (article text, demo description, launch doc, insight, transcript) | Ask — required |
+| Target platforms | X, LinkedIn, TikTok, YouTube, newsletter — one or many | Ask if not inferable from context |
+| Audience | Builders, investors, customers, operators, general | Infer if a strong signal exists; ask if ambiguous |
+| Goal | Awareness, conversion, recruiting, authority, launch support, engagement | Infer from source if obvious; ask otherwise |
+| Constraints | Character limits already observed, brand voice notes, phrases to avoid | Skip if none stated |
 
 **Gate**: Source asset present AND at least one target platform identified. If either is missing, ask before proceeding. Both missing means there is nothing to work with — do not guess.
 
@@ -121,7 +121,6 @@ This check identifies any sentence appearing verbatim in two or more platform se
 #### Secondary LLM Check (after scripts pass)
 
 Once both scripts exit 0, verify:
-
 - [ ] Each draft reads natively for its platform (register, length, formatting feel right)
 - [ ] Every hook is strong and specific — not a topic sentence, not a summary opener
 - [ ] CTAs match the stated goal and platform norms
@@ -145,13 +144,13 @@ See `${CLAUDE_SKILL_DIR}/references/phase-playbook.md` for error cases: source t
 
 ## References
 
-| Signal                                          | Load                                                           |
-| ----------------------------------------------- | -------------------------------------------------------------- |
-| Phase 3 DRAFT — writing platform variants       | `references/platform-specs.md`, `references/phase-playbook.md` |
-| Phase 4 GATE — running quality checks           | `references/phase-playbook.md`, `references/error-handling.md` |
-| Script fails, gate won't pass, source errors    | `references/error-handling.md`                                 |
-| Platform rules, character limits, posting norms | `references/platform-specs.md`                                 |
-| Delivery, handoff, artifact templates           | `references/phase-playbook.md`                                 |
+| Signal | Load |
+|--------|------|
+| Phase 3 DRAFT — writing platform variants | `references/platform-specs.md`, `references/phase-playbook.md` |
+| Phase 4 GATE — running quality checks | `references/phase-playbook.md`, `references/error-handling.md` |
+| Script fails, gate won't pass, source errors | `references/error-handling.md` |
+| Platform rules, character limits, posting norms | `references/platform-specs.md` |
+| Delivery, handoff, artifact templates | `references/phase-playbook.md` |
 
 - `${CLAUDE_SKILL_DIR}/references/platform-specs.md` — Character limits, format rules, and posting norms per platform
 - `${CLAUDE_SKILL_DIR}/references/phase-playbook.md` — Full platform rules for Phase 3, banned hype phrases for Phase 4, error handling

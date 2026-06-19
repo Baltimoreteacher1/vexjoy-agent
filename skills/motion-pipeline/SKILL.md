@@ -50,10 +50,10 @@ key algorithms from their source code using only numpy + scipy.
 python3 -m venv ~/.claude/motion-pipeline-env/
 
 # Install CPU-only deps
-motion-pipeline-env/bin/pip install numpy scipy pygltflib Pillow
+~/.claude/motion-pipeline-env/bin/pip install numpy scipy pygltflib Pillow
 
 # Verify
-motion-pipeline-env/bin/python -c "import numpy; import scipy; import pygltflib; print('OK')"
+~/.claude/motion-pipeline-env/bin/python -c "import numpy; import scipy; import pygltflib; print('OK')"
 ```
 
 The venv is gitignored. The skill documents setup; it does not commit the venv.
@@ -67,7 +67,7 @@ All commands output JSON to stdout. Errors go to stderr with exit code 1.
 Parse a BVH mocap file and print a motion summary.
 
 ```bash
-motion-pipeline-env/bin/python ~/.claude/scripts/motion-pipeline.py import-bvh FILE \
+~/.claude/motion-pipeline-env/bin/python ~/.claude/scripts/motion-pipeline.py import-bvh FILE \
   [--scale 0.01]   # scale cm->m for CMU/Mixamo files
 ```
 
@@ -80,7 +80,7 @@ Detect ground contact frames per bone (foot, hand) using height + velocity
 thresholds. Replicates `ContactModule.GetContacts()` from ai4animationpy.
 
 ```bash
-motion-pipeline-env/bin/python ~/.claude/scripts/motion-pipeline.py extract-contacts FILE \
+~/.claude/motion-pipeline-env/bin/python ~/.claude/scripts/motion-pipeline.py extract-contacts FILE \
   --bones LeftFoot RightFoot \
   --height 0.1 \
   --vel 0.5
@@ -94,7 +94,7 @@ Split motion into root trajectory (WHERE + HOW) and per-joint local Euler
 angles (POSE). Implements the RootModule / MotionModule decomposition pattern.
 
 ```bash
-motion-pipeline-env/bin/python ~/.claude/scripts/motion-pipeline.py decompose FILE \
+~/.claude/motion-pipeline-env/bin/python ~/.claude/scripts/motion-pipeline.py decompose FILE \
   --hip Hips
 ```
 
@@ -109,7 +109,7 @@ Blend two BVH clips at a fixed alpha using SLERP rotations and LERP positions.
 Clips must share the same bone hierarchy.
 
 ```bash
-motion-pipeline-env/bin/python ~/.claude/scripts/motion-pipeline.py blend FILE_A FILE_B \
+~/.claude/motion-pipeline-env/bin/python ~/.claude/scripts/motion-pipeline.py blend FILE_A FILE_B \
   --alpha 0.5
 ```
 
@@ -120,7 +120,7 @@ Output: summary of the blended motion.
 Run FABRIK inverse kinematics on a bone chain at a single frame.
 
 ```bash
-motion-pipeline-env/bin/python ~/.claude/scripts/motion-pipeline.py solve-ik FILE \
+~/.claude/motion-pipeline-env/bin/python ~/.claude/scripts/motion-pipeline.py solve-ik FILE \
   --chain Hips:LeftFoot \
   --target 0.2,0.05,0.3 \
   --frame 10
@@ -136,7 +136,7 @@ road-to-aew's `wrestlingMoves.ts` interface. Outputs keyframe-interpolated
 TypeScript to stdout (and optionally a file).
 
 ```bash
-motion-pipeline-env/bin/python ~/.claude/scripts/generate-move-ts.py BVH MOVE_NAME \
+~/.claude/motion-pipeline-env/bin/python ~/.claude/scripts/generate-move-ts.py BVH MOVE_NAME \
   [--scale 0.01] \
   [--contact-bones LeftToeBase RightToeBase LeftHand RightHand] \
   [--num-keyframes 12] \
@@ -144,15 +144,15 @@ motion-pipeline-env/bin/python ~/.claude/scripts/generate-move-ts.py BVH MOVE_NA
   [--output path/to/output.ts]
 ```
 
-| Argument          | Default                                       | Purpose                                                         |
-| ----------------- | --------------------------------------------- | --------------------------------------------------------------- |
-| `BVH`             | —                                             | Path to .bvh mocap file                                         |
-| `MOVE_NAME`       | —                                             | Kebab-case name (e.g. `roundhouse-kick`) used in TS identifiers |
-| `--scale`         | `0.01`                                        | Position scale; 0.01 converts cm→m for CMU/Mixamo files         |
-| `--contact-bones` | `LeftToeBase RightToeBase LeftHand RightHand` | Bones used to detect the impact window                          |
-| `--num-keyframes` | `12`                                          | Keyframe count in the output array (min 2)                      |
-| `--hip-bone`      | `Hips`                                        | Root bone name for trajectory extraction                        |
-| `--output`        | stdout only                                   | Write TS to this file path in addition to stdout                |
+| Argument | Default | Purpose |
+|---|---|---|
+| `BVH` | — | Path to .bvh mocap file |
+| `MOVE_NAME` | — | Kebab-case name (e.g. `roundhouse-kick`) used in TS identifiers |
+| `--scale` | `0.01` | Position scale; 0.01 converts cm→m for CMU/Mixamo files |
+| `--contact-bones` | `LeftToeBase RightToeBase LeftHand RightHand` | Bones used to detect the impact window |
+| `--num-keyframes` | `12` | Keyframe count in the output array (min 2) |
+| `--hip-bone` | `Hips` | Root bone name for trajectory extraction |
+| `--output` | stdout only | Write TS to this file path in addition to stdout |
 
 **Implementation note:** The script imports `motion-pipeline.py` as a module
 via `importlib` rather than calling it as a subprocess. This bypasses the 5-frame
@@ -200,35 +200,33 @@ Animation State
 ```
 
 This separation enables:
-
 - Different movement speeds without distorting body pose
 - Contact-driven game events (damage triggers, sound, VFX)
 - AI/input guidance independent of motion playback
 
 ## Source reference: ai4animationpy modules adopted
 
-| ai4animationpy module     | This script equivalent      | Notes                                    |
-| ------------------------- | --------------------------- | ---------------------------------------- |
-| `Import/BVHImporter.BVH`  | `load_bvh()`                | Same parsing logic; scipy replaces torch |
-| `Animation/Motion`        | `Motion` dataclass          | numpy-only; no torch backend             |
-| `Animation/ContactModule` | `extract_contacts()`        | Height + velocity criterion identical    |
-| `Animation/RootModule`    | `decompose()` root section  | FK decomposition via matrix inverse      |
-| `Animation/MotionModule`  | `decompose()` joint section | Local Euler extraction via scipy         |
-| `IK/FABRIK`               | `solve_ik_fabrik()`         | Algorithm identical; no Actor dependency |
+| ai4animationpy module | This script equivalent | Notes |
+|-----------------------|------------------------|-------|
+| `Import/BVHImporter.BVH` | `load_bvh()` | Same parsing logic; scipy replaces torch |
+| `Animation/Motion` | `Motion` dataclass | numpy-only; no torch backend |
+| `Animation/ContactModule` | `extract_contacts()` | Height + velocity criterion identical |
+| `Animation/RootModule` | `decompose()` root section | FK decomposition via matrix inverse |
+| `Animation/MotionModule` | `decompose()` joint section | Local Euler extraction via scipy |
+| `IK/FABRIK` | `solve_ik_fabrik()` | Algorithm identical; no Actor dependency |
 
 ## Integration points
 
-| Downstream agent         | Data consumed                                |
-| ------------------------ | -------------------------------------------- |
+| Downstream agent | Data consumed |
+|------------------|---------------|
 | `rive-skeletal-animator` | `per_joint_euler_zyx_degrees` from decompose |
-| `pixijs-combat-renderer` | `contact_frames` from extract-contacts       |
-| `combat-effects-upgrade` | `contact_frames` (impact timing)             |
-| `game-asset-generator`   | Produces source BVH files for this pipeline  |
+| `pixijs-combat-renderer` | `contact_frames` from extract-contacts |
+| `combat-effects-upgrade` | `contact_frames` (impact timing) |
+| `game-asset-generator` | Produces source BVH files for this pipeline |
 
 ## Sample BVH for testing
 
 A walking cycle from ai4animationpy demos is available at:
-
 ```
 /tmp/ai4animationpy/Demos/BVHLoading/WalkingStickLeft_BR.bvh
 ```

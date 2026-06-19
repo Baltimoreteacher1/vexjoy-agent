@@ -53,14 +53,12 @@ python3 ~/.claude/scripts/github-notification-triage.py
 ### Step 2: Present the report
 
 Display the script output directly to the user. The report classifies notifications into:
-
 - **Action required** — PRs awaiting review, mentions, assigned issues
 - **Informational** — CI results, bot comments, automated updates (safe to clear)
 
 ### Step 3: Handle follow-up
 
 If the user responds with any of the following, re-run with `--mark-read`:
-
 - "clean them up"
 - "mark read"
 - "clear the noise"
@@ -82,7 +80,7 @@ python3 ~/.claude/scripts/github-notification-triage.py --mark-read --save
 
 ## Exit Codes
 
-| Code | Meaning                                           |
-| ---- | ------------------------------------------------- |
-| 0    | Success                                           |
+| Code | Meaning |
+|------|---------|
+| 0    | Success |
 | 1    | Error (auth failure, API error, script not found) |
