@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-marketplace.json",
+  "name": "neft-toolkit-marketplace",
+  "owner": {
+    "name": "Joel Neft",
+    "email": "neftjd@gmail.com"
+  },
+  "metadata": {
+    "description": "Personal marketplace for Joel Neft's Claude Code toolkit.",
+    "version": "1.0.0"
+  },
+  "plugins": [
+    {
+      "name": "neft-toolkit",
+      "source": "./",
+      "description": "Agents, skills, commands, and hooks for the classroom/Cloudflare stack.",
+      "version": "1.0.0",
+      "category": "workflow"
+    }
+  ]
+}

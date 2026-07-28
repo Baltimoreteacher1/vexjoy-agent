@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-plugin.json",
+  "name": "neft-toolkit",
+  "version": "1.0.0",
+  "description": "Joel Neft's Claude Code toolkit \u2014 agents, skills, commands, and hooks for the classroom/Cloudflare stack.",
+  "author": {
+    "name": "Joel Neft",
+    "email": "neftjd@gmail.com"
+  },
+  "homepage": "https://github.com/Baltimoreteacher1/vexjoy-agent",
+  "license": "MIT",
+  "keywords": [
+    "education",
+    "cloudflare",
+    "workers",
+    "d1",
+    "classroom",
+    "quality-gates"
+  ],
+  "agents": "./agents",
+  "skills": "./skills",
+  "commands": "./commands"
+}
