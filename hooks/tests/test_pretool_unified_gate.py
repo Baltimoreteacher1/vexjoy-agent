@@ -413,6 +413,31 @@ class TestCheckSensitiveFile:
         payload = _make_write_event("/home/user/.kube/config")
         assert _run_main(payload) == 2
 
+    # .gitignore is blocked on the Bash path by check_gitignore_bypass. These
+    # cover the other two doors into the same file, which were open until a
+    # shell-blocked edit was simply redone with the Edit tool.
+    def test_gitignore_write_blocked(self):
+        payload = _make_write_event("/project/.gitignore")
+        assert _run_main(payload) == 2
+
+    def test_gitignore_edit_blocked(self):
+        payload = _make_edit_event("/project/.gitignore")
+        assert _run_main(payload) == 2
+
+    def test_nested_gitignore_edit_blocked(self):
+        payload = _make_edit_event("/project/packages/web/.gitignore")
+        assert _run_main(payload) == 2
+
+    def test_gitignore_fixture_allowed(self):
+        """A .gitignore under fixtures/ is test data, not a safety boundary."""
+        payload = _make_edit_event("/project/tests/fixtures/.gitignore")
+        assert _run_main(payload) == 0
+
+    def test_similarly_named_file_allowed(self):
+        """The pattern anchors on the filename — .gitignore.md is not it."""
+        payload = _make_write_event("/project/docs/.gitignore.md")
+        assert _run_main(payload) == 0
+
     def test_p12_certificate_blocked(self):
         payload = _make_write_event("/project/certs/client.p12")
         assert _run_main(payload) == 2

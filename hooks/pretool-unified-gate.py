@@ -126,6 +126,14 @@ _SENSITIVE_PATTERNS: list[tuple[re.Pattern[str], str, str]] = [
     # Token files
     (re.compile(r"/token\.json$"), "token", "token.json"),
     (re.compile(r"/\.tokens$"), "token", ".tokens file"),
+    # Repository safety boundaries.
+    # check_gitignore_bypass() already blocks shell edits to .gitignore, but it
+    # only ever sees Bash. An agent refused at `printf >> .gitignore` could
+    # reach for the Edit tool and make the identical change unchallenged —
+    # which is not a theoretical hole, it is how this entry came to be written.
+    # A guard that names itself the repository's safety boundary has to cover
+    # every door into the file, or it is only a speed bump on one of them.
+    (re.compile(r"(^|/)\.gitignore$"), "vcs", ".gitignore"),
 ]
 
 _SENSITIVE_EXCEPTIONS: list[re.Pattern[str]] = [
