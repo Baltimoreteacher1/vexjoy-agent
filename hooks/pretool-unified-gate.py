@@ -64,10 +64,26 @@ _DANGEROUS_BYPASS_ENV = "DANGEROUS_GUARD_BYPASS"
 
 _DANGEROUS_PATTERNS: list[tuple[re.Pattern[str], str, str]] = [
     # Filesystem destruction
-    (re.compile(r"\brm\s+(-[a-zA-Z]*f[a-zA-Z]*\s+)?-[a-zA-Z]*r[a-zA-Z]*\s+/\s*$"), "filesystem", "rm -rf /"),
-    (re.compile(r"\brm\s+(-[a-zA-Z]*f[a-zA-Z]*\s+)?-[a-zA-Z]*r[a-zA-Z]*\s+/\*"), "filesystem", "rm -rf /*"),
-    (re.compile(r"\brm\s+(-[a-zA-Z]*f[a-zA-Z]*\s+)?-[a-zA-Z]*r[a-zA-Z]*\s+~/?(\s|$)"), "filesystem", "rm -rf ~"),
-    (re.compile(r"\brm\s+(-[a-zA-Z]*f[a-zA-Z]*\s+)?-[a-zA-Z]*r[a-zA-Z]*\s+\./?(\s|$)"), "filesystem", "rm -rf ."),
+    (
+        re.compile(r"\brm\s+(-[a-zA-Z]*f[a-zA-Z]*\s+)?-[a-zA-Z]*r[a-zA-Z]*\s+/\s*$"),
+        "filesystem",
+        "rm -rf /",
+    ),
+    (
+        re.compile(r"\brm\s+(-[a-zA-Z]*f[a-zA-Z]*\s+)?-[a-zA-Z]*r[a-zA-Z]*\s+/\*"),
+        "filesystem",
+        "rm -rf /*",
+    ),
+    (
+        re.compile(r"\brm\s+(-[a-zA-Z]*f[a-zA-Z]*\s+)?-[a-zA-Z]*r[a-zA-Z]*\s+~/?(\s|$)"),
+        "filesystem",
+        "rm -rf ~",
+    ),
+    (
+        re.compile(r"\brm\s+(-[a-zA-Z]*f[a-zA-Z]*\s+)?-[a-zA-Z]*r[a-zA-Z]*\s+\./?(\s|$)"),
+        "filesystem",
+        "rm -rf .",
+    ),
     # Database destruction
     (re.compile(r"\bDROP\s+DATABASE\b", re.IGNORECASE), "database", "DROP DATABASE"),
     (re.compile(r"\bDROP\s+SCHEMA\b", re.IGNORECASE), "database", "DROP SCHEMA"),
@@ -75,17 +91,37 @@ _DANGEROUS_PATTERNS: list[tuple[re.Pattern[str], str, str]] = [
     # Permission escalation
     (re.compile(r"\bchmod\s+(-R\s+)?777\b"), "permissions", "chmod 777"),
     # Force-push to protected branches
-    (re.compile(r"\bgit\s+push\s+.*--force\s+.*\b(main|master)\b"), "git", "git push --force main/master"),
-    (re.compile(r"\bgit\s+push\s+-f\s+.*\b(main|master)\b"), "git", "git push -f main/master"),
+    (
+        re.compile(r"\bgit\s+push\s+.*--force\s+.*\b(main|master)\b"),
+        "git",
+        "git push --force main/master",
+    ),
+    (
+        re.compile(r"\bgit\s+push\s+-f\s+.*\b(main|master)\b"),
+        "git",
+        "git push -f main/master",
+    ),
     # Container mass-kill
-    (re.compile(r"\bdocker\s+system\s+prune\s+-af\b"), "container", "docker system prune -af"),
-    (re.compile(r"\bkubectl\s+delete\s+namespace\b"), "container", "kubectl delete namespace"),
+    (
+        re.compile(r"\bdocker\s+system\s+prune\s+-af\b"),
+        "container",
+        "docker system prune -af",
+    ),
+    (
+        re.compile(r"\bkubectl\s+delete\s+namespace\b"),
+        "container",
+        "kubectl delete namespace",
+    ),
     (re.compile(r"\bkubectl\s+delete\s+ns\b"), "container", "kubectl delete ns"),
     # System-level danger
     (re.compile(r"\bmkfs\b"), "system", "mkfs (format disk)"),
     (re.compile(r"\bdd\s+if="), "system", "dd (raw disk write)"),
     # Cloud destructive
-    (re.compile(r"\bterraform\s+destroy\b(?!.*-target)"), "cloud", "terraform destroy (no -target)"),
+    (
+        re.compile(r"\bterraform\s+destroy\b(?!.*-target)"),
+        "cloud",
+        "terraform destroy (no -target)",
+    ),
     (re.compile(r"\baws\s+s3\s+rb\s+.*--force\b"), "cloud", "aws s3 rb --force"),
 ]
 
@@ -108,10 +144,18 @@ _SENSITIVE_BYPASS_ENV = "SENSITIVE_FILE_GUARD_BYPASS"
 _SENSITIVE_PATTERNS: list[tuple[re.Pattern[str], str, str]] = [
     # Environment files (except .env.example)
     (re.compile(r"/\.env$"), "env", ".env"),
-    (re.compile(r"/\.env\.(local|production|staging|development|dev|prod)$"), "env", ".env.*"),
+    (
+        re.compile(r"/\.env\.(local|production|staging|development|dev|prod)$"),
+        "env",
+        ".env.*",
+    ),
     # Credential files
     (re.compile(r"/credentials\.(json|yml|yaml)$"), "credentials", "credentials file"),
-    (re.compile(r"/service-account[^/]*\.json$"), "credentials", "service account JSON"),
+    (
+        re.compile(r"/service-account[^/]*\.json$"),
+        "credentials",
+        "service account JSON",
+    ),
     # SSH keys
     (re.compile(r"/\.ssh/"), "ssh", "SSH directory"),
     (re.compile(r"/id_(rsa|ed25519|ecdsa|dsa)$"), "ssh", "SSH private key"),
@@ -218,7 +262,13 @@ def _block(message: str, tool_name: str = "", reason: str = "") -> None:
     """
     print(message, file=sys.stderr)
     try:
-        record_governance_event("hook_blocked", tool_name=tool_name, hook_phase="pre", severity="high", blocked=True)
+        record_governance_event(
+            "hook_blocked",
+            tool_name=tool_name,
+            hook_phase="pre",
+            severity="high",
+            blocked=True,
+        )
     except Exception:
         pass  # Never let recording prevent a block
     deny_reason = reason if reason else message
