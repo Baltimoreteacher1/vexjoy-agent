@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
-import json, os, pathlib, subprocess, sys
+import json
+import pathlib
+import subprocess
+import sys
 
 sys.path.insert(0, str(pathlib.Path(__file__).parent / "lib"))
 from stdin_timeout import read_stdin
