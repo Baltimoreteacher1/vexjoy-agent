@@ -2,86 +2,6 @@
   "version": "1.0",
   "generated_by": "scripts/generate-agent-index.py",
   "agents": {
-    "ansible-automation-engineer": {
-      "file": "agents/ansible-automation-engineer.md",
-      "short_description": "Ansible automation: playbooks, roles, collections, Molecule testing, Vault security",
-      "triggers": [
-        "ansible",
-        "playbook",
-        "automation",
-        "molecule",
-        "ansible-tower",
-        "AWX"
-      ],
-      "pairs_with": [
-        "verification-before-completion",
-        "kubernetes-helm-engineer"
-      ],
-      "complexity": "Medium-Complex",
-      "category": "infrastructure"
-    },
-    "combat-effects-upgrade": {
-      "file": "agents/combat-effects-upgrade.md",
-      "short_description": "Zero-dependency combat visual upgrades: CSS particle replacement, Framer Motion combat juice, CSS 3D card transforms",
-      "triggers": [
-        "combat effects",
-        "CSS particles",
-        "particle replacement",
-        "framer motion combat",
-        "combat animations",
-        "card transforms",
-        "CSS 3D",
-        "combat juice",
-        "visual effects upgrade",
-        "effects.ts",
-        "combat polish"
-      ],
-      "pairs_with": [
-        "typescript-frontend-engineer",
-        "ui-design-engineer",
-        "pixijs-combat-renderer"
-      ],
-      "complexity": "Medium",
-      "category": "frontend"
-    },
-    "data-engineer": {
-      "file": "agents/data-engineer.md",
-      "short_description": "Data pipelines, ETL/ELT, warehouse design, dimensional modeling, stream processing",
-      "triggers": [
-        "data pipeline",
-        "ETL",
-        "ELT",
-        "dbt",
-        "Airflow",
-        "Prefect",
-        "Dagster",
-        "dimensional model",
-        "data warehouse",
-        "star schema",
-        "snowflake schema",
-        "data lake",
-        "data quality",
-        "streaming",
-        "Kafka",
-        "Spark",
-        "Flink",
-        "BigQuery",
-        "Redshift",
-        "Parquet",
-        "Delta Lake",
-        "Iceberg",
-        "data vault",
-        "slowly changing dimension",
-        "SCD",
-        "data lineage"
-      ],
-      "pairs_with": [
-        "database-engineer",
-        "data-analysis"
-      ],
-      "complexity": "Medium",
-      "category": "infrastructure"
-    },
     "database-engineer": {
       "file": "agents/database-engineer.md",
       "short_description": "Database design, optimization, query performance, migrations, indexing strategies",
@@ -95,63 +15,26 @@
         "query optimization"
       ],
       "pairs_with": [
-        "nodejs-api-engineer",
-        "sqlite-peewee-engineer",
-        "data-engineer"
+        "nodejs-api-engineer"
       ],
       "complexity": "Medium-Complex",
       "category": "infrastructure"
     },
-    "github-profile-rules-engineer": {
-      "file": "agents/github-profile-rules-engineer.md",
-      "short_description": "Extract coding conventions and style rules from GitHub user profiles via API",
+    "extractor": {
+      "file": "agents/extractor.md",
+      "short_description": "PROACTIVELY use when a PPTX file is present and trigger is Pipeline: or NB:",
       "triggers": [
-        "github rules",
-        "profile analysis",
-        "coding style extraction",
-        "github conventions",
-        "programming rules"
-      ],
-      "pairs_with": [
-        "github-profile-rules"
-      ],
-      "complexity": "Medium",
-      "category": "meta"
+        "extractor",
+        "Pipeline:",
+        "NB:"
+      ]
     },
-    "golang-general-engineer-compact": {
-      "file": "agents/golang-general-engineer-compact.md",
-      "short_description": "Compact Go development for tight context budgets",
+    "generator": {
+      "file": "agents/generator.md",
+      "short_description": "Use AFTER user confirms SCENARIO_EXTRACT",
       "triggers": [
-        "go",
-        "golang",
-        "tight context",
-        "compact",
-        "focused go"
-      ],
-      "pairs_with": [
-        "go-patterns"
-      ],
-      "complexity": "Medium-Complex",
-      "category": "language"
-    },
-    "golang-general-engineer": {
-      "file": "agents/golang-general-engineer.md",
-      "short_description": "Go development: features, debugging, code review, performance",
-      "triggers": [
-        "go",
-        "golang",
-        ".go files",
-        "gofmt",
-        "go mod",
-        "goroutine",
-        "channel",
-        "gopls"
-      ],
-      "pairs_with": [
-        "go-patterns"
-      ],
-      "complexity": "Medium-Complex",
-      "category": "language"
+        "generator"
+      ]
     },
     "hook-development-engineer": {
       "file": "agents/hook-development-engineer.md",
@@ -173,87 +56,6 @@
       "complexity": "Comprehensive",
       "category": "meta"
     },
-    "kotlin-general-engineer": {
-      "file": "agents/kotlin-general-engineer.md",
-      "short_description": "Kotlin development: features, coroutines, debugging, code quality, multiplatform",
-      "triggers": [
-        "kotlin",
-        "ktor",
-        "koin",
-        "coroutine",
-        "suspend fun",
-        "kotlin flow",
-        "StateFlow",
-        "kotest",
-        "mockk",
-        "gradle-kts",
-        "detekt",
-        "ktlint",
-        "ktfmt",
-        "android kotlin",
-        "kotlin-multiplatform"
-      ],
-      "pairs_with": [
-        "workflow",
-        "verification-before-completion",
-        "systematic-code-review"
-      ],
-      "complexity": "Medium-Complex",
-      "category": "language"
-    },
-    "kubernetes-helm-engineer": {
-      "file": "agents/kubernetes-helm-engineer.md",
-      "short_description": "Kubernetes and Helm: deployments, troubleshooting, cloud-native infrastructure",
-      "triggers": [
-        "kubernetes",
-        "helm",
-        "k8s",
-        "kubectl",
-        "statefulset",
-        "argocd",
-        "deployment"
-      ],
-      "pairs_with": [
-        "verification-before-completion",
-        "prometheus-grafana-engineer"
-      ],
-      "complexity": "Medium-Complex",
-      "category": "infrastructure"
-    },
-    "mcp-local-docs-engineer": {
-      "file": "agents/mcp-local-docs-engineer.md",
-      "short_description": "MCP server development for local documentation access in TypeScript/Node",
-      "triggers": [
-        "MCP",
-        "docs server",
-        "documentation server",
-        "hugo"
-      ],
-      "pairs_with": [
-        "verification-before-completion"
-      ],
-      "complexity": "Medium",
-      "category": "devops"
-    },
-    "nextjs-ecommerce-engineer": {
-      "file": "agents/nextjs-ecommerce-engineer.md",
-      "short_description": "Next",
-      "triggers": [
-        "next.js e-commerce",
-        "nextjs ecommerce",
-        "shopping cart",
-        "stripe",
-        "e-commerce",
-        "online store",
-        "product catalog"
-      ],
-      "pairs_with": [
-        "verification-before-completion",
-        "typescript-frontend-engineer"
-      ],
-      "complexity": "Medium-Complex",
-      "category": "language"
-    },
     "nodejs-api-engineer": {
       "file": "agents/nodejs-api-engineer.md",
       "short_description": "Node",
@@ -273,23 +75,6 @@
       "complexity": "Medium-Complex",
       "category": "language"
     },
-    "opensearch-elasticsearch-engineer": {
-      "file": "agents/opensearch-elasticsearch-engineer.md",
-      "short_description": "OpenSearch/Elasticsearch: cluster management, performance tuning, index optimization",
-      "triggers": [
-        "opensearch",
-        "elasticsearch",
-        "search cluster",
-        "logstash",
-        "kibana",
-        "search performance"
-      ],
-      "pairs_with": [
-        "verification-before-completion"
-      ],
-      "complexity": "Medium-Complex",
-      "category": "infrastructure"
-    },
     "performance-optimization-engineer": {
       "file": "agents/performance-optimization-engineer.md",
       "short_description": "Web performance optimization: Core Web Vitals, rendering, bundle analysis, monitoring",
@@ -304,82 +89,6 @@
       ],
       "complexity": "Medium-Complex",
       "category": "performance"
-    },
-    "perses-engineer": {
-      "file": "agents/perses-engineer.md",
-      "short_description": "Perses observability platform: dashboards, plugins, operator, core development",
-      "triggers": [
-        "perses",
-        "perses dashboard",
-        "perses plugin",
-        "perses operator",
-        "perses kubernetes",
-        "perses CRD",
-        "percli",
-        "perses migrate",
-        "perses dac",
-        "PersesDashboard",
-        "perses core",
-        "contribute perses",
-        "perses backend",
-        "perses frontend",
-        "perses architecture",
-        "perses internals",
-        "perses project",
-        "observability dashboard",
-        "perses datasource",
-        "perses variable",
-        "perses helm",
-        "perses k8s",
-        "create plugin",
-        "panel plugin",
-        "datasource plugin",
-        "perses plugin development",
-        "perses cue schema",
-        "plugin schema"
-      ],
-      "pairs_with": [
-        "perses-onboard",
-        "perses",
-        "golang-general-engineer",
-        "typescript-frontend-engineer",
-        "kubernetes-helm-engineer",
-        "prometheus-grafana-engineer"
-      ],
-      "complexity": "Medium-Complex",
-      "category": "infrastructure"
-    },
-    "php-general-engineer": {
-      "file": "agents/php-general-engineer.md",
-      "short_description": "PHP development: features, debugging, code quality, security, modern PHP 8",
-      "triggers": [
-        "php",
-        "laravel",
-        "symfony",
-        "composer",
-        "artisan",
-        "eloquent",
-        "blade",
-        "twig",
-        "phpunit",
-        "pest",
-        "psr-12",
-        "psr standards",
-        "hybris",
-        "sapcc",
-        ".php files",
-        "doctrine",
-        "php-cs-fixer",
-        "phpstan",
-        "psalm"
-      ],
-      "pairs_with": [
-        "workflow",
-        "verification-before-completion",
-        "systematic-code-review"
-      ],
-      "complexity": "Medium-Complex",
-      "category": "language"
     },
     "pipeline-orchestrator-engineer": {
       "file": "agents/pipeline-orchestrator-engineer.md",
@@ -399,29 +108,6 @@
       "complexity": "Complex",
       "category": "meta"
     },
-    "pixijs-combat-renderer": {
-      "file": "agents/pixijs-combat-renderer.md",
-      "short_description": "PixiJS v8 2D WebGL combat rendering: @pixi/react hybrid canvas, normal maps, GPU particles, post-processing",
-      "triggers": [
-        "pixijs",
-        "pixi.js",
-        "pixi react",
-        "@pixi/react",
-        "2D WebGL",
-        "GPU particles",
-        "combat renderer",
-        "normal map 2D",
-        "pixi filters",
-        "sprite rendering GPU"
-      ],
-      "pairs_with": [
-        "typescript-frontend-engineer",
-        "ui-design-engineer",
-        "combat-effects-upgrade"
-      ],
-      "complexity": "Medium",
-      "category": "frontend"
-    },
     "project-coordinator-engineer": {
       "file": "agents/project-coordinator-engineer.md",
       "short_description": "Multi-agent project coordination: task breakdown, dependency management, progress tracking",
@@ -439,25 +125,6 @@
       ],
       "complexity": "Complex",
       "category": "meta"
-    },
-    "prometheus-grafana-engineer": {
-      "file": "agents/prometheus-grafana-engineer.md",
-      "short_description": "Prometheus and Grafana: monitoring, alerting, dashboard design, PromQL optimization",
-      "triggers": [
-        "prometheus",
-        "grafana",
-        "monitoring",
-        "alerting",
-        "dashboards",
-        "metrics",
-        "observability"
-      ],
-      "pairs_with": [
-        "verification-before-completion",
-        "kubernetes-helm-engineer"
-      ],
-      "complexity": "Medium-Complex",
-      "category": "infrastructure"
     },
     "python-general-engineer": {
       "file": "agents/python-general-engineer.md",
@@ -478,26 +145,6 @@
       "complexity": "Medium-Complex",
       "category": "language"
     },
-    "python-openstack-engineer": {
-      "file": "agents/python-openstack-engineer.md",
-      "short_description": "OpenStack Python development: Nova, Neutron, Cinder, Oslo libraries, WSGI middleware",
-      "triggers": [
-        "openstack",
-        "oslo",
-        "neutron",
-        "nova",
-        "cinder",
-        "tempest",
-        "oslo.config",
-        "oslo.messaging"
-      ],
-      "pairs_with": [
-        "python-quality-gate",
-        "python-general-engineer"
-      ],
-      "complexity": "Complex",
-      "category": "language"
-    },
     "qa-gate": {
       "file": "agents/qa-gate.md",
       "short_description": "MUST BE USED after any notebook, lesson plan, or game generation",
@@ -505,59 +152,6 @@
         "qa-gate",
         "gate check"
       ]
-    },
-    "rabbitmq-messaging-engineer": {
-      "file": "agents/rabbitmq-messaging-engineer.md",
-      "short_description": "RabbitMQ: message queue architecture, clustering, high-availability, routing patterns",
-      "triggers": [
-        "rabbitmq",
-        "messaging",
-        "message queue",
-        "amqp",
-        "event bus"
-      ],
-      "pairs_with": [
-        "verification-before-completion"
-      ],
-      "complexity": "Medium-Complex",
-      "category": "infrastructure"
-    },
-    "react-native-engineer": {
-      "file": "agents/react-native-engineer.md",
-      "short_description": "React Native and Expo development: performance, animations, navigation, native UI patterns",
-      "triggers": [
-        "react native",
-        "expo",
-        "reanimated",
-        "flashlist",
-        "hermes",
-        "react-navigation",
-        "gesture handler",
-        "native stack"
-      ],
-      "pairs_with": [
-        "universal-quality-gate"
-      ],
-      "complexity": "Medium-Complex",
-      "category": "language"
-    },
-    "react-portfolio-engineer": {
-      "file": "agents/react-portfolio-engineer.md",
-      "short_description": "React portfolio/gallery sites for creatives: React 18+, Next",
-      "triggers": [
-        "portfolio",
-        "gallery",
-        "react portfolio",
-        "art website",
-        "image gallery",
-        "lightbox"
-      ],
-      "pairs_with": [
-        "ui-design-engineer",
-        "typescript-frontend-engineer"
-      ],
-      "complexity": "Medium",
-      "category": "language"
     },
     "research-coordinator-engineer": {
       "file": "agents/research-coordinator-engineer.md",
@@ -633,7 +227,6 @@
         "go-bits design",
         "sapcc structural review",
         "type export",
-        "anti-over-engineering",
         "go-bits usage",
         "builder",
         "production",
@@ -705,86 +298,10 @@
       "pairs_with": [
         "workflow",
         "systematic-code-review",
-        "parallel-code-review",
-        "go-patterns"
+        "parallel-code-review"
       ],
       "complexity": "Medium-Complex",
       "category": "review"
-    },
-    "rive-skeletal-animator": {
-      "file": "agents/rive-skeletal-animator.md",
-      "short_description": "Rive skeletal animation: @rive-app/react-canvas, state machines, character pipelines, combat integration",
-      "triggers": [
-        "rive",
-        "rive-app",
-        "skeletal animation",
-        "character animation",
-        "spine animation",
-        "animation state machine",
-        "idle animation",
-        "hit reaction animation",
-        "@rive-app/react-canvas",
-        ".riv files"
-      ],
-      "pairs_with": [
-        "typescript-frontend-engineer",
-        "ui-design-engineer",
-        "pixijs-combat-renderer"
-      ],
-      "complexity": "Medium",
-      "category": "frontend"
-    },
-    "sqlite-peewee-engineer": {
-      "file": "agents/sqlite-peewee-engineer.md",
-      "short_description": "SQLite with Peewee ORM: model definition, query optimization, migrations, transactions",
-      "triggers": [
-        "peewee",
-        "sqlite",
-        "ORM",
-        "python database",
-        "playhouse"
-      ],
-      "pairs_with": [
-        "python-general-engineer",
-        "database-engineer"
-      ],
-      "complexity": "Medium",
-      "category": "language"
-    },
-    "swift-general-engineer": {
-      "file": "agents/swift-general-engineer.md",
-      "short_description": "Swift development: iOS, macOS, server-side Swift, SwiftUI, concurrency, testing",
-      "triggers": [
-        "swift",
-        "ios",
-        "macos",
-        "xcode",
-        "swiftui",
-        "uikit",
-        "appkit",
-        "watchos",
-        "tvos",
-        "visionos",
-        "vapor",
-        "spm",
-        "swift-package-manager",
-        "swiftlint",
-        "swiftformat",
-        "xctest",
-        "swift-testing",
-        "swift actor",
-        "swift sendable",
-        "swift-combine",
-        "swiftdata",
-        "coredata"
-      ],
-      "pairs_with": [
-        "workflow",
-        "verification-before-completion",
-        "systematic-code-review"
-      ],
-      "complexity": "Medium-Complex",
-      "category": "language"
     },
     "system-upgrade-engineer": {
       "file": "agents/system-upgrade-engineer.md",
@@ -826,22 +343,6 @@
       ],
       "complexity": "Complex",
       "category": "documentation"
-    },
-    "technical-journalist-writer": {
-      "file": "agents/technical-journalist-writer.md",
-      "short_description": "Technical journalism: explainers, opinion pieces, analysis articles, long-form content",
-      "triggers": [
-        "technical article",
-        "technical writing",
-        "journalist voice",
-        "technical writer",
-        "technical journalism"
-      ],
-      "pairs_with": [
-        "voice-writer"
-      ],
-      "complexity": "Complex",
-      "category": "content"
     },
     "testing-automation-engineer": {
       "file": "agents/testing-automation-engineer.md",
@@ -914,8 +415,7 @@
         "zod"
       ],
       "pairs_with": [
-        "universal-quality-gate",
-        "go-patterns"
+        "universal-quality-gate"
       ],
       "complexity": "Medium-Complex",
       "category": "language"

@@ -1,6 +1,6 @@
 {
   "version": "2.0",
-  "generated": "2026-06-19T22:14:46Z",
+  "generated": "2026-04-17T09:38:26Z",
   "generated_by": "scripts/generate-skill-index.py",
   "skills": {
     "adr-consultation": {
@@ -50,19 +50,6 @@
       "category": "meta-tooling",
       "user_invocable": false
     },
-    "anti-ai-editor": {
-      "file": "skills/anti-ai-editor/SKILL.md",
-      "description": "Remove AI-sounding patterns from content.",
-      "triggers": [
-        "remove AI patterns",
-        "de-AI content",
-        "make it sound human",
-        "remove AI voice",
-        "humanize text"
-      ],
-      "category": "content-creation",
-      "user_invocable": false
-    },
     "auto-dream": {
       "file": "skills/auto-dream/SKILL.md",
       "description": "Background memory consolidation and learning graduation \u2014 overnight knowledge lifecycle.",
@@ -80,40 +67,6 @@
       "user_invocable": true,
       "pairs_with": [],
       "model": "sonnet"
-    },
-    "bluesky-reader": {
-      "file": "skills/bluesky-reader/SKILL.md",
-      "description": "Read public Bluesky feeds via AT Protocol API.",
-      "triggers": [
-        "read Bluesky",
-        "fetch Bluesky posts",
-        "AT Protocol",
-        "Bluesky feed",
-        "bsky"
-      ],
-      "category": "research",
-      "user_invocable": false,
-      "agent": "python-general-engineer"
-    },
-    "cobalt-core": {
-      "file": "skills/cobalt-core/SKILL.md",
-      "description": "Cobalt Core infrastructure knowledge: KVM exporters, hypervisor tooling, OpenStack compute.",
-      "triggers": [
-        "cobalt core",
-        "cobaltcore",
-        "kvm-exporter",
-        "kvm exporter",
-        "hypervisor metrics",
-        "libvirt exporter",
-        "cloud hypervisor"
-      ],
-      "category": "infrastructure",
-      "user_invocable": true,
-      "pairs_with": [
-        "go-patterns",
-        "prometheus-grafana-engineer",
-        "kubernetes-helm-engineer"
-      ]
     },
     "code-cleanup": {
       "file": "skills/code-cleanup/SKILL.md",
@@ -199,61 +152,6 @@
       "category": "process",
       "user_invocable": false
     },
-    "content-calendar": {
-      "file": "skills/content-calendar/SKILL.md",
-      "description": "Manage editorial content through 6 pipeline stages.",
-      "triggers": [
-        "content pipeline",
-        "editorial calendar",
-        "publishing schedule",
-        "content schedule",
-        "publication plan"
-      ],
-      "category": "content-creation",
-      "user_invocable": false
-    },
-    "content-engine": {
-      "file": "skills/content-engine/SKILL.md",
-      "description": "Repurpose source assets into platform-native social content.",
-      "triggers": [
-        "repurpose this",
-        "adapt for social",
-        "turn this into posts",
-        "content from article",
-        "content from demo",
-        "content from doc",
-        "write variants for",
-        "social content from",
-        "platform variants",
-        "repurpose for"
-      ],
-      "category": "content",
-      "user_invocable": false,
-      "pairs_with": [
-        "x-api"
-      ],
-      "model": "sonnet"
-    },
-    "create-voice": {
-      "file": "skills/create-voice/SKILL.md",
-      "description": "Create voice profiles from writing samples.",
-      "triggers": [
-        "create voice",
-        "new voice",
-        "build voice",
-        "voice from samples",
-        "calibrate voice",
-        "voice profile from scratch",
-        "make a voice"
-      ],
-      "category": "content",
-      "force_route": true,
-      "user_invocable": false,
-      "pairs_with": [
-        "voice-calibrator",
-        "voice-writer"
-      ]
-    },
     "cron-job-auditor": {
       "file": "skills/cron-job-auditor/SKILL.md",
       "description": "Audit cron scripts for reliability and safety.",
@@ -266,55 +164,6 @@
       ],
       "category": "infrastructure",
       "user_invocable": false
-    },
-    "csuite": {
-      "file": "skills/csuite/SKILL.md",
-      "description": "C-suite executive decision support: strategy, technology, growth, competitive intelligence, project evaluation.",
-      "triggers": [
-        "should I",
-        "should we",
-        "evaluate opportunity",
-        "decision",
-        "trade-off",
-        "worth it",
-        "invest in",
-        "strategy",
-        "strategic",
-        "build or buy",
-        "build vs buy",
-        "vendor evaluation",
-        "adopt",
-        "SaaS vs",
-        "technology choice",
-        "tech stack",
-        "architecture decision",
-        "should we use",
-        "grow audience",
-        "content strategy",
-        "marketing",
-        "SEO strategy",
-        "growth",
-        "brand",
-        "positioning",
-        "community building",
-        "competitor",
-        "competition",
-        "market landscape",
-        "competitive analysis",
-        "differentiation",
-        "feasibility",
-        "is it worth",
-        "effort estimate",
-        "ROI",
-        "priority",
-        "should we start",
-        "project evaluation",
-        "go no go",
-        "viability"
-      ],
-      "category": "decision-support",
-      "user_invocable": false,
-      "pairs_with": []
     },
     "data-analysis": {
       "file": "skills/data-analysis/SKILL.md",
@@ -687,7 +536,6 @@
       "category": "documentation",
       "user_invocable": false,
       "pairs_with": [
-        "go-patterns",
         "codebase-overview"
       ]
     },
@@ -705,63 +553,6 @@
       "user_invocable": false,
       "pairs_with": [],
       "model": "sonnet"
-    },
-    "go-patterns": {
-      "file": "skills/go-patterns/SKILL.md",
-      "description": "Go development patterns: testing, concurrency, errors, review, and conventions.",
-      "triggers": [
-        "go test",
-        "*_test.go",
-        "table-driven",
-        "t.Run",
-        "t.Helper",
-        "goroutine",
-        "channel",
-        "chan",
-        "sync.Mutex",
-        "sync.WaitGroup",
-        "worker pool",
-        "fan-in",
-        "context.Context",
-        "goroutine parallel",
-        "Go parallel",
-        "goroutine fan-out",
-        "fmt.Errorf",
-        "errors.Is",
-        "errors.As",
-        "%w",
-        "sentinel error",
-        "Go mistake",
-        "bad Go",
-        "Go smell",
-        "Go anti-pattern",
-        "Go code smell",
-        "review Go",
-        "Go PR",
-        "Go code review",
-        "review .go",
-        "check Go code",
-        "Go quality",
-        "sapcc",
-        "sap-cloud-infrastructure",
-        "go-bits",
-        "keppel",
-        "go-api-declarations",
-        "go-makefile-maker",
-        "sapcc/go-bits",
-        "sap-cloud-infrastructure/go-bits",
-        "make check",
-        "Go lint"
-      ],
-      "category": "language",
-      "force_route": true,
-      "user_invocable": false,
-      "pairs_with": [
-        "golang-general-engineer",
-        "golang-general-engineer-compact",
-        "systematic-code-review"
-      ],
-      "agent": "golang-general-engineer"
     },
     "headless-cron-creator": {
       "file": "skills/headless-cron-creator/SKILL.md",
@@ -833,29 +624,6 @@
         "comprehensive-review"
       ]
     },
-    "joy-check": {
-      "file": "skills/joy-check/SKILL.md",
-      "description": "Validate content framing on joy-grievance spectrum.",
-      "triggers": [
-        "joy check",
-        "check framing",
-        "tone check",
-        "negative framing",
-        "joy validation",
-        "too negative",
-        "reframe positively",
-        "positive framing check",
-        "instruction framing"
-      ],
-      "category": "content",
-      "user_invocable": false,
-      "pairs_with": [
-        "voice-writer",
-        "anti-ai-editor",
-        "voice-validator",
-        "skill-creator"
-      ]
-    },
     "kairos-lite": {
       "file": "skills/kairos-lite/SKILL.md",
       "description": "Proactive monitoring \u2014 checks GitHub, CI, and toolkit health, produces briefings.",
@@ -901,64 +669,6 @@
       "user_invocable": false,
       "agent": "general-purpose"
     },
-    "kotlin-coroutines": {
-      "file": "skills/kotlin-coroutines/SKILL.md",
-      "description": "Kotlin structured concurrency, Flow, and Channel patterns.",
-      "triggers": [
-        "kotlin coroutines",
-        "kotlin structured concurrency",
-        "kotlin Flow",
-        "kotlin Channel",
-        "suspend function",
-        "structured concurrency kotlin"
-      ],
-      "category": "kotlin",
-      "user_invocable": false,
-      "agent": "kotlin-general-engineer"
-    },
-    "kotlin-testing": {
-      "file": "skills/kotlin-testing/SKILL.md",
-      "description": "Kotlin testing with JUnit 5, Kotest, and coroutine dispatchers.",
-      "triggers": [
-        "kotlin testing",
-        "junit kotlin",
-        "kotest",
-        "junit 5 kotlin",
-        "kotlin test dispatcher"
-      ],
-      "category": "kotlin",
-      "user_invocable": false,
-      "agent": "kotlin-general-engineer"
-    },
-    "kubernetes-debugging": {
-      "file": "skills/kubernetes-debugging/SKILL.md",
-      "description": "Kubernetes debugging for pod failures and networking.",
-      "triggers": [
-        "kubernetes debug",
-        "pod failure",
-        "pod crashloop",
-        "kubectl logs",
-        "OOMKilled",
-        "pod pending"
-      ],
-      "category": "kubernetes",
-      "user_invocable": false,
-      "agent": "kubernetes-helm-engineer"
-    },
-    "kubernetes-security": {
-      "file": "skills/kubernetes-security/SKILL.md",
-      "description": "Kubernetes security: RBAC, PodSecurity, network policies.",
-      "triggers": [
-        "kubernetes security",
-        "k8s RBAC",
-        "RBAC setup",
-        "pod security policy",
-        "network policy"
-      ],
-      "category": "kubernetes",
-      "user_invocable": false,
-      "agent": "kubernetes-helm-engineer"
-    },
     "learn": {
       "file": "skills/learn/SKILL.md",
       "description": "Manually teach error pattern and solution to learning database.",
@@ -971,25 +681,6 @@
       ],
       "category": "meta-tooling",
       "user_invocable": false
-    },
-    "motion-pipeline": {
-      "file": "skills/motion-pipeline/SKILL.md",
-      "description": "CPU-only motion data processing pipeline for game animation: BVH import, contact detection, root decomposition, motion blending, FABRIK IK.",
-      "triggers": [
-        "mocap",
-        "motion data",
-        "animation pipeline",
-        "BVH import",
-        "contact detection",
-        "IK solve",
-        "motion blend",
-        "bone trajectory",
-        "root extraction",
-        "FABRIK",
-        "skeletal animation data"
-      ],
-      "category": "game-animation",
-      "user_invocable": true
     },
     "multi-persona-critique": {
       "file": "skills/multi-persona-critique/SKILL.md",
@@ -1062,34 +753,6 @@
       "category": "code-review",
       "user_invocable": false
     },
-    "perses": {
-      "file": "skills/perses/SKILL.md",
-      "description": "Perses platform operations: dashboards, plugins, deployment, migration, and quality.",
-      "triggers": [
-        "perses",
-        "perses dashboard",
-        "perses plugin",
-        "perses lint",
-        "perses migrate",
-        "percli",
-        "Grafana to Perses",
-        "perses deploy",
-        "perses datasource",
-        "perses variable",
-        "perses project",
-        "perses CUE",
-        "dashboard-as-code"
-      ],
-      "category": "infrastructure",
-      "force_route": true,
-      "user_invocable": false,
-      "pairs_with": [
-        "perses-engineer",
-        "prometheus-grafana-engineer"
-      ],
-      "agent": "perses-engineer",
-      "model": "sonnet"
-    },
     "phaser-gamedev": {
       "file": "skills/phaser-gamedev/SKILL.md",
       "description": "Phaser 3 2D game dev: scenes, physics, tilemaps, sprites, polish.",
@@ -1108,33 +771,6 @@
         "typescript-frontend-engineer",
         "game-asset-generator"
       ]
-    },
-    "php-quality": {
-      "file": "skills/php-quality/SKILL.md",
-      "description": "PHP code quality: PSR standards, strict types, framework idioms.",
-      "triggers": [
-        "php quality",
-        "php code review",
-        "PSR standards",
-        "phpstan",
-        "php-cs-fixer"
-      ],
-      "category": "php",
-      "user_invocable": false,
-      "agent": "php-general-engineer"
-    },
-    "php-testing": {
-      "file": "skills/php-testing/SKILL.md",
-      "description": "PHP testing patterns: PHPUnit, test doubles, database testing.",
-      "triggers": [
-        "php testing",
-        "phpunit",
-        "pest php",
-        "php mock"
-      ],
-      "category": "php",
-      "user_invocable": false,
-      "agent": "php-general-engineer"
     },
     "planning": {
       "file": "skills/planning/SKILL.md",
@@ -1304,60 +940,6 @@
       "category": "content-creation",
       "user_invocable": false
     },
-    "publish": {
-      "file": "skills/publish/SKILL.md",
-      "description": "Content-publishing umbrella covering the blog pipeline from blueprint to upload: post outlining, pre-publication validation, SEO optimization, bulk...",
-      "triggers": [
-        "outline post",
-        "blog structure",
-        "content blueprint",
-        "article outline",
-        "content structure",
-        "pre-publish check",
-        "Hugo validation",
-        "front matter check",
-        "publication check",
-        "frontmatter validation",
-        "check SEO",
-        "optimize SEO",
-        "keyword analysis",
-        "meta description",
-        "keyword optimization",
-        "batch edit posts",
-        "bulk frontmatter update",
-        "find replace across files",
-        "mass edit",
-        "bulk update",
-        "audit links",
-        "find broken links",
-        "link health",
-        "broken links",
-        "dead links",
-        "audit images",
-        "check broken images",
-        "image accessibility",
-        "alt text check",
-        "image optimization",
-        "audit taxonomy",
-        "fix tags",
-        "merge categories",
-        "tag cleanup",
-        "category management",
-        "upload to wordpress",
-        "create wordpress draft",
-        "publish to your-blog",
-        "wordpress draft",
-        "upload article",
-        "post to wordpress",
-        "upload image to wordpress",
-        "edit wordpress post",
-        "update wordpress post",
-        "wordpress media"
-      ],
-      "category": "content-publishing",
-      "user_invocable": false,
-      "agent": "general-purpose"
-    },
     "python-quality-gate": {
       "file": "skills/python-quality-gate/SKILL.md",
       "description": "Python quality checks: ruff, pytest, mypy, bandit in deterministic order.",
@@ -1414,20 +996,6 @@
       ],
       "category": "process",
       "user_invocable": false
-    },
-    "reddit-moderate": {
-      "file": "skills/reddit-moderate/SKILL.md",
-      "description": "Reddit moderation via PRAW: fetch modqueue, classify reports, take actions.",
-      "triggers": [
-        "moderate Reddit",
-        "modqueue",
-        "Reddit reports",
-        "Reddit moderation",
-        "check reports"
-      ],
-      "category": "process",
-      "user_invocable": false,
-      "agent": "python-general-engineer"
     },
     "reference-enrichment": {
       "file": "skills/reference-enrichment/SKILL.md",
@@ -1526,47 +1094,6 @@
       "category": "meta-tooling",
       "user_invocable": false
     },
-    "sapcc-audit": {
-      "file": "skills/sapcc-audit/SKILL.md",
-      "description": "Full-repo SAP CC Go compliance audit against review standards.",
-      "triggers": [
-        "sapcc audit",
-        "sapcc compliance",
-        "check sapcc rules",
-        "full repo audit",
-        "sapcc secondary review",
-        "sapcc standards check"
-      ],
-      "category": "language",
-      "user_invocable": false,
-      "pairs_with": [
-        "golang-general-engineer",
-        "golang-general-engineer-compact",
-        "go-patterns"
-      ],
-      "agent": "golang-general-engineer"
-    },
-    "sapcc-review": {
-      "file": "skills/sapcc-review/SKILL.md",
-      "description": "Gold-standard SAP CC Go code review: 10 parallel domain specialists.",
-      "triggers": [
-        "sapcc review",
-        "sapcc lead review",
-        "sapcc compliance review",
-        "comprehensive sapcc audit",
-        "full sapcc check",
-        "review sapcc standards"
-      ],
-      "category": "language",
-      "user_invocable": false,
-      "pairs_with": [
-        "golang-general-engineer",
-        "go-patterns",
-        "sapcc-audit"
-      ],
-      "agent": "golang-general-engineer",
-      "model": "opus"
-    },
     "security-threat-model": {
       "file": "skills/security-threat-model/SKILL.md",
       "description": "Security threat model: scan toolkit for attack surface, supply-chain risks.",
@@ -1588,19 +1115,6 @@
         "python-general-engineer"
       ],
       "model": "opus"
-    },
-    "series-planner": {
-      "file": "skills/series-planner/SKILL.md",
-      "description": "Plan multi-part content series: structure, cross-linking, cadence.",
-      "triggers": [
-        "plan series",
-        "multi-part content",
-        "content series",
-        "article series",
-        "content arc"
-      ],
-      "category": "content-creation",
-      "user_invocable": false
     },
     "service-health-check": {
       "file": "skills/service-health-check/SKILL.md",
@@ -1698,32 +1212,6 @@
       "category": "process",
       "user_invocable": false
     },
-    "swift-concurrency": {
-      "file": "skills/swift-concurrency/SKILL.md",
-      "description": "Swift concurrency: async/await, Actor, Task, Sendable patterns.",
-      "triggers": [
-        "swift concurrency",
-        "swift async await",
-        "Swift Actor",
-        "Swift Task group"
-      ],
-      "category": "swift",
-      "user_invocable": false,
-      "agent": "swift-general-engineer"
-    },
-    "swift-testing": {
-      "file": "skills/swift-testing/SKILL.md",
-      "description": "Swift testing: XCTest, Swift Testing framework, async patterns.",
-      "triggers": [
-        "swift testing",
-        "XCTest",
-        "Swift Testing framework",
-        "async test swift"
-      ],
-      "category": "swift",
-      "user_invocable": false,
-      "agent": "swift-general-engineer"
-    },
     "systematic-code-review": {
       "file": "skills/systematic-code-review/SKILL.md",
       "description": "4-phase code review: UNDERSTAND, VERIFY, ASSESS risks, DOCUMENT findings.",
@@ -1785,7 +1273,6 @@
       "user_invocable": false,
       "pairs_with": [
         "test-driven-development",
-        "go-patterns",
         "vitest-runner"
       ]
     },
@@ -1824,7 +1311,6 @@
       "user_invocable": false,
       "pairs_with": [
         "typescript-frontend-engineer",
-        "react-native-engineer",
         "distinctive-frontend-design"
       ]
     },
@@ -1848,18 +1334,6 @@
         "multi-persona-critique",
         "skill-eval"
       ]
-    },
-    "topic-brainstormer": {
-      "file": "skills/topic-brainstormer/SKILL.md",
-      "description": "Generate blog topic ideas: problem mining, gap analysis, expansion.",
-      "triggers": [
-        "brainstorm topics",
-        "content ideas",
-        "blog topic ideas",
-        "what to write about"
-      ],
-      "category": "content-creation",
-      "user_invocable": false
     },
     "typescript-check": {
       "file": "skills/typescript-check/SKILL.md",
@@ -1938,55 +1412,6 @@
       "category": "testing",
       "user_invocable": false
     },
-    "voice-validator": {
-      "file": "skills/voice-validator/SKILL.md",
-      "description": "Critique-and-rewrite loop for voice fidelity validation.",
-      "triggers": [
-        "validate voice",
-        "check voice fidelity",
-        "voice critique",
-        "voice fidelity",
-        "writing style check"
-      ],
-      "category": "voice",
-      "user_invocable": false
-    },
-    "voice-writer": {
-      "file": "skills/voice-writer/SKILL.md",
-      "description": "Unified voice content generation pipeline with mandatory validation and joy-check.",
-      "triggers": [
-        "write article",
-        "blog post",
-        "write in voice",
-        "blog post voice",
-        "content pipeline"
-      ],
-      "category": "voice",
-      "user_invocable": true,
-      "model": "sonnet"
-    },
-    "webgl-card-effects": {
-      "file": "skills/webgl-card-effects/SKILL.md",
-      "description": "Standalone WebGL fragment shaders for card visual effects: holographic foil, shimmer, rarity glow.",
-      "triggers": [
-        "card effects",
-        "holographic",
-        "foil effect",
-        "card shimmer",
-        "card glow",
-        "shader card",
-        "WebGL card",
-        "rarity effects",
-        "Balatro effect",
-        "card visual effects"
-      ],
-      "category": "frontend",
-      "user_invocable": false,
-      "pairs_with": [
-        "typescript-frontend-engineer",
-        "ui-design-engineer"
-      ]
-    },
     "with-anti-rationalization": {
       "file": "skills/with-anti-rationalization/SKILL.md",
       "description": "Anti-rationalization enforcement for maximum-rigor task execution.",
@@ -1999,27 +1424,6 @@
       ],
       "category": "process",
       "user_invocable": false
-    },
-    "wordpress-live-validation": {
-      "file": "skills/wordpress-live-validation/SKILL.md",
-      "description": "Validate published WordPress posts in browser via Playwright.",
-      "triggers": [
-        "validate wordpress post",
-        "check live post",
-        "verify published post",
-        "wordpress post looks right",
-        "check og tags live",
-        "responsive check wordpress",
-        "post rendering check",
-        "live site validation"
-      ],
-      "category": "content-publishing",
-      "user_invocable": false,
-      "pairs_with": [
-        "wordpress-uploader",
-        "pre-publish-checker",
-        "seo-optimizer"
-      ]
     },
     "workflow": {
       "file": "skills/workflow/SKILL.md",
@@ -2060,32 +1464,6 @@
       ],
       "category": "git-workflow",
       "user_invocable": false
-    },
-    "x-api": {
-      "file": "skills/x-api/SKILL.md",
-      "description": "Post tweets, build threads, upload media via the X API.",
-      "triggers": [
-        "post to X",
-        "post tweet",
-        "tweet this",
-        "build thread",
-        "post thread",
-        "twitter thread",
-        "x api",
-        "upload media to X",
-        "read timeline",
-        "search X",
-        "search twitter",
-        "publish to X",
-        "publish to twitter"
-      ],
-      "category": "content-publishing",
-      "user_invocable": false,
-      "pairs_with": [
-        "content-engine"
-      ],
-      "agent": "python-general-engineer",
-      "model": "sonnet"
     }
   }
 }

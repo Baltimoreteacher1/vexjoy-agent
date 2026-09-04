@@ -81,9 +81,6 @@ Skills are invoked via `/do [request]` (routed automatically) or directly as `/s
 
 | Skill | Invocable | Description |
 |-------|-----------|-------------|
-| `go-patterns` | no | Go development patterns: testing, concurrency, errors, review, and conventions |
-| `sapcc-audit` | no | Full-repo SAP CC Go compliance audit against review standards |
-| `sapcc-review` | no | Gold-standard SAP CC Go code review: 10 parallel domain specialists |
 | `codebase-analyzer` | no | Statistical rule discovery from Go codebase patterns |
 
 ---
@@ -116,7 +113,6 @@ Skills are invoked via `/do [request]` (routed automatically) or directly as `/s
 
 | Skill | Invocable | Description |
 |-------|-----------|-------------|
-| `perses` | no | Perses platform operations: dashboards, plugins, deployment, migration, and quality |
 
 ---
 
@@ -132,16 +128,6 @@ Skills are invoked via `/do [request]` (routed automatically) or directly as `/s
 
 | Skill | Invocable | Description |
 |-------|-----------|-------------|
-| `voice-writer` | yes | Unified voice content generation pipeline with mandatory validation and joy-check |
-| `voice-validator` | no | Critique-and-rewrite loop for voice fidelity validation |
-| `create-voice` | no | Create voice profiles from writing samples |
-| `anti-ai-editor` | no | Remove AI-sounding patterns from content |
-| `publish` | no | Content-publishing umbrella: outline, pre-publish check, SEO, batch-edit, link/image/taxonomy audits, WordPress upload |
-| `topic-brainstormer` | no | Generate blog topic ideas: problem mining, gap analysis, expansion |
-| `series-planner` | no | Plan multi-part content series: structure, cross-linking, cadence |
-| `content-engine` | no | Repurpose source assets into platform-native social content |
-| `content-calendar` | no | Manage editorial content through 6 pipeline stages |
-| `joy-check` | no | Validate content framing on joy-grievance spectrum |
 | `professional-communication` | no | Transform technical communication into structured business formats |
 | `pptx-generator` | no | PPTX presentation generation with visual QA: slides, pitch decks |
 | `gemini-image-generator` | no | Generate images from text prompts via Google Gemini |
@@ -154,9 +140,6 @@ Skills are invoked via `/do [request]` (routed automatically) or directly as `/s
 
 | Skill | Invocable | Description |
 |-------|-----------|-------------|
-| `x-api` | no | Post tweets, build threads, upload media via the X API |
-| `bluesky-reader` | no | Read public Bluesky feeds via AT Protocol API |
-| `reddit-moderate` | no | Reddit moderation via PRAW: fetch modqueue, classify reports, take actions |
 
 ---
 
@@ -208,7 +191,6 @@ Skills are invoked via `/do [request]` (routed automatically) or directly as `/s
 | `cron-job-auditor` | no | Audit cron scripts for reliability and safety |
 | `service-health-check` | no | Service health monitoring: Discover, Check, Report in 3 phases |
 | `fish-shell-config` | no | Fish shell configuration and PATH management |
-| `wordpress-live-validation` | no | Validate published WordPress posts in browser via Playwright |
 
 ---
 
@@ -216,8 +198,6 @@ Skills are invoked via `/do [request]` (routed automatically) or directly as `/s
 
 | Skill | Invocable | Description |
 |-------|-----------|-------------|
-| `kotlin-coroutines` | no | Kotlin structured concurrency, Flow, and Channel patterns |
-| `kotlin-testing` | no | Kotlin testing with JUnit 5, Kotest, and coroutine dispatchers |
 
 ---
 
@@ -225,8 +205,6 @@ Skills are invoked via `/do [request]` (routed automatically) or directly as `/s
 
 | Skill | Invocable | Description |
 |-------|-----------|-------------|
-| `php-quality` | no | PHP code quality: PSR standards, strict types, framework idioms |
-| `php-testing` | no | PHP testing patterns: PHPUnit, test doubles, database testing |
 
 ---
 
@@ -234,8 +212,6 @@ Skills are invoked via `/do [request]` (routed automatically) or directly as `/s
 
 | Skill | Invocable | Description |
 |-------|-----------|-------------|
-| `swift-concurrency` | no | Swift concurrency: async/await, Actor, Task, Sendable patterns |
-| `swift-testing` | no | Swift testing: XCTest, Swift Testing framework, async patterns |
 
 ---
 
@@ -243,8 +219,6 @@ Skills are invoked via `/do [request]` (routed automatically) or directly as `/s
 
 | Skill | Invocable | Description |
 |-------|-----------|-------------|
-| `kubernetes-debugging` | no | Kubernetes debugging for pod failures and networking |
-| `kubernetes-security` | no | Kubernetes security: RBAC, PodSecurity, network policies |
 
 ---
 

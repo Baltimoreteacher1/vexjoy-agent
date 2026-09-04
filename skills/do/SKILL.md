@@ -150,7 +150,7 @@ FORCE-ROUTE RULE: Entries marked "FORCE" in the manifest MUST be selected when t
 - "quick overview of the architecture" → NOT quick (user wants exploration)
 
 Rules:
-- Pick the most specific match. "Go tests" → golang-general-engineer + go-patterns, not general-purpose.
+- Pick the most specific match. "TypeScript tests" → testing-automation-engineer + vitest-runner, not general-purpose.
 - Agent handles the domain. Skill handles the methodology. Pick both when possible.
 - If the request implies a task verb (review, debug, refactor, test), prefer skills that match that verb.
 - If nothing matches well, return all nulls with reasoning.
@@ -270,7 +270,7 @@ When the request is a code modification (implementation, bug fix, feature additi
 
 When quality-loop applies, it absorbs Step 0 (ADR creation) and Step 1 (plan creation) into its own PHASES 0-1. Do not run Steps 0-1 separately — the quality-loop handles them.
 
-The router still selects the best agent+skill in Phase 2 (e.g., `golang-general-engineer` + `go-patterns`). That selection becomes the implementation agent for quality-loop PHASE 1. Force-route skills like `go-patterns` are used INSIDE the loop, not excluded from it — a Go implementation gets Go-specific patterns AND testing, review, and PR gates.
+The router still selects the best agent+skill in Phase 2 (e.g., `typescript-frontend-engineer` + `typescript-check`). That selection becomes the implementation agent for quality-loop PHASE 1. Force-route skills like `typescript-check` are used INSIDE the loop, not excluded from it — a TypeScript implementation gets TS-specific checks AND testing, review, and PR gates.
 
 The quality-loop does NOT apply when:
 
@@ -328,8 +328,8 @@ Record only observable facts (tool_errors, user_rerouted). Routing outcome quali
 **Skill-scoped recording** (preferred — one-liner):
 
 ```bash
-python3 ~/.claude/scripts/learning-db.py learn --skill go-patterns "insight about testing"
-python3 ~/.claude/scripts/learning-db.py learn --agent golang-general-engineer "insight about agent"
+python3 ~/.claude/scripts/learning-db.py learn --skill vitest-runner "insight about testing"
+python3 ~/.claude/scripts/learning-db.py learn --agent typescript-frontend-engineer "insight about agent"
 python3 ~/.claude/scripts/learning-db.py learn "general insight without scope"
 ```
 

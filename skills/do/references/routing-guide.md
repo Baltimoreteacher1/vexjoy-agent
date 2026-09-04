@@ -14,9 +14,7 @@ The `/do` command routes requests to appropriate agents and skills.
 
 | Triggers | Agent |
 |----------|-------|
-| go, golang, .go files | `golang-general-engineer` |
 | python, .py, pip, pytest | `python-general-engineer` |
-| kubernetes, helm, k8s | `kubernetes-helm-engineer` |
 | react, next.js | `typescript-frontend-engineer` |
 
 ## Force-Routed Skills
@@ -27,11 +25,9 @@ These skills **MUST** be invoked when their triggers appear:
 |----------|-------|
 | Typo, one-line fix, trivial mechanical change | `fast` |
 | Small self-contained change, add CLI flag, extract helper | `quick` |
-| Go test, _test.go, table-driven, goroutine, channel, error handling, fmt.Errorf, sapcc, make check | `go-patterns` |
 | Push branch, create PR, open PR, PR status, fix PR comments, CI passed, GitHub Actions status, build results, name branch, generate branch name, stage files, commit, save work, checkpoint, codex review, second opinion | `pr-workflow` |
 | New feature design, plan, implement, validate, release | `feature-lifecycle` |
 | Scan and fix AI patterns across docs/content | `de-ai-pipeline` |
 | Improve toolkit, evaluate repo, audit system, self-improvement | `toolkit-improvement` |
-| Perses dashboards, plugins, deployment, migration | `perses` |
 
 > For full routing tables with all agents and skills, see `skills/do/references/routing-tables.md`.
