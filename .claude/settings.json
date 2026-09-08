@@ -15,79 +15,70 @@
           {
             "type": "command",
             "command": "python3 \"$HOME/.claude/hooks/sync-to-user-claude.py\"",
-            "description": "Sync agents/skills/hooks/commands to ~/.claude",
-            "timeout": 2000,
             "once": true
           },
           {
             "type": "command",
             "command": "python3 \"$HOME/.claude/hooks/afk-mode.py\"",
-            "description": "Inject autonomous behavioral posture for SSH/tmux/headless sessions",
-            "timeout": 1000,
+            "timeout": 5,
             "once": true
           },
           {
             "type": "command",
             "command": "python3 \"$HOME/.claude/hooks/session-context.py\"",
-            "description": "Load learned patterns from previous sessions",
-            "timeout": 2000,
-            "once": true
-          },
-          {
-            "type": "command",
-            "command": "python3 \"$HOME/.claude/hooks/cross-repo-agents.py\"",
-            "description": "Discover custom agents in working directory",
-            "timeout": 2000,
             "once": true
           },
           {
             "type": "command",
             "command": "python3 \"$HOME/.claude/hooks/fish-shell-detector.py\"",
-            "description": "Auto-detect Fish shell users and inject fish-shell-config skill",
-            "timeout": 1000,
-            "once": true
-          },
-          {
-            "type": "command",
-            "command": "python3 \"$HOME/.claude/hooks/sapcc-go-detector.py\"",
-            "description": "Auto-detect SAP CC Go projects and inject go-patterns skill",
-            "timeout": 1000,
+            "timeout": 5,
             "once": true
           },
           {
             "type": "command",
             "command": "python3 \"$HOME/.claude/hooks/operator-context-detector.py\"",
-            "description": "Detect operator context (pipeline session, ADR session) and inject context",
-            "timeout": 2000,
+            "timeout": 5,
             "once": true
           },
           {
             "type": "command",
             "command": "python3 \"$HOME/.claude/hooks/retro-knowledge-injector.py\"",
-            "description": "Inject top accumulated retro knowledge once at session start for cache-stable context",
-            "timeout": 2000,
+            "timeout": 5,
             "once": true
           },
           {
             "type": "command",
             "command": "python3 \"$HOME/.claude/hooks/kairos-briefing-injector.py\"",
-            "description": "Inject most recent KAIROS monitoring briefing (opt-in: CLAUDE_KAIROS_ENABLED=true)",
-            "timeout": 2000,
-            "once": true
-          },
-          {
-            "type": "command",
-            "command": "python3 \"$HOME/.claude/hooks/rules-distill-injector.py\"",
-            "description": "Inject pending rules-distillation candidates into session context",
-            "timeout": 2000,
+            "timeout": 5,
             "once": true
           },
           {
             "type": "command",
             "command": "python3 \"$HOME/.claude/hooks/session-adr-health-check.py\"",
-            "description": "Detect orphaned .adr-session.json files and warn before synthesis gate deadlocks",
-            "timeout": 2000,
+            "timeout": 5,
             "once": true
+          },
+          {
+            "type": "command",
+            "command": "python3 \"$HOME/.claude/hooks/rules-distill-injector.py\"",
+            "timeout": 5,
+            "once": true
+          },
+          {
+            "type": "command",
+            "command": "python3 \"$HOME/.claude/hooks/team-config-loader.py\"",
+            "timeout": 5,
+            "once": true
+          }
+        ]
+      },
+      {
+        "matcher": "startup|resume",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/Users/joelneft/.local/bin/headroom wrap selfheal --marker headroom-wrap-selfheal",
+            "timeout": 10
           }
         ]
       }
@@ -97,52 +88,48 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 \"$HOME/.claude/hooks/instruction-reminder.py\"",
-            "description": "Re-inject instruction files to combat context drift",
-            "timeout": 3000
+            "command": "python3 \"$HOME/.claude/hooks/instruction-reminder.py\""
           },
           {
             "type": "command",
             "command": "python3 \"$HOME/.claude/hooks/pipeline-context-detector.py\"",
-            "description": "Detect pipeline creation requests and inject pipeline context",
-            "timeout": 2000
+            "timeout": 5
           },
           {
             "type": "command",
             "command": "python3 \"$HOME/.claude/hooks/user-correction-capture.py\"",
-            "description": "Detect user corrections and record to learning DB",
-            "timeout": 3000
+            "timeout": 5
           },
           {
             "type": "command",
-            "command": "python3 \"$HOME/.claude/hooks/auto-plan-detector.py\"",
-            "description": "Detect complex tasks requiring a plan (stub \u2014 /do handles plan detection)",
-            "timeout": 2000
+            "command": "python3 \"$HOME/.claude/hooks/auto-plan-detector.py\""
           },
           {
             "type": "command",
             "command": "python3 \"$HOME/.claude/hooks/codex-auto-review.py\"",
-            "description": "Auto-inject Codex cross-model review for PR review operations",
-            "timeout": 3000
-          },
-          {
-            "type": "command",
-            "command": "python3 \"$HOME/.claude/hooks/perses-mcp-injector.py\"",
-            "description": "Detect Perses/percli prompts and inject MCP tool discovery instructions",
-            "timeout": 3000
+            "timeout": 5
           }
         ]
       }
     ],
     "PreToolUse": [
       {
+        "matcher": "mcp__.*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"$HOME/.claude/hooks/pretool-mcp-blast-radius-guard.py\"",
+            "timeout": 5
+          }
+        ]
+      },
+      {
         "matcher": "Bash|Write|Edit",
         "hooks": [
           {
             "type": "command",
             "command": "python3 \"$HOME/.claude/hooks/pretool-unified-gate.py\"",
-            "description": "Unified gate: gitignore-bypass, git-submission, dangerous-command, creation-gate, sensitive-file (ADR-068)",
-            "timeout": 3000
+            "timeout": 5
           }
         ]
       },
@@ -152,26 +139,26 @@
           {
             "type": "command",
             "command": "python3 \"$HOME/.claude/hooks/pretool-branch-safety.py\"",
-            "description": "Branch safety: blocks git commit on main/master, forces feature branches",
-            "timeout": 3000
+            "timeout": 5
           },
           {
             "type": "command",
             "command": "python3 \"$HOME/.claude/hooks/ci-merge-gate.py\"",
-            "description": "Gate: block merge to main/master when CI checks are red",
-            "timeout": 3000
+            "timeout": 5
           },
           {
             "type": "command",
-            "command": "python3 \"$HOME/.claude/hooks/pretool-ruff-format-gate.py\"",
-            "description": "Block git push when ruff format --check finds violations",
-            "timeout": 3000
+            "command": "python3 \"$HOME/.claude/hooks/pretool-classroom-deploy-guard.py\"",
+            "timeout": 5
           },
           {
             "type": "command",
-            "command": "python3 \"$HOME/.claude/hooks/perses-lint-gate.py\"",
-            "description": "Block percli apply without percli lint — redirect to perses-lint skill",
-            "timeout": 3000
+            "command": "python3 \"$HOME/.claude/hooks/pretool-git-stray-ref-detector.py\"",
+            "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "python3 \"$HOME/.claude/hooks/pretool-ref-delete-guard.py\""
           }
         ]
       },
@@ -181,8 +168,7 @@
           {
             "type": "command",
             "command": "python3 \"$HOME/.claude/hooks/pretool-learning-injector.py\"",
-            "description": "Inject known error patterns before Bash/Edit tools run",
-            "timeout": 3000
+            "timeout": 5
           }
         ]
       },
@@ -191,50 +177,12 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 \"$HOME/.claude/hooks/pretool-synthesis-gate.py\"",
-            "description": "Consultation synthesis gate: blocks implementation when ADR consultation is incomplete",
-            "timeout": 3000
-          },
-          {
-            "type": "command",
-            "command": "python3 \"$HOME/.claude/hooks/pretool-plan-gate.py\"",
-            "description": "Plan gate: blocks implementation code without task_plan.md",
-            "timeout": 3000
-          },
-          {
-            "type": "command",
             "command": "python3 \"$HOME/.claude/hooks/pretool-prompt-injection-scanner.py\"",
-            "description": "Advisory scan for prompt injection patterns in agent context files (ADR-070)",
-            "timeout": 3000
+            "timeout": 5
           },
           {
             "type": "command",
-            "command": "python3 \"$HOME/.claude/hooks/pretool-config-protection.py\"",
-            "description": "Block Write/Edit on linter/formatter config files — fix source instead",
-            "timeout": 3000
-          },
-          {
-            "type": "command",
-            "command": "python3 \"$HOME/.claude/hooks/reference-loading-gate.py\"",
-            "description": "Advisory: remind to load reference files before editing agent/skill components",
-            "timeout": 3000
-          },
-          {
-            "type": "command",
-            "command": "python3 \"$HOME/.claude/hooks/pipeline-phase-gate.py\"",
-            "description": "Block phase-advancing writes when prerequisite pipeline artifacts are absent",
-            "timeout": 3000
-          }
-        ]
-      },
-      {
-        "matcher": "Write",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "python3 \"$HOME/.claude/hooks/pretool-adr-creation-gate.py\"",
-            "description": "ADR creation gate: blocks new components without an ADR in adr/",
-            "timeout": 3000
+            "command": "python3 \"$HOME/.claude/hooks/pretool-config-protection.py\""
           }
         ]
       },
@@ -244,19 +192,7 @@
           {
             "type": "command",
             "command": "python3 \"$HOME/.claude/hooks/pretool-file-backup.py\"",
-            "description": "Backup files before Edit tool modifies them",
-            "timeout": 3000
-          }
-        ]
-      },
-      {
-        "matcher": "mcp__",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "python3 \"$HOME/.claude/hooks/mcp-health-check.py\"",
-            "description": "Block MCP tool calls when server is unhealthy within backoff window",
-            "timeout": 3000
+            "timeout": 5
           }
         ]
       },
@@ -266,20 +202,26 @@
           {
             "type": "command",
             "command": "python3 \"$HOME/.claude/hooks/reference-loading-enforcer.py\"",
-            "description": "Inject reference loading requirement into agent prompts unless already present",
-            "timeout": 3000
+            "timeout": 5
           },
           {
             "type": "command",
             "command": "python3 \"$HOME/.claude/hooks/pretool-subagent-warmstart.py\"",
-            "description": "Inject parent session context into subagent prompts (ADR-088)",
-            "timeout": 5000
+            "timeout": 10
           },
           {
             "type": "command",
             "command": "python3 \"$HOME/.claude/hooks/creation-protocol-enforcer.py\"",
-            "description": "Soft-warn when Agent dispatch is a creation request without a recent ADR session",
-            "timeout": 3000
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "rtk hook claude"
           }
         ]
       }
@@ -290,33 +232,21 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 \"$HOME/.claude/hooks/posttool-lint-hint.py\"",
-            "description": "Gentle lint reminder after file modifications",
-            "timeout": 3000
+            "command": "python3 \"$HOME/.claude/hooks/posttool-lint-hint.py\""
           },
           {
             "type": "command",
-            "command": "python3 \"$HOME/.claude/hooks/agent-grade-on-change.py\"",
-            "description": "Grade agents when modified - warns if quality drops below B",
-            "timeout": 3000
+            "command": "python3 \"$HOME/.claude/hooks/agent-grade-on-change.py\""
           },
           {
             "type": "command",
             "command": "python3 \"$HOME/.claude/hooks/adr-enforcement.py\"",
-            "description": "Enforce ADR compliance after file writes during active pipeline sessions",
-            "timeout": 3000
+            "timeout": 5
           },
           {
             "type": "command",
             "command": "python3 \"$HOME/.claude/hooks/posttool-security-scan.py\"",
-            "description": "Advisory scan for credentials and SQL injection in Write/Edit output",
-            "timeout": 3000
-          },
-          {
-            "type": "command",
-            "command": "python3 \"$HOME/.claude/hooks/posttool-docs-drift-alert.py\"",
-            "description": "Alert when INDEX.json or routing-tables.md may be out of sync after writes",
-            "timeout": 3000
+            "timeout": 5
           }
         ]
       },
@@ -326,26 +256,22 @@
           {
             "type": "command",
             "command": "python3 \"$HOME/.claude/hooks/retro-graduation-gate.py\"",
-            "description": "Warn about ungraduated retro entries when creating PRs in toolkit repo",
-            "timeout": 3000
+            "timeout": 5
           },
           {
             "type": "command",
             "command": "python3 \"$HOME/.claude/hooks/adr-lifecycle-on-merge.py\"",
-            "description": "Check ADR implementation status after merge operations",
-            "timeout": 5000
-          },
-          {
-            "type": "command",
-            "command": "python3 \"$HOME/.claude/hooks/posttool-bash-injection-scan.py\"",
-            "description": "Advisory scan for prompt injection in Bash-written context files",
-            "timeout": 3000
+            "timeout": 10
           },
           {
             "type": "command",
             "command": "python3 \"$HOME/.claude/hooks/posttool-rename-sweep.py\"",
-            "description": "After git mv, warn about stale references to the old filename",
-            "timeout": 3000
+            "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "python3 \"$HOME/.claude/hooks/posttool-bash-injection-scan.py\"",
+            "timeout": 5
           }
         ]
       },
@@ -354,9 +280,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 \"$HOME/.claude/hooks/record-activation.py\"",
-            "description": "Record session activation stats for ROI tracking (ADR-032)",
-            "timeout": 3000
+            "command": "python3 \"$HOME/.claude/hooks/record-activation.py\""
           }
         ]
       },
@@ -365,9 +289,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 \"$HOME/.claude/hooks/posttool-session-reads.py\"",
-            "description": "Track files read this session for subagent warmstart (ADR-088)",
-            "timeout": 3000
+            "command": "python3 \"$HOME/.claude/hooks/posttool-session-reads.py\""
           }
         ]
       },
@@ -377,8 +299,7 @@
           {
             "type": "command",
             "command": "python3 \"$HOME/.claude/hooks/usage-tracker.py\"",
-            "description": "Record Skill and Agent invocation analytics",
-            "timeout": 3000
+            "timeout": 5
           }
         ]
       },
@@ -388,8 +309,7 @@
           {
             "type": "command",
             "command": "python3 \"$HOME/.claude/hooks/review-capture.py\"",
-            "description": "Capture CRITICAL/HIGH review findings to learning DB",
-            "timeout": 3000
+            "timeout": 5
           }
         ]
       },
@@ -397,27 +317,21 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 \"$HOME/.claude/hooks/error-learner.py\"",
-            "description": "Learn from tool errors and suggest solutions",
-            "timeout": 3000
+            "command": "python3 \"$HOME/.claude/hooks/error-learner.py\""
           },
           {
             "type": "command",
             "command": "python3 \"$HOME/.claude/hooks/routing-gap-recorder.py\"",
-            "description": "Record /do routing gaps to learning DB for pattern tracking",
-            "timeout": 2000
+            "timeout": 5
           },
           {
             "type": "command",
-            "command": "python3 \"$HOME/.claude/hooks/record-waste.py\"",
-            "description": "Record wasted tokens from tool failures for ROI tracking (ADR-032)",
-            "timeout": 3000
+            "command": "python3 \"$HOME/.claude/hooks/record-waste.py\""
           },
           {
             "type": "command",
             "command": "python3 \"$HOME/.claude/hooks/completion-evidence-check.py\"",
-            "description": "Advisory check for completion claims without test evidence",
-            "timeout": 2000
+            "timeout": 5
           }
         ]
       },
@@ -427,7 +341,17 @@
           {
             "type": "command",
             "command": "python3 \"$HOME/.claude/hooks/sql-injection-detector.py\"",
-            "timeout": 5000
+            "timeout": 10
+          }
+        ]
+      },
+      {
+        "matcher": "Write|Edit|MultiEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/Users/joelneft/.claude/hooks/safe-format-after-edit.py",
+            "timeout": 10
           }
         ]
       }
@@ -437,9 +361,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 \"$HOME/.claude/hooks/precompact-archive.py\"",
-            "description": "Archive session learnings before context compression",
-            "timeout": 3000
+            "command": "python3 \"$HOME/.claude/hooks/precompact-archive.py\""
           }
         ]
       }
@@ -450,8 +372,7 @@
           {
             "type": "command",
             "command": "python3 \"$HOME/.claude/hooks/task-completed-learner.py\"",
-            "description": "Record task completion metadata for effectiveness tracking",
-            "timeout": 3000
+            "timeout": 5
           }
         ]
       }
@@ -462,8 +383,7 @@
           {
             "type": "command",
             "command": "python3 \"$HOME/.claude/hooks/subagent-completion-guard.py\"",
-            "description": "Enforce branch safety, reviewer READ-ONLY contracts, and sapcc workflow gates",
-            "timeout": 5000
+            "timeout": 10
           }
         ]
       }
@@ -474,8 +394,7 @@
           {
             "type": "command",
             "command": "python3 \"$HOME/.claude/hooks/stop-failure-handler.py\"",
-            "description": "Record session failure for pattern analysis",
-            "timeout": 3000
+            "timeout": 5
           }
         ]
       }
@@ -486,8 +405,7 @@
           {
             "type": "command",
             "command": "python3 \"$HOME/.claude/hooks/postcompact-handler.py\"",
-            "description": "Re-inject plan context after context compaction",
-            "timeout": 3000
+            "timeout": 5
           }
         ]
       }
@@ -497,33 +415,49 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 \"$HOME/.claude/hooks/session-summary.py\"",
-            "description": "Generate session summary and save metrics",
-            "timeout": 3000
+            "command": "python3 \"$HOME/.claude/hooks/session-summary.py\""
           },
           {
             "type": "command",
             "command": "python3 \"$HOME/.claude/hooks/confidence-decay.py\"",
-            "description": "Decay stale learnings and prune dead entries",
-            "timeout": 3000
+            "timeout": 5
           },
           {
             "type": "command",
             "command": "python3 \"$HOME/.claude/hooks/session-learning-recorder.py\"",
-            "description": "Record session learnings and warn on zero-learning sessions",
-            "timeout": 3000
+            "timeout": 5
           },
           {
             "type": "command",
             "command": "python3 \"$HOME/.claude/hooks/knowledge-graduation-proposer.py\"",
-            "description": "Propose graduation of high-confidence learnings into agent/skill files",
-            "timeout": 5000
+            "timeout": 10
           },
           {
             "type": "command",
             "command": "python3 \"$HOME/.claude/hooks/rules-distill-trigger.py\"",
-            "description": "Auto-trigger rules distillation every 7 days",
-            "timeout": 5000
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "Notification": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"$HOME/.claude/hooks/notification-push.py\"",
+            "timeout": 8
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"$HOME/.claude/hooks/session-end-archive.py\"",
+            "timeout": 10
           }
         ]
       }

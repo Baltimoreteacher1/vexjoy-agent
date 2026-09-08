@@ -268,7 +268,19 @@ def main():
     # Components that only ADD files (never remove stale ones from dst).
     # Commands can come from skills auto-generation or other sources;
     # retro entries accumulate from multiple repos.
-    additive_only = {"commands", "retro"}
+    #
+    # Everything is additive as of 2026-09-08. ADR-104's replace-don't-merge rule
+    # was meant to stop *settings.json* referencing a hook file that a branch
+    # switch removed. Stale cleanup was the wrong instrument for it: it deleted
+    # any file living only in ~/.claude, so one session started in this repo
+    # unlinked six safety hooks, both lesson pipeline agents, and 21 skills that
+    # were installed straight into ~/.claude and had no source here.
+    #
+    # The phantom-reference risk is handled at its source instead -- settings.json
+    # hook parity, plus the registered-but-missing warning below -- and a phantom
+    # reference only costs a warning, while deleting a user's curated content is
+    # unrecoverable. Never make deletion the default for content you do not own.
+    additive_only = {"commands", "retro", "agents", "skills", "hooks", "scripts"}
 
     # Components that need entry-level merge (not file-level overwrite).
     # Retro L2 files use ### headings as entries; merging preserves
