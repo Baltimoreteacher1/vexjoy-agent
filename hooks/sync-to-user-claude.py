@@ -242,6 +242,40 @@ def _backup_settings_json(settings_path: Path, keep: int = 3) -> None:
                 pass
 
 
+# Local opt-out: a curated ~/.claude may deliberately NOT want some repo content.
+# Pruning ~/.claude/agents alone is not durable -- this sync is additive, so the
+# next session started in the repo copies the pruned files straight back. Listing
+# a path here makes the removal stick without deleting anything from the repo,
+# which stays a fork of a third-party upstream.
+SYNC_EXCLUDE_FILE = "sync-exclude.txt"
+
+
+def load_sync_excludes(user_claude: Path) -> list[str]:
+    """Read ~/.claude/sync-exclude.txt into a list of destination-relative prefixes.
+
+    Blank lines and ``#`` comments are ignored. Each remaining line is a path
+    relative to ~/.claude (e.g. ``agents/nodejs-api-engineer``); a file is skipped
+    when its destination path equals a prefix or sits underneath one.
+    """
+    path = user_claude / SYNC_EXCLUDE_FILE
+    if not path.is_file():
+        return []
+    excludes = []
+    try:
+        for raw in path.read_text().splitlines():
+            line = raw.split("#", 1)[0].strip().strip("/")
+            if line:
+                excludes.append(line)
+    except OSError:
+        return []
+    return excludes
+
+
+def is_excluded(dst_rel: str, excludes: list[str]) -> bool:
+    """True when a destination-relative path matches an exclude prefix."""
+    return any(dst_rel == e or dst_rel.startswith(e + "/") or dst_rel.startswith(e + ".") for e in excludes)
+
+
 def main():
     # Only run when in the agents repo
     cwd = Path.cwd()
@@ -289,6 +323,7 @@ def main():
 
     synced = []
     errors = []
+    excludes = load_sync_excludes(user_claude)
 
     # Track all source-relative paths per destination for deferred stale cleanup.
     # Multiple sources can map to the same destination (e.g., skills/ and pipelines/
@@ -321,6 +356,8 @@ def main():
             for item in src.rglob("*"):
                 if item.is_file():
                     rel = item.relative_to(src)
+                    if is_excluded(f"{dst_name}/{rel.as_posix()}", excludes):
+                        continue
                     src_relative_paths.add(rel)
                     target = dst / rel
                     target.parent.mkdir(parents=True, exist_ok=True)
@@ -587,6 +624,10 @@ def main():
             for item in src.rglob("*"):
                 if item.is_file():
                     rel = item.relative_to(src)
+                    # Honor the same opt-out list as the ~/.claude sync, so a
+                    # pruned agent does not come back through the Codex mirror.
+                    if label == "agents" and is_excluded(f"agents/{rel.as_posix()}", excludes):
+                        continue
                     target = codex_agents_dst / rel
                     target.parent.mkdir(parents=True, exist_ok=True)
                     if target.exists() and filecmp.cmp(item, target, shallow=False):

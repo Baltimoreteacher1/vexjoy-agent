@@ -65,10 +65,41 @@ ROLE_TOOLS = {
         "WebFetch",
         "WebSearch",
     ],
+    "toolkit-editor": [
+        "Read",
+        "Edit",
+        "Write",
+        "Bash",
+        "Glob",
+        "Grep",
+    ],
+    "pipeline-extract": [
+        "Read",
+        "Glob",
+    ],
+    "pipeline-generate": [
+        "Read",
+        "Write",
+        "Bash",
+    ],
+    "pipeline-gate": [
+        "Read",
+        "Bash",
+    ],
 }
 
 # Explicit agent-to-role mappings
 AGENT_ROLES = {
+    # Lesson pipeline - deliberately narrow tool sets
+    "extractor": "pipeline-extract",
+    "generator": "pipeline-generate",
+    "qa-gate": "pipeline-gate",
+    # Local-only domain agents (files live in ~/.claude, not this repo)
+    "apps-script-engineer": "code-modifier",
+    "classroom-curriculum-engineer": "code-modifier",
+    "cloudflare-workers-engineer": "code-modifier",
+    # Toolkit upkeep - edits skill/agent files, no subagent dispatch
+    "toolkit-governance-engineer": "toolkit-editor",
     # Consolidated reviewers - read-only by default
     "reviewer-code": "reviewer-readonly",
     "reviewer-domain": "reviewer-readonly",
@@ -136,9 +167,28 @@ def parse_frontmatter(content: str) -> tuple[dict, str, str]:
     return fm, fm_text, body
 
 
-def has_allowed_tools(content: str) -> bool:
-    """Check if frontmatter contains allowed-tools."""
-    return "allowed-tools:" in content.split("---")[1] if content.count("---") >= 2 else False
+def declared_tools(content: str) -> list[str] | None:
+    """Return the tools an agent declares, or None when it declares none.
+
+    Claude Code reads the inline ``tools: Read, Edit, ...`` frontmatter field, which
+    is what every agent in this repo uses. ``allowed-tools:`` (a YAML list) is also
+    accepted so older agents still audit correctly. Checking only for
+    ``allowed-tools:`` reported every compliant agent as MISSING and would have had
+    ``--fix`` append a second, platform-ignored declaration to all of them.
+    """
+    if content.count("---") < 2:
+        return None
+    fm = content.split("---")[1]
+
+    inline = re.search(r"^tools:\s*(.+)$", fm, re.MULTILINE)
+    if inline and inline.group(1).strip():
+        return [t.strip() for t in inline.group(1).split(",") if t.strip()]
+
+    listed = re.search(r"^allowed-tools:\s*\n((?:\s*-\s*.+\n?)+)", fm, re.MULTILINE)
+    if listed:
+        return [line.split("-", 1)[1].strip() for line in listed.group(1).splitlines() if line.strip()]
+
+    return None
 
 
 def add_allowed_tools(content: str, tools: list[str]) -> str:
@@ -149,8 +199,8 @@ def add_allowed_tools(content: str, tools: list[str]) -> str:
     parts = content.split("---", 2)
     fm = parts[1]
 
-    # Build tools YAML
-    tools_yaml = "allowed-tools:\n" + "\n".join(f"  - {t}" for t in tools)
+    # Build the declaration in the inline form Claude Code actually reads
+    tools_yaml = "tools: " + ", ".join(tools)
 
     # Insert before the closing ---
     fm = fm.rstrip() + "\n" + tools_yaml + "\n"
@@ -164,6 +214,8 @@ def audit(agents_dir: Path, fix: bool = False) -> int:
     fixed = 0
 
     for agent_file in sorted(agents_dir.glob("*.md")):
+        if agent_file.name == "README.md":
+            continue
         name = agent_file.stem
         content = agent_file.read_text()
 
@@ -174,9 +226,9 @@ def audit(agents_dir: Path, fix: bool = False) -> int:
             continue
 
         expected_tools = ROLE_TOOLS[role]
-        has_tools = has_allowed_tools(content)
+        declared = declared_tools(content)
 
-        if not has_tools:
+        if declared is None:
             if fix:
                 new_content = add_allowed_tools(content, expected_tools)
                 agent_file.write_text(new_content)
@@ -185,8 +237,16 @@ def audit(agents_dir: Path, fix: bool = False) -> int:
             else:
                 print(f"  MISSING: {name} — needs {role} tools")
                 issues += 1
+        elif set(declared) != set(expected_tools):
+            extra = sorted(set(declared) - set(expected_tools))
+            absent = sorted(set(expected_tools) - set(declared))
+            detail = ", ".join(
+                filter(None, [f"extra: {extra}" if extra else "", f"absent: {absent}" if absent else ""])
+            )
+            print(f"  DRIFT: {name} — declared set differs from {role} ({detail})")
+            issues += 1
         else:
-            print(f"  OK: {name} — has allowed-tools")
+            print(f"  OK: {name} — declares {role} tools")
 
     return issues if not fix else fixed
 
@@ -215,11 +275,11 @@ def main():
         print(f"\nFixed {result} agents")
     else:
         if result > 0:
-            print(f"\n{result} agents need allowed-tools declarations")
-            print("Run with --fix to add them")
+            print(f"\n{result} agents have a missing or drifted tool declaration")
+            print("Run with --fix to add the missing ones")
             sys.exit(1)
         else:
-            print("\nAll agents have allowed-tools declarations")
+            print("\nAll agents declare tools matching their role")
 
 
 if __name__ == "__main__":
