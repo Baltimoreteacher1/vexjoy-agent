@@ -124,7 +124,7 @@
         ]
       },
       {
-        "matcher": "Bash|Write|Edit",
+        "matcher": "Write|Edit",
         "hooks": [
           {
             "type": "command",
@@ -138,32 +138,13 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 \"$HOME/.claude/hooks/pretool-branch-safety.py\"",
-            "timeout": 5
-          },
-          {
-            "type": "command",
-            "command": "python3 \"$HOME/.claude/hooks/ci-merge-gate.py\"",
-            "timeout": 5
-          },
-          {
-            "type": "command",
-            "command": "python3 \"$HOME/.claude/hooks/pretool-classroom-deploy-guard.py\"",
-            "timeout": 5
-          },
-          {
-            "type": "command",
-            "command": "python3 \"$HOME/.claude/hooks/pretool-git-stray-ref-detector.py\"",
-            "timeout": 5
-          },
-          {
-            "type": "command",
-            "command": "python3 \"$HOME/.claude/hooks/pretool-ref-delete-guard.py\""
+            "command": "python3 \"$HOME/.claude/hooks/pretool-bash-dispatch.py\"",
+            "timeout": 15
           }
         ]
       },
       {
-        "matcher": "Bash|Edit",
+        "matcher": "Edit",
         "hooks": [
           {
             "type": "command",
