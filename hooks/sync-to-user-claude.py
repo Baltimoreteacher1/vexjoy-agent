@@ -172,13 +172,34 @@ def regenerate_l1_at_dst(dst_retro: Path) -> None:
 # NOTE: Hook sync uses repo-as-source-of-truth (replace, not merge) to prevent
 # phantom hook errors when switching branches. User hooks added manually or from
 # other repos will be overwritten. Non-hook keys are preserved. See ADR-104.
-def sync_settings(repo_settings: dict, global_settings: dict) -> dict:
+_HOOK_SCRIPT_RE = re.compile(r'(?:\$HOME|~)?/[^\s"\']+\.(?:py|sh|mjs|js)\b')
+
+
+def _hook_scripts_exist(command: str, home: Path) -> bool:
+    """True unless the command references a script path that is missing on disk.
+
+    A command with no recognisable script path is treated as existing — the
+    phantom-hook problem this guards against is specifically a stale file
+    reference, which is always a parseable path.
+    """
+    for match in _HOOK_SCRIPT_RE.findall(command):
+        resolved = match.replace("$HOME", str(home)).replace("~", str(home), 1)
+        if not Path(resolved).exists():
+            return False
+    return True
+
+
+def sync_settings(repo_settings: dict, global_settings: dict, home: Path | None = None) -> dict:
     """Sync repo settings as source-of-truth for hooks and attribution.
 
-    The repo's hook list is authoritative: hooks that no longer exist in the
-    repo settings are removed from global settings.  This prevents phantom
-    hook errors when switching branches (hook registered from branch A,
-    file cleaned up on branch B, but settings still reference it).
+    The repo's hook list is authoritative for the hooks it declares, and the
+    merge removes phantom hooks by their real criterion: a global-only hook
+    entry survives only if every script path in its command exists on disk.
+    This keeps curated global-only hooks (settings-pin-guard,
+    context-window-guard, …) that the repo does not manage, while still
+    cleaning up entries whose file was removed on another branch (hook
+    registered from branch A, file cleaned up on branch B, but settings still
+    reference it).
 
     Attribution is enforced: if the repo settings define attribution,
     it is synced. If neither repo nor global settings define attribution,
@@ -187,10 +208,25 @@ def sync_settings(repo_settings: dict, global_settings: dict) -> dict:
 
     Non-hook keys in global settings are preserved.
     """
+    if home is None:
+        home = Path.home()
     result = global_settings.copy()
 
-    # Repo hooks are the authoritative set — replace entirely
-    repo_hooks = repo_settings.get("hooks", {})
+    # Start from the repo's hook block, then re-add global-only entries whose
+    # scripts exist. Dedupe by command string per event.
+    repo_hooks = {ev: list(groups) for ev, groups in repo_settings.get("hooks", {}).items()}
+    repo_cmds = {
+        ev: {h.get("command") for grp in groups for h in grp.get("hooks", [])} for ev, groups in repo_hooks.items()
+    }
+    for ev, groups in global_settings.get("hooks", {}).items():
+        for grp in groups:
+            kept = [
+                h
+                for h in grp.get("hooks", [])
+                if h.get("command") not in repo_cmds.get(ev, set()) and _hook_scripts_exist(h.get("command", ""), home)
+            ]
+            if kept:
+                repo_hooks.setdefault(ev, []).append({**grp, "hooks": kept})
     result["hooks"] = repo_hooks
 
     # Ensure attribution is disabled (CLAUDE.md requirement).

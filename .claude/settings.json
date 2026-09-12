@@ -307,10 +307,6 @@
           },
           {
             "type": "command",
-            "command": "python3 \"$HOME/.claude/hooks/record-waste.py\""
-          },
-          {
-            "type": "command",
             "command": "python3 \"$HOME/.claude/hooks/completion-evidence-check.py\"",
             "timeout": 5
           }
@@ -428,6 +424,16 @@
             "type": "command",
             "command": "python3 \"$HOME/.claude/hooks/session-end-archive.py\"",
             "timeout": 10
+          }
+        ]
+      }
+    ],
+    "PostToolUseFailure": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"$HOME/.claude/hooks/record-waste.py\""
           }
         ]
       }
