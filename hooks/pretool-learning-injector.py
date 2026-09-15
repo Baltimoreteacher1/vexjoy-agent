@@ -46,11 +46,17 @@ COMMAND_KEYWORD_PATTERNS = [
     # Build/test tools
     (re.compile(r"\b(go\s+(?:test|build|run|vet|mod))\b"), ["go", "golang"]),
     (re.compile(r"\b(cargo\s+(?:test|build|run|check))\b"), ["rust", "cargo"]),
-    (re.compile(r"\b(npm\s+(?:test|run|install|build))\b"), ["npm", "javascript", "typescript"]),
+    (
+        re.compile(r"\b(npm\s+(?:test|run|install|build))\b"),
+        ["npm", "javascript", "typescript"],
+    ),
     (re.compile(r"\b(pytest|python3?\s+-m\s+pytest)\b"), ["python", "pytest"]),
     (re.compile(r"\b(make|cmake)\b"), ["make", "build"]),
     # Package managers
-    (re.compile(r"\b(pip\s+install|pip3\s+install)\b"), ["python", "pip", "import_error"]),
+    (
+        re.compile(r"\b(pip\s+install|pip3\s+install)\b"),
+        ["python", "pip", "import_error"],
+    ),
     (re.compile(r"\b(yarn|pnpm)\b"), ["javascript", "typescript"]),
     # Docker/K8s
     (re.compile(r"\b(docker|podman)\b"), ["docker", "container"]),
@@ -220,9 +226,12 @@ if __name__ == "__main__":
     try:
         main()
     except SystemExit:
-        raise
+        raise  # Let sys.exit(0) propagate normally
     except Exception as e:
         if os.environ.get("CLAUDE_HOOKS_DEBUG"):
+            import traceback
+
             print(f"[pretool] Fatal: {type(e).__name__}: {e}", file=sys.stderr)
+            traceback.print_exc(file=sys.stderr)
     finally:
-        sys.exit(0)  # ALWAYS exit 0 — non-blocking requirement
+        sys.exit(0)  # ALWAYS exit 0 — fail-open, non-blocking requirement

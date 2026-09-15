@@ -5,7 +5,7 @@ UserPromptSubmit Hook: Pipeline Creator Context Detection
 
 Detects when a user is requesting pipeline creation and builds an
 environmental state snapshot of existing agents, skills, and hooks.
-This JSON context is injected so pipeline-orchestrator-engineer can
+This JSON context is injected so general-purpose can
 make informed scaffolding decisions without re-scanning the filesystem.
 
 Detection Logic:
@@ -58,6 +58,7 @@ def get_user_prompt() -> str:
     """Extract user prompt from stdin JSON."""
     try:
         data = json.loads(read_stdin(timeout=2))
+        # UserPromptSubmit delivers 'prompt'; fall back to legacy 'userMessage'.
         return data.get("prompt") or data.get("userMessage", "")
     except (json.JSONDecodeError, KeyError):
         return ""

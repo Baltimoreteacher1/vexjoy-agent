@@ -107,7 +107,10 @@ def main():
         if os.environ.get("CLAUDE_HOOKS_DEBUG"):
             import traceback
 
-            print(f"[user-correction-capture] HOOK-ERROR: {type(e).__name__}: {e}", file=sys.stderr)
+            print(
+                f"[user-correction-capture] HOOK-ERROR: {type(e).__name__}: {e}",
+                file=sys.stderr,
+            )
             traceback.print_exc(file=sys.stderr)
     finally:
         sys.exit(0)

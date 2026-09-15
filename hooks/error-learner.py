@@ -17,6 +17,7 @@ Design Principles:
 
 import json
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -35,6 +36,77 @@ from learning_db_v2 import (
     sanitize_for_context,
 )
 from stdin_timeout import read_stdin
+
+# Marks an error that has been seen but never successfully fixed. Kept as a
+# stable sentinel so the graduation proposer can exclude these rows: an entry
+# with no confirmed fix carries no knowledge and must never be promoted into
+# ~/.claude/rules/, no matter how often the error recurs.
+NO_SOLUTION_MARKER = "(no confirmed fix yet)"
+
+# Lines that carry the actual diagnosis, most specific first.
+_SIGNAL_PATTERNS = [
+    r"\b[A-Za-z_]*Error\b",
+    r"\bERR_[A-Z_]+\b",
+    r"\bException\b",
+    r"\bfatal:",
+    r"\bno such file or directory\b",
+    r"\bcommand not found\b",
+    r"\bpermission denied\b",
+    r"\bcannot find\b",
+    r"\bnot found\b",
+    r"\bfailed\b",
+    r"\brefused\b",
+    r"\btimed? ?out\b",
+    r"\bundefined\b",
+]
+
+# Decorative / echoed shell output. A Bash failure's stderr is whatever the whole
+# command emitted, so a compound command's `echo "=== step ==="` banners land in
+# the error text and, being first, used to be what got stored.
+_NOISE_LINE = re.compile(r"^\s*(={2,}.*|-{2,}|\*{2,}|#.*)\s*$")
+
+_EXIT_CODE = re.compile(r"^\s*Exit code (\d+)", re.IGNORECASE)
+
+
+def extract_error_signal(message: str, max_len: int = 220) -> str:
+    """Pull the diagnostic line out of a raw error dump.
+
+    The stored value used to be `message[:200]` — the FIRST 200 characters of
+    combined output. For a compound Bash command that is usually banner text,
+    so rows read "Exit code 1 === crontab === (no matching cron entries)" and
+    the real diagnosis, further down, was truncated away. This keeps the exit
+    code (cheap, useful) and pairs it with the line that actually diagnoses.
+    """
+    if not message:
+        return ""
+
+    raw_lines = message.splitlines()
+    exit_code = ""
+    for line in raw_lines[:2]:
+        m = _EXIT_CODE.match(line)
+        if m:
+            exit_code = f"Exit code {m.group(1)}"
+            break
+
+    lines = [ln.strip() for ln in raw_lines if ln.strip() and not _NOISE_LINE.match(ln) and not _EXIT_CODE.match(ln)]
+    if not lines:
+        return (exit_code or message.strip())[:max_len]
+
+    signal = ""
+    # A Python traceback's final line is the exception; the frames above are noise.
+    if any("Traceback (most recent call last)" in ln for ln in lines):
+        signal = lines[-1]
+    else:
+        for pattern in _SIGNAL_PATTERNS:
+            hit = next((ln for ln in lines if re.search(pattern, ln, re.IGNORECASE)), None)
+            if hit:
+                signal = hit
+                break
+        if not signal:
+            signal = lines[0]
+
+    combined = f"{exit_code}: {signal}" if exit_code else signal
+    return combined[:max_len]
 
 
 def process_automatic_feedback(current_error: str | None) -> None:
@@ -62,20 +134,64 @@ def process_automatic_feedback(current_error: str | None) -> None:
         print(f"[auto-feedback] confidence → {new_confidence:.2f}")
 
 
+def normalize_result(event: dict) -> tuple[str | None, str]:
+    """Flatten either payload shape into (direct_error, output_text).
+
+    Verified against live 2.1.236 hook captures:
+      PostToolUseFailure -> top-level "error": str  (no tool_response)
+      PostToolUse        -> "tool_response": {"stdout","stderr",...}, success only
+
+    The "tool_result" key this hook was originally written against does not
+    exist in any event, which is why it never recorded a real error. It is
+    still read last, for forward/backward compatibility.
+    """
+    direct = event.get("error")
+    if isinstance(direct, str) and direct.strip():
+        return direct, direct
+
+    result = event.get("tool_response")
+    if result is None:
+        result = event.get("tool_result", {})
+
+    if isinstance(result, str):
+        return None, result
+    if not isinstance(result, dict):
+        return None, ""
+
+    if "error" in result:
+        return str(result["error"]), str(result["error"])
+
+    parts = [result.get("stdout"), result.get("stderr"), result.get("output")]
+    text = "\n".join(p for p in parts if isinstance(p, str) and p)
+    if not text:
+        for key in ("content", "message", "result"):
+            value = result.get(key)
+            if isinstance(value, str) and value:
+                text = value
+                break
+    return None, text
+
+
 def detect_error(event: dict) -> tuple[bool, str]:
     """Detect if tool execution had an error.
 
     Returns:
         Tuple of (has_error, error_message)
     """
-    tool_result = event.get("tool_result", {})
+    # PostToolUse fires on SUCCESS only. Keyword-scanning the stdout of a
+    # command that succeeded is how a `grep -c timeout` or a build log that
+    # merely mentions "error" gets recorded as a failure — the scan below is
+    # for failure events, where the text is genuinely an error message.
+    if event.get("hook_event_name") == "PostToolUse":
+        return False, ""
+
+    direct_error, output = normalize_result(event)
 
     # Direct error field
-    if "error" in tool_result:
-        return True, str(tool_result["error"])
+    if direct_error:
+        return True, direct_error
 
     # Check for error in output
-    output = tool_result.get("output", "")
     if isinstance(output, str):
         output_lower = output.lower()
 
@@ -119,7 +235,10 @@ def detect_error(event: dict) -> tuple[bool, str]:
                 # e.g., ErrorType, handle_error, on_error, etc.
                 import re as _re
 
-                if _re.search(r"[A-Z][a-z]*[Ee]rror[A-Z]|[a-z_][Ee]rror[A-Za-z_]|[Hh]andle[_]?[Ee]rror", output):
+                if _re.search(
+                    r"[A-Z][a-z]*[Ee]rror[A-Z]|[a-z_][Ee]rror[A-Za-z_]|[Hh]andle[_]?[Ee]rror",
+                    output,
+                ):
                     # Only suppress if ALL error indicators are inside identifiers
                     plain_indicators = [
                         "failed",
@@ -164,9 +283,11 @@ def main():
 
         event = json.loads(event_data)
 
-        # Only process PostToolUse events
+        # Only process tool-completion events. PostToolUse fires on success
+        # only; failed tool calls arrive as PostToolUseFailure and are the
+        # events this hook actually exists to learn from.
         event_type = event.get("hook_event_name") or event.get("type", "")
-        if event_type != "PostToolUse":
+        if event_type not in ("PostToolUse", "PostToolUseFailure"):
             return
 
         # Check for errors in current result
@@ -226,7 +347,7 @@ def main():
             record_learning(
                 topic=error_type,
                 key=signature,
-                value=f"{error_message[:200]} → {solution}",
+                value=f"{extract_error_signal(error_message)} → {solution}",
                 category="error",
                 source="hook:error-learner",
                 source_detail=source_detail,
@@ -241,7 +362,17 @@ def main():
             fix_info = DEFAULT_FIX_ACTIONS.get(error_type, {"fix_type": "manual", "fix_action": "investigate"})
             fix_type = fix_info["fix_type"]
             fix_action = fix_info["fix_action"]
-            solution = f"Fix {error_type} error in {tool_name}"
+            # Do NOT fabricate a solution here. This branch means "first time we
+            # have seen this error and nobody has fixed it yet" — there is no
+            # knowledge to record. The previous value, f"Fix {error_type} error
+            # in {tool_name}", produced rows reading
+            #   "Exit code 1 ... -> Fix unknown error in Bash"
+            # i.e. a raw stdout fragment joined to a tautology. Those rows are
+            # why the learning DB held 100 entries and none were worth
+            # graduating. Store the error alone, tagged as unsolved; the
+            # feedback loop (process_automatic_feedback) fills in a real
+            # solution if a later fix actually works.
+            solution = NO_SOLUTION_MARKER
 
             print(f"[new-error] {error_type}: {error_message[:100]}")
             if fix_type == "auto":
@@ -261,7 +392,7 @@ def main():
             record_learning(
                 topic=error_type,
                 key=signature,
-                value=f"{error_message[:200]} → {solution}",
+                value=f"{extract_error_signal(error_message)} → {solution}",
                 category="error",
                 source="hook:error-learner",
                 source_detail=source_detail,

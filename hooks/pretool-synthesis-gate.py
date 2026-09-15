@@ -112,6 +112,9 @@ def _synthesis_verdict(synthesis_path: Path) -> str | None:
     except OSError:
         return None
 
+    # Require an explicit "VERDICT:" line containing PROCEED rather than
+    # matching the word anywhere in the file (avoids false positives from
+    # prose, quoted concerns, or incomplete writes).
     if re.search(r"^\s*VERDICT:.*PROCEED", text, re.MULTILINE):
         return "PROCEED"
     if "BLOCKED" in text:
@@ -146,7 +149,10 @@ def main() -> None:
     # Everything else (docs, config, CI, plans, tests, scripts) passes through.
     if not _is_gated(file_path):
         if debug:
-            print(f"[synthesis-gate] Not implementation code, allowing: {file_path}", file=sys.stderr)
+            print(
+                f"[synthesis-gate] Not implementation code, allowing: {file_path}",
+                file=sys.stderr,
+            )
         sys.exit(0)
 
     # Resolve project root: prefer event["cwd"], then CLAUDE_PROJECT_DIR, then cwd.
@@ -157,7 +163,10 @@ def main() -> None:
     if session is None:
         # No active ADR session — gate is dormant.
         if debug:
-            print("[synthesis-gate] No .adr-session.json found — allowing through", file=sys.stderr)
+            print(
+                "[synthesis-gate] No .adr-session.json found — allowing through",
+                file=sys.stderr,
+            )
         sys.exit(0)
 
     domain = session.get("domain", "")
@@ -242,7 +251,10 @@ def main() -> None:
 
     # Explicit PROCEED — allow through.
     if debug:
-        print(f"[synthesis-gate] Verdict=PROCEED for {adr_name} — allowing through", file=sys.stderr)
+        print(
+            f"[synthesis-gate] Verdict=PROCEED for {adr_name} — allowing through",
+            file=sys.stderr,
+        )
     sys.exit(0)
 
 

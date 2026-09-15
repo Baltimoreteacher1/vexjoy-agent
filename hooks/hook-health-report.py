@@ -8,7 +8,7 @@ hooks are *supposed* to produce nothing most of the time, so an empty output
 directory is indistinguishable from a broken hook without reading the source.
 That ambiguity has already cost a debugging session once.
 
-Two complementary checks, both cheap:
+Three complementary checks, all cheap:
 
   1. Static - for every hook command in settings.json, confirm the script exists
      and still compiles. This catches the two failure modes that actually happen
@@ -16,7 +16,13 @@ Two complementary checks, both cheap:
      (phantom reference), and an edit that leaves a syntax error. Uses
      py_compile against __pycache__, so repeat runs are nearly free.
 
-  2. Runtime - replay whatever the dispatchers recorded in hook-health.jsonl.
+  2. Drift - compare each wired hook against its claude-code-toolkit copy. Sync
+     overwrites ~/.claude/hooks from that repo whenever a session starts with the
+     repo as cwd, so a live hook that has drifted ahead of its repo copy is a
+     pending silent revert. On 2026-09-15 twelve hooks were in exactly that
+     state, including the graduation fix in error-learner.py.
+
+  3. Runtime - replay whatever the dispatchers recorded in hook-health.jsonl.
      Those are real exceptions from real tool calls that the dispatchers
      swallowed to fail open. See lib/hook_health.py.
 
@@ -40,6 +46,11 @@ sys.path.insert(0, str(HOOKS_DIR / "lib"))
 
 HOME = Path.home()
 SETTINGS = HOME / ".claude" / "settings.json"
+
+# sync-to-user-claude.py overwrites ~/.claude/hooks from this repo whenever a
+# session starts with the repo as cwd. So a live hook that has drifted ahead of
+# its repo copy is a pending silent revert, not a harmless difference.
+TOOLKIT_HOOKS = HOME / "claude-code-toolkit" / "hooks"
 
 # Pull the script path out of a hook command line, e.g.
 #   python3 "$HOME/.claude/hooks/foo.py"   ->  ~/.claude/hooks/foo.py
@@ -70,13 +81,13 @@ def _resolve(cmd: str) -> Path | None:
     return None
 
 
-def check_static() -> tuple[list[str], int]:
-    """Return (problems, number_of_scripts_checked)."""
+def check_static() -> tuple[list[str], set[Path]]:
+    """Return (problems, the set of wired script paths)."""
     problems: list[str] = []
     try:
         settings = json.loads(SETTINGS.read_text())
     except Exception as exc:
-        return [f"settings.json unreadable: {type(exc).__name__}: {exc}"], 0
+        return [f"settings.json unreadable: {type(exc).__name__}: {exc}"], set()
 
     seen: set[Path] = set()
     for event, cmd in _iter_hook_commands(settings):
@@ -98,7 +109,34 @@ def check_static() -> tuple[list[str], int]:
         except Exception:
             pass  # Unwritable __pycache__ etc. is not a hook defect.
 
-    return problems, len(seen)
+    return problems, seen
+
+
+def check_drift(wired: set[Path]) -> list[str]:
+    """Report wired hooks whose live copy differs from the toolkit repo copy.
+
+    Only wired hooks are reported. An unwired script that differs changes no
+    behaviour, and listing those would bury the signal in noise.
+    """
+    if not TOOLKIT_HOOKS.is_dir():
+        return []
+
+    problems = []
+    for live_path in sorted(wired):
+        if live_path.parent != HOME / ".claude" / "hooks":
+            continue
+        repo_path = TOOLKIT_HOOKS / live_path.name
+        if not repo_path.exists():
+            continue  # Global-only hook; sync preserves these.
+        try:
+            if live_path.read_bytes() != repo_path.read_bytes():
+                problems.append(
+                    f"{live_path.name} differs from the toolkit repo copy - "
+                    f"a session started in claude-code-toolkit would overwrite the live version"
+                )
+        except Exception:
+            pass
+    return problems
 
 
 def check_runtime() -> list[str]:
@@ -128,20 +166,24 @@ def check_runtime() -> list[str]:
 
 def main() -> None:
     try:
-        static_problems, checked = check_static()
+        static_problems, wired = check_static()
+        drift_problems = check_drift(wired)
         runtime_problems = check_runtime()
     except Exception:
         print(json.dumps({"hookSpecificOutput": {"hookEventName": "SessionStart"}}))
         sys.exit(0)
 
-    if not static_problems and not runtime_problems:
+    if not static_problems and not drift_problems and not runtime_problems:
         print(json.dumps({"hookSpecificOutput": {"hookEventName": "SessionStart"}}))
         sys.exit(0)
 
-    lines = [f"[hook-health] {checked} wired hook scripts checked."]
+    lines = [f"[hook-health] {len(wired)} wired hook scripts checked."]
     if static_problems:
         lines.append("Broken wiring:")
         lines += [f"  - {p}" for p in static_problems]
+    if drift_problems:
+        lines.append("Live/repo drift (pending silent revert):")
+        lines += [f"  - {p}" for p in drift_problems]
     if runtime_problems:
         lines.append("Hooks that raised since the last report (dispatcher failed open):")
         lines += [f"  - {p}" for p in runtime_problems]

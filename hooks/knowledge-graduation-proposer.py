@@ -18,6 +18,7 @@ Design Principles:
 - Only stdlib dependencies
 """
 
+import json
 import os
 import sqlite3
 import sys
@@ -27,7 +28,29 @@ from pathlib import Path
 
 # Graduation thresholds
 MIN_CONFIDENCE = 0.85
-MIN_OBSERVATION_COUNT = 3
+# Evidence = how many times the entry has actually been seen or reconfirmed.
+# Two writers feed this: record_learning() bumps observation_count, while
+# boost_confidence() (the reinforcement path that is the ONLY way an entry
+# reaches MIN_CONFIDENCE) bumps success_count. Gating on observation_count
+# alone made graduation unreachable by construction. Take whichever is higher.
+MIN_EVIDENCE = 3
+
+# Counter rows written by task-completion instrumentation: key is a bare integer
+# and the row carries no success signal. High observation_count, zero knowledge.
+NOISE_TOPICS = {"task-completion"}
+
+# Rows written by the hook test suite against the real DB. They are the only
+# entries in the database that reach MIN_CONFIDENCE, so without this filter the
+# first thing graduation would ever promote is "Test error ... -> Test solution".
+# (The 42 historical rows were purged 2026-09-10 and the suite now isolates via
+# CLAUDE_LEARNING_DIR; the filter stays as a backstop.)
+NOISE_SOURCES = {"test"}
+
+# An error that was recorded but never successfully fixed. error-learner.py
+# stamps this instead of fabricating a solution. Recurrence is not knowledge —
+# promoting "this keeps failing and we never found out why" into the always-
+# loaded rules file would be worse than promoting nothing.
+NO_SOLUTION_MARKER = "(no confirmed fix yet)"
 
 # Repo root for resolving agent/skill file paths
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -53,7 +76,12 @@ def _resolve_target_file(topic: str) -> str | None:
     if pipeline_file.exists():
         return str(pipeline_file)
 
-    return None
+    # Fallback destination. Error learnings are keyed by signature hash and carry
+    # topic='unknown', so they matched nothing above and every proposal was
+    # stamped "Target file: UNKNOWN" — a proposal with nowhere to go. Files in
+    # ~/.claude/rules/ are loaded into every session, so that is a destination
+    # where a graduated learning actually takes effect.
+    return str(Path.home() / ".claude" / "rules" / "learned-errors.md")
 
 
 def _format_proposal(topic: str, entries: list[dict], target_file: str | None) -> str:
@@ -146,11 +174,20 @@ def main():
                        observation_count, source, first_seen, last_seen
                 FROM learnings
                 WHERE confidence >= ?
-                  AND observation_count >= ?
+                  AND MAX(observation_count, success_count + 1) >= ?
+                  AND topic NOT IN (SELECT value FROM json_each(?))
+                  AND source NOT IN (SELECT value FROM json_each(?))
+                  AND value NOT LIKE ?
                   AND (graduated_to IS NULL OR graduated_to = '')
                   AND graduation_proposed_at IS NULL
                 """,
-                (MIN_CONFIDENCE, MIN_OBSERVATION_COUNT),
+                (
+                    MIN_CONFIDENCE,
+                    MIN_EVIDENCE,
+                    json.dumps(sorted(NOISE_TOPICS)),
+                    json.dumps(sorted(NOISE_SOURCES)),
+                    f"%{NO_SOLUTION_MARKER}%",
+                ),
             ).fetchall()
 
             if not rows:

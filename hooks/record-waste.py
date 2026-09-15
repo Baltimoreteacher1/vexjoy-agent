@@ -39,15 +39,27 @@ def main() -> None:
     try:
         hook_input = json.loads(read_stdin(timeout=2))
 
-        tool_result = hook_input.get("tool_result", {})
-        if not tool_result.get("is_error", False):
-            return  # Only track failures
+        # Verified against live 2.1.236 captures: a failed tool call arrives as
+        # PostToolUseFailure with a top-level "error" string. PostToolUse fires
+        # on success only and carries "tool_response" — never the "tool_result"
+        # /"is_error" shape this hook was originally written against, which is
+        # why it recorded nothing.
+        output = hook_input.get("error")
+        if not (isinstance(output, str) and output.strip()):
+            result = hook_input.get("tool_response") or hook_input.get("tool_result") or {}
+            if isinstance(result, dict) and result.get("is_error"):
+                output = str(result.get("output") or result.get("error") or "")
+            else:
+                return  # Not a failure — nothing to record
 
-        # Estimate wasted tokens from output length
-        output = tool_result.get("output", "")
         waste_tokens = max(len(output) // CHARS_PER_TOKEN, MIN_WASTE_TOKENS)
 
-        session_id = get_session_id()
+        # The event carries the real session_id. The shared get_session_id()
+        # helper only reads CLAUDE_SESSION_ID (unset in hook subprocesses) and
+        # otherwise derives a PPID+time hash, so waste was being filed under a
+        # synthetic id that matches no session — making the ROI numbers
+        # unattributable. Prefer the payload; keep the helper as a fallback.
+        session_id = hook_input.get("session_id") or get_session_id()
 
         repo_root = Path(__file__).resolve().parent.parent
         script = repo_root / "scripts" / "learning-db.py"

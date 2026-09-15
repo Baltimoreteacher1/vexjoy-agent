@@ -46,8 +46,8 @@ _EXCLUDE_PATTERNS = [
 ]
 
 # Reference files used by adr-compliance.py
-_STEP_MENU = str(Path.home() / ".claude/skills/pipeline-scaffolder/references/step-menu.md")
-_SPEC_FORMAT = str(Path.home() / ".claude/skills/pipeline-scaffolder/references/pipeline-spec-format.md")
+_STEP_MENU = "~/.claude/skills/pipeline-scaffolder/references/step-menu.md"
+_SPEC_FORMAT = "~/.claude/skills/pipeline-scaffolder/references/pipeline-spec-format.md"
 
 
 def is_pipeline_component(file_path: str) -> bool:
@@ -235,14 +235,20 @@ def main() -> None:
         if os.environ.get("CLAUDE_HOOKS_DEBUG"):
             import traceback
 
-            print(f"[adr-enforcement] HOOK-ERROR: {type(e).__name__}: {e}", file=sys.stderr)
+            print(
+                f"[adr-enforcement] HOOK-ERROR: {type(e).__name__}: {e}",
+                file=sys.stderr,
+            )
             traceback.print_exc(file=sys.stderr)
         empty_output(_EVENT_NAME).print_and_exit(0)
     except Exception as e:
         if os.environ.get("CLAUDE_HOOKS_DEBUG"):
             import traceback
 
-            print(f"[adr-enforcement] HOOK-ERROR: {type(e).__name__}: {e}", file=sys.stderr)
+            print(
+                f"[adr-enforcement] HOOK-ERROR: {type(e).__name__}: {e}",
+                file=sys.stderr,
+            )
             traceback.print_exc(file=sys.stderr)
         empty_output(_EVENT_NAME).print_and_exit(0)
     finally:

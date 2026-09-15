@@ -27,9 +27,11 @@ import json
 import os
 import re
 import shlex
+import shutil
 import subprocess
 import sys
 import time
+import urllib.error
 import urllib.request
 from pathlib import Path
 
@@ -230,55 +232,61 @@ def extract_server_name(tool_name: str) -> str | None:
 
 def _probe_http(url: str) -> tuple[bool, str]:
     """
-    Probe an HTTP/HTTPS MCP server.
-    200-308 and 405 (method not allowed — server is alive) = healthy.
+    Probe an HTTP/HTTPS MCP server for LIVENESS, not for authorization.
+
+    Any HTTP status below 500 means the server answered, which is all a
+    liveness probe can honestly conclude from an unauthenticated GET. The
+    MCP endpoints here reply 405 (context7) or 401 (both Cloudflare servers)
+    to a bare GET; treating 4xx as dead marks a perfectly healthy server
+    unhealthy and then blocks every call to it for the whole backoff window.
+
+    Only a 5xx or a transport-level failure counts as unhealthy.
     Returns (is_healthy, message).
     """
     try:
         req = urllib.request.Request(url, method="GET")
         with urllib.request.urlopen(req, timeout=PROBE_TIMEOUT_S) as resp:
             status = resp.status
-            if 200 <= status <= 308 or status == 405:
-                return True, f"HTTP {status}"
-            return False, f"HTTP {status}"
+            if status >= 500:
+                return False, f"HTTP {status}"
+            return True, f"HTTP {status} (alive)"
     except urllib.error.HTTPError as e:
-        if e.code == 405:
-            return True, f"HTTP 405 (alive)"
-        return False, f"HTTP error {e.code}"
+        # An HTTPError still means the server responded.
+        if e.code >= 500:
+            return False, f"HTTP error {e.code}"
+        return True, f"HTTP {e.code} (alive)"
     except Exception as e:
         return False, str(e)
 
 
 def _probe_command(cmd: str) -> tuple[bool, str]:
     """
-    Probe a command-based MCP server by spawning it and checking it accepts stdin.
-    We wait PROBE_TIMEOUT_S seconds; if the process is still running (accepted stdio),
-    we treat it as healthy.
+    Probe a stdio MCP server by checking its launcher resolves — WITHOUT
+    spawning it.
+
+    The previous implementation started the real server on every cold probe.
+    For the servers configured on this machine that means a second Playwright
+    MCP (and its browser), a second Serena, a second chrome-devtools-mcp —
+    launched inside a PreToolUse hook, then killed a few seconds later. That
+    is a heavier side effect than the outage it is meant to detect, and it
+    cannot finish inside the hook timeout anyway.
+
+    A launcher that no longer resolves is the failure this can honestly
+    detect; a live server that has wedged is caught by the PostToolUseFailure
+    path instead.
     Returns (is_healthy, message).
     """
     try:
-        proc = subprocess.Popen(
-            shlex.split(cmd) if isinstance(cmd, str) else cmd,
-            shell=False,
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-        )
-        try:
-            proc.wait(timeout=PROBE_TIMEOUT_S)
-            # Process exited — could be healthy (quick init) or failure
-            if proc.returncode == 0:
-                return True, "command exited 0"
-            return False, f"command exited {proc.returncode}"
-        except subprocess.TimeoutExpired:
-            # Still running after timeout — server is accepting stdio, healthy
-            proc.terminate()
-            try:
-                proc.wait(timeout=2)
-            except subprocess.TimeoutExpired:
-                proc.kill()
-                proc.wait()
-            return True, "command accepted stdio (timeout=healthy)"
+        parts = shlex.split(cmd) if isinstance(cmd, str) else list(cmd)
+        if not parts:
+            return True, "no command (fail-open)"
+        exe = parts[0]
+        resolved = shutil.which(exe)
+        if resolved:
+            return True, f"launcher resolves ({resolved})"
+        if os.path.isabs(exe) and os.access(exe, os.X_OK):
+            return True, f"launcher executable ({exe})"
+        return False, f"launcher not found on PATH: {exe}"
     except Exception as e:
         return False, str(e)
 
@@ -514,7 +522,11 @@ def main() -> None:
     except (json.JSONDecodeError, ValueError):
         return  # Fail-open: bad input is not our problem
 
-    event_name = os.environ.get("CLAUDE_HOOK_EVENT_NAME", "PreToolUse")
+    # The stdin payload is authoritative. CLAUDE_HOOK_EVENT_NAME is NOT set by
+    # Claude Code 2.1.x (verified: absent from the binary and None in a live
+    # capture) — relying on it alone sent every PostToolUseFailure down the
+    # PreToolUse probe path, which can exit 2.
+    event_name = event.get("hook_event_name") or os.environ.get("CLAUDE_HOOK_EVENT_NAME") or "PreToolUse"
 
     if event_name == "PostToolUseFailure":
         handle_posttool_failure(event)

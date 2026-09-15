@@ -201,7 +201,8 @@ def _read_git_remote() -> str | None:
                     content,
                 )
                 if match:
-                    # Strip embedded credentials (//user:token@host -> //host)
+                    # Strip embedded credentials/userinfo (//<user>:<token>@)
+                    # so HTTPS-with-token remotes don't leak into context.
                     return re.sub(r"//[^/@]+@", "//", match.group(1))
             except OSError:
                 pass
