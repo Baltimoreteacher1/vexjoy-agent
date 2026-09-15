@@ -54,12 +54,6 @@
           },
           {
             "type": "command",
-            "command": "python3 \"$HOME/.claude/hooks/session-adr-health-check.py\"",
-            "timeout": 5,
-            "once": true
-          },
-          {
-            "type": "command",
             "command": "python3 \"$HOME/.claude/hooks/rules-distill-injector.py\"",
             "timeout": 5,
             "once": true
@@ -68,6 +62,12 @@
             "type": "command",
             "command": "python3 \"$HOME/.claude/hooks/team-config-loader.py\"",
             "timeout": 5,
+            "once": true
+          },
+          {
+            "type": "command",
+            "command": "python3 \"$HOME/.claude/hooks/hook-health-report.py\"",
+            "timeout": 10,
             "once": true
           }
         ]
@@ -189,11 +189,6 @@
             "type": "command",
             "command": "python3 \"$HOME/.claude/hooks/pretool-subagent-warmstart.py\"",
             "timeout": 10
-          },
-          {
-            "type": "command",
-            "command": "python3 \"$HOME/.claude/hooks/creation-protocol-enforcer.py\"",
-            "timeout": 5
           }
         ]
       },
@@ -209,126 +204,12 @@
     ],
     "PostToolUse": [
       {
-        "matcher": "Write|Edit",
+        "matcher": "*",
         "hooks": [
           {
             "type": "command",
-            "command": "python3 \"$HOME/.claude/hooks/posttool-lint-hint.py\""
-          },
-          {
-            "type": "command",
-            "command": "python3 \"$HOME/.claude/hooks/agent-grade-on-change.py\""
-          },
-          {
-            "type": "command",
-            "command": "python3 \"$HOME/.claude/hooks/adr-enforcement.py\"",
-            "timeout": 5
-          },
-          {
-            "type": "command",
-            "command": "python3 \"$HOME/.claude/hooks/posttool-security-scan.py\"",
-            "timeout": 5
-          }
-        ]
-      },
-      {
-        "matcher": "Bash",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "python3 \"$HOME/.claude/hooks/retro-graduation-gate.py\"",
-            "timeout": 5
-          },
-          {
-            "type": "command",
-            "command": "python3 \"$HOME/.claude/hooks/adr-lifecycle-on-merge.py\"",
-            "timeout": 10
-          },
-          {
-            "type": "command",
-            "command": "python3 \"$HOME/.claude/hooks/posttool-rename-sweep.py\"",
-            "timeout": 10
-          },
-          {
-            "type": "command",
-            "command": "python3 \"$HOME/.claude/hooks/posttool-bash-injection-scan.py\"",
-            "timeout": 5
-          }
-        ]
-      },
-      {
-        "matcher": "Edit|Write|Bash",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "python3 \"$HOME/.claude/hooks/record-activation.py\""
-          }
-        ]
-      },
-      {
-        "matcher": "Read",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "python3 \"$HOME/.claude/hooks/posttool-session-reads.py\""
-          }
-        ]
-      },
-      {
-        "matcher": "Skill|Agent",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "python3 \"$HOME/.claude/hooks/usage-tracker.py\"",
-            "timeout": 5
-          }
-        ]
-      },
-      {
-        "matcher": "Agent",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "python3 \"$HOME/.claude/hooks/review-capture.py\"",
-            "timeout": 5
-          }
-        ]
-      },
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "python3 \"$HOME/.claude/hooks/error-learner.py\""
-          },
-          {
-            "type": "command",
-            "command": "python3 \"$HOME/.claude/hooks/routing-gap-recorder.py\"",
-            "timeout": 5
-          },
-          {
-            "type": "command",
-            "command": "python3 \"$HOME/.claude/hooks/completion-evidence-check.py\"",
-            "timeout": 5
-          }
-        ]
-      },
-      {
-        "matcher": "Write|Edit",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "python3 \"$HOME/.claude/hooks/sql-injection-detector.py\"",
-            "timeout": 10
-          }
-        ]
-      },
-      {
-        "matcher": "Write|Edit|MultiEdit",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "/Users/joelneft/.claude/hooks/safe-format-after-edit.py",
-            "timeout": 10
+            "command": "python3 \"$HOME/.claude/hooks/posttool-dispatch.py\"",
+            "timeout": 15
           }
         ]
       }

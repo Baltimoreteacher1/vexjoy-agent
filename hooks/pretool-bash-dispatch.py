@@ -32,6 +32,12 @@ import sys
 from pathlib import Path
 
 HOOKS_DIR = Path(__file__).resolve().parent
+sys.path.insert(0, str(HOOKS_DIR / "lib"))
+
+try:
+    import hook_health
+except Exception:  # pragma: no cover - health recording is best effort
+    hook_health = None
 
 # Order is the exact order these fired as separate settings.json entries:
 # the Bash|Write|Edit group, then the Bash group, then the Bash|Edit group.
@@ -87,6 +93,8 @@ def _run_guard(path: Path, payload: str) -> str:
             f"[bash-dispatch] {path.name} raised {type(exc).__name__}: {exc} (skipped, failing open)",
             file=sys.stderr,
         )
+        if hook_health is not None:
+            hook_health.record_failure(path.name, exc, event="PreToolUse")
     finally:
         sys.stdin, sys.stdout, sys.path[:] = saved_stdin, saved_stdout, saved_path
     return buf.getvalue()
