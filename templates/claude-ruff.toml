@@ -1,0 +1,25 @@
+# Template for ~/.claude/.ruff.toml — copy it there if that file is ever missing:
+#
+#     cp templates/claude-ruff.toml ~/.claude/.ruff.toml
+#
+# Why it has to exist: hooks/safe-format-after-edit.py runs `ruff format` on every
+# edited Python file, resolving config by walking up from the file. With no config
+# anywhere under ~/.claude, ruff falls back to its default line-length of 88 while
+# this repo formats at 120 — so every hook edited in ~/.claude gets silently
+# re-wrapped and drifts from its repo copy. On 2026-09-15 that had put twelve
+# hooks out of sync, four of them differing by nothing but line breaks.
+#
+# Not auto-provisioned by install.sh deliberately: install.sh is upstream code and
+# patching it costs merge friction on every pull. If ~/.claude is ever rebuilt and
+# this file is missed, hooks/hook-health-report.py reports the resulting drift at
+# SessionStart, so the failure is caught rather than silent.
+#
+# line-length MUST match pyproject.toml. If they diverge, the drift comes back.
+
+line-length = 120
+target-version = "py310"
+
+[format]
+quote-style = "double"
+indent-style = "space"
+line-ending = "lf"
