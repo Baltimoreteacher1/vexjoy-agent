@@ -102,7 +102,7 @@
         "pipeline-scaffolder",
         "domain-research"
       ],
-      "agent": "pipeline-orchestrator-engineer",
+      "agent": "general-purpose",
       "model": "opus"
     },
     "comprehensive-review": {
@@ -212,7 +212,7 @@
       ],
       "pairs_with": [
         "codebase-overview",
-        "technical-documentation-engineer"
+        "general-purpose"
       ]
     },
     "domain-research": {
@@ -238,7 +238,7 @@
         "pipeline-scaffolder",
         "codebase-analyzer"
       ],
-      "agent": "pipeline-orchestrator-engineer",
+      "agent": "general-purpose",
       "model": "opus"
     },
     "explore-pipeline": {
@@ -276,7 +276,7 @@
       "pairs_with": [
         "codebase-overview",
         "codebase-analyzer",
-        "technical-documentation-engineer"
+        "general-purpose"
       ]
     },
     "feature-pipeline": {
@@ -461,7 +461,7 @@
         "chain-composer",
         "domain-research"
       ],
-      "agent": "pipeline-orchestrator-engineer",
+      "agent": "general-purpose",
       "model": "opus"
     },
     "pipeline-scaffolder": {
@@ -486,7 +486,7 @@
         "chain-composer",
         "pipeline-test-runner"
       ],
-      "agent": "pipeline-orchestrator-engineer",
+      "agent": "general-purpose",
       "model": "opus"
     },
     "pipeline-test-runner": {
@@ -512,7 +512,7 @@
         "pipeline-retro",
         "chain-composer"
       ],
-      "agent": "pipeline-orchestrator-engineer",
+      "agent": "general-purpose",
       "model": "opus"
     },
     "pr-pipeline": {
@@ -611,7 +611,7 @@
         "domain-research",
         "explore-pipeline"
       ],
-      "agent": "research-coordinator-engineer"
+      "agent": "general-purpose"
     },
     "research-to-article": {
       "file": "skills/workflow/references/research-to-article.md",
@@ -694,7 +694,7 @@
         "agent-upgrade",
         "agent-evaluation"
       ],
-      "agent": "system-upgrade-engineer"
+      "agent": "toolkit-governance-engineer"
     },
     "systematic-debugging": {
       "file": "skills/workflow/references/systematic-debugging.md",

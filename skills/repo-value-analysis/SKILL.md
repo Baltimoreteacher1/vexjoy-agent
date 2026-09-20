@@ -3,7 +3,7 @@ name: repo-value-analysis
 description: "Analyze external repositories for adoptable ideas and patterns."
 user-invocable: false
 argument-hint: "<repo-url-or-path>"
-agent: research-coordinator-engineer
+agent: general-purpose
 model: opus
 allowed-tools:
   - Agent

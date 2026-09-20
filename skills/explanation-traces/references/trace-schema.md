@@ -74,7 +74,7 @@ A specific agent was selected to execute part of a task.
   "timestamp": "2026-04-01T14:23:02Z",
   "type": "agent-selection",
   "chosen": "reviewer-code",
-  "alternatives": ["reviewer-domain", "reviewer-perspectives"],
+  "alternatives": ["reviewer-system", "reviewer-code"],
   "evidence": "Request contains code-specific keywords ('function', 'bug'); reviewer-code agent scores 0.92 vs domain 0.41 vs perspectives 0.38",
   "context": "Dispatching review agent for: 'review this function for bugs'"
 }

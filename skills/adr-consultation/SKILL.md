@@ -110,9 +110,9 @@ Each agent receives:
 Read the response files from disk, not from Task return context, because files persist across sessions while context does not -- synthesis from context is not reproducible.
 
 ```bash
-cat adr/{adr-name}/reviewer-perspectives-contrarian.md
-cat adr/{adr-name}/reviewer-perspectives-user-advocate.md
-cat adr/{adr-name}/reviewer-perspectives-meta-process.md
+cat adr/{adr-name}/reviewer-code-contrarian.md
+cat adr/{adr-name}/reviewer-code-user-advocate.md
+cat adr/{adr-name}/reviewer-code-meta-process.md
 ```
 
 **Step 2: Extract all concerns**
@@ -207,7 +207,7 @@ The consultation directory is auto-created by Phase 1 (`mkdir -p adr/{adr-name}`
 
 - [ADR: Multi-Agent Consultation](../../adr/multi-agent-consultation.md) -- The architecture decision this skill implements
 - [parallel-code-review](../parallel-code-review/SKILL.md) -- Fan-out/fan-in pattern this skill adapts
-- [reviewer-perspectives](../../agents/reviewer-perspectives.md) -- Perspectives agent (contrarian, user-advocate, meta-process lenses)
+- [reviewer-code](../../agents/reviewer-code.md) -- Perspectives agent (contrarian, user-advocate, meta-process lenses)
 - `references/agent-prompts.md` -- Full prompt templates for all 3 standard agents + complex mode
 - `references/consultation-patterns.md` -- Correct patterns, artifact templates, verdict display formats
 - `references/consultation-anti-patterns.md` -- Anti-patterns with detection commands

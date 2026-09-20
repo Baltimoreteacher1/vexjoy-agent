@@ -37,9 +37,9 @@ with no cross-perspective benefit.
 
 ```markdown
 <!-- Correct: single message, three Task calls -->
-Task 1: reviewer-perspectives (contrarian) → writes adr/{name}/reviewer-perspectives-contrarian.md
-Task 2: reviewer-perspectives (user-advocate) → writes adr/{name}/reviewer-perspectives-user-advocate.md
-Task 3: reviewer-perspectives (meta-process) → writes adr/{name}/reviewer-perspectives-meta-process.md
+Task 1: reviewer-code (contrarian) → writes adr/{name}/reviewer-code-contrarian.md
+Task 2: reviewer-code (user-advocate) → writes adr/{name}/reviewer-code-user-advocate.md
+Task 3: reviewer-code (meta-process) → writes adr/{name}/reviewer-code-meta-process.md
 ```
 
 **Why**: Agents assess independently. Sequential dispatch introduces timing artifacts where
@@ -53,9 +53,9 @@ Read agent responses from disk, not from Task return context.
 
 ```bash
 # Correct: read from files after all agents complete
-cat adr/{name}/reviewer-perspectives-contrarian.md
-cat adr/{name}/reviewer-perspectives-user-advocate.md
-cat adr/{name}/reviewer-perspectives-meta-process.md
+cat adr/{name}/reviewer-code-contrarian.md
+cat adr/{name}/reviewer-code-user-advocate.md
+cat adr/{name}/reviewer-code-meta-process.md
 ```
 
 **Why**: Task return context is ephemeral. Files persist across sessions. Synthesis from
@@ -143,7 +143,7 @@ Document orchestrator-level concerns in `concerns.md` under a separate section:
 ls adr/{name}/ 2>/dev/null || echo "MISSING — run mkdir -p adr/{name}"
 
 # Count written agent files (standard: expect 3)
-ls adr/{name}/reviewer-perspectives-*.md 2>/dev/null | wc -l
+ls adr/{name}/reviewer-code-*.md 2>/dev/null | wc -l
 
 # Check for blocking concerns in concerns.md
 grep -c "Severity.*blocking" adr/{name}/concerns.md 2>/dev/null
@@ -165,7 +165,7 @@ ls adr/{name}/synthesis.md adr/{name}/concerns.md 2>/dev/null
 # Concerns: {adr-name}
 
 ## Concern 1: [Title]
-- **Raised by**: reviewer-perspectives (contrarian) | reviewer-perspectives (user-advocate) | reviewer-perspectives (meta-process)
+- **Raised by**: reviewer-code (contrarian) | reviewer-code (user-advocate) | reviewer-code (meta-process)
 - **Severity**: blocking | important | minor
 - **Description**: [What's wrong or at risk]
 - **Resolution**: UNRESOLVED
@@ -190,9 +190,9 @@ Resolution states (update as concerns are addressed):
 ## Agent Verdicts
 | Agent | Verdict |
 |-------|---------|
-| reviewer-perspectives (contrarian) | [verdict] |
-| reviewer-perspectives (user-advocate) | [verdict] |
-| reviewer-perspectives (meta-process) | [verdict] |
+| reviewer-code (contrarian) | [verdict] |
+| reviewer-code (user-advocate) | [verdict] |
+| reviewer-code (meta-process) | [verdict] |
 
 ## Areas of Agreement
 [Where all agents agree — positive or negative.]
@@ -255,17 +255,17 @@ Resolution states (update as concerns are addressed):
  Verdict: PROCEED — no blocking concerns found.
 
  Agent Verdicts:
-   - reviewer-perspectives (contrarian):    [verdict]
-   - reviewer-perspectives (user-advocate): [verdict]
-   - reviewer-perspectives (meta-process):  [verdict]
+   - reviewer-code (contrarian):    [verdict]
+   - reviewer-code (user-advocate): [verdict]
+   - reviewer-code (meta-process):  [verdict]
 
  Important Concerns (non-blocking):
    [{raised by}] {concern title} — {brief description}
 
  Consultation artifacts:
-   - adr/{adr-name}/reviewer-perspectives-contrarian.md
-   - adr/{adr-name}/reviewer-perspectives-user-advocate.md
-   - adr/{adr-name}/reviewer-perspectives-meta-process.md
+   - adr/{adr-name}/reviewer-code-contrarian.md
+   - adr/{adr-name}/reviewer-code-user-advocate.md
+   - adr/{adr-name}/reviewer-code-meta-process.md
    - adr/{adr-name}/synthesis.md
    - adr/{adr-name}/concerns.md
 ═══════════════════════════════════════════════════════════════
@@ -277,4 +277,4 @@ Resolution states (update as concerns are addressed):
 
 - `consultation-anti-patterns.md` — ADR quality anti-patterns that reviewers should catch
 - `skills/parallel-code-review/SKILL.md` — Fan-out/fan-in pattern this skill adapts
-- `agents/reviewer-perspectives.md` — Perspectives agent (contrarian, user-advocate, meta-process lenses)
+- `agents/reviewer-code.md` — Perspectives agent (contrarian, user-advocate, meta-process lenses)

@@ -19,7 +19,7 @@ Use `model: sonnet` for all Wave 2 agents. The orchestrator runs on Opus; dispat
 | 17 | `reviewer-code` (naming-consistency lens) | Naming | Code-quality + language-specialist findings → convention baselines |
 | 18 | `reviewer-system` (observability lens) | Observability | Silent-failure findings → observability gaps at failure points |
 | 19 | `reviewer-system` (config-safety lens) | Config Safety | Security + docs-validator findings → config security gaps |
-| 20 | `reviewer-domain` (migration-safety lens) | Migration Safety | API-contract + business-logic findings → migration-sensitive changes |
+| 20 | `reviewer-system` (migration-safety lens) | Migration Safety | API-contract + business-logic findings → migration-sensitive changes |
 
 ## Standard Agent Prompt Template
 
@@ -86,4 +86,4 @@ Return findings as:
 | `reviewer-code` (naming-consistency) | Use Wave 0 per-package naming patterns to detect intra-package drift. Use Wave 1 code-quality + language-specialist findings. Focus on cross-package naming consistency. |
 | `reviewer-system` (observability) | Use Wave 0 per-package findings for packages missing instrumentation. Use Wave 1 silent-failure findings for error paths missing observability. Focus on RED metrics gaps. |
 | `reviewer-system` (config-safety) | Use Wave 0 per-package findings for hardcoded values within packages. Use Wave 1 security + docs-validator findings. Focus on secrets, missing env var validation. |
-| `reviewer-domain` (migration-safety) | Use Wave 1 api-contract + business-logic findings to identify migration-sensitive changes. Focus on reversible migrations, deprecation paths, rollback safety. |
+| `reviewer-system` (migration-safety) | Use Wave 1 api-contract + business-logic findings to identify migration-sensitive changes. Focus on reversible migrations, deprecation paths, rollback safety. |

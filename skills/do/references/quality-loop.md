@@ -76,7 +76,7 @@ Write the execution plan before implementation.
 
 ### PHASE 2 — IMPLEMENT
 
-Dispatch the agent+skill that `/do` Phase 2 selected, with worktree isolation. The quality-loop does not choose the agent — it uses whatever the router already picked (e.g., `golang-general-engineer` + `go-patterns` for Go work, `python-general-engineer` + `python-quality-gate` for Python work).
+Dispatch the agent+skill that `/do` Phase 2 selected, with worktree isolation. The quality-loop does not choose the agent — it uses whatever the router already picked (e.g., `general-purpose` + `go-patterns` for Go work, `general-purpose` + `python-quality-gate` for Python work).
 
 - Create feature branch in worktree
 - Agent uses its own skill and reference files for domain-specific implementation
@@ -121,8 +121,8 @@ Capture: exit codes, failure output, test counts.
 Dispatch 3 parallel review agents against the diff (feature branch vs main):
 
 1. **Security reviewer** (reviewer-system) — injection vectors, auth issues, secret exposure, input validation
-2. **Business logic reviewer** (reviewer-domain) — correctness, edge cases, domain rules, error handling
-3. **Architecture reviewer** (reviewer-perspectives) — design patterns, coupling, API contracts, performance
+2. **Business logic reviewer** (reviewer-code) — correctness, edge cases, domain rules, error handling
+3. **Architecture reviewer** (reviewer-system) — design patterns, coupling, API contracts, performance
 
 Each reviewer produces findings as:
 - CRITICAL: Must fix before merge

@@ -14,8 +14,8 @@ The `/do` command routes requests to appropriate agents and skills.
 
 | Triggers | Agent |
 |----------|-------|
-| python, .py, pip, pytest | `python-general-engineer` |
-| react, next.js | `typescript-frontend-engineer` |
+| python, .py, pip, pytest | `general-purpose` |
+| react, next.js | `general-purpose` |
 
 ## Force-Routed Skills
 

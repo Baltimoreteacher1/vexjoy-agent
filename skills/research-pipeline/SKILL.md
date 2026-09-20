@@ -7,7 +7,7 @@ description: |
   Use for "research pipeline", "formal research", "research with artifacts".
 user-invocable: true
 argument-hint: "<research topic>"
-agent: research-coordinator-engineer
+agent: general-purpose
 context: fork
 model: sonnet
 allowed-tools:

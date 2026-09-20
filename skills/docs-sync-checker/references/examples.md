@@ -89,7 +89,7 @@ You removed the deprecated agent `old-agent.md` from `agents/` directory
 |------|-------------|
 | golang-general-engineer | Deep expertise in Go development, architecture, debugging, concurrency |
 | old-agent | [DEPRECATED] Use new-agent instead. Removal: 2025-01-15 |
-| research-coordinator-engineer | Orchestrate research operations that extract and synthesize information |
+| general-purpose | Orchestrate research operations that extract and synthesize information |
 ```
 
 ### After: agents/README.md
@@ -100,7 +100,7 @@ You removed the deprecated agent `old-agent.md` from `agents/` directory
 | Name | Description |
 |------|-------------|
 | golang-general-engineer | Deep expertise in Go development, architecture, debugging, concurrency |
-| research-coordinator-engineer | Orchestrate research operations that extract and synthesize information |
+| general-purpose | Orchestrate research operations that extract and synthesize information |
 ```
 
 **Note**: Remove the entire row for the deprecated agent.
@@ -118,7 +118,7 @@ Deep expertise in Go development, architecture, debugging, concurrency.
 
 [DEPRECATED] Use new-agent instead. This agent has been replaced.
 
-### research-coordinator-engineer
+### general-purpose
 
 Orchestrate research operations.
 ```
@@ -132,7 +132,7 @@ Orchestrate research operations.
 
 Deep expertise in Go development, architecture, debugging, concurrency.
 
-### research-coordinator-engineer
+### general-purpose
 
 Orchestrate research operations.
 ```
@@ -420,7 +420,7 @@ description: Complete Kubernetes operations, troubleshooting, best practices, an
 |------|-------------|
 | golang-general-engineer | Deep expertise in Go development |
 | kubernetes-helm-engineer | Complete Kubernetes operations, troubleshooting, best practices, and cloud infrastructure expertise |
-| research-coordinator-engineer | Orchestrate research operations |
+| general-purpose | Orchestrate research operations |
 ```
 
 ### Update 2: docs/REFERENCE.md

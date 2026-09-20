@@ -2,7 +2,7 @@
 name: system-upgrade
 description: "6-phase pipeline for adapting agents, skills, and hooks to changes."
 user-invocable: false
-agent: system-upgrade-engineer
+agent: toolkit-governance-engineer
 allowed-tools:
   - Read
   - Bash

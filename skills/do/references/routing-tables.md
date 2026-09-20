@@ -8,221 +8,106 @@ Extended routing tables for the `/do` router. The main SKILL.md contains routing
 
 ## Domain Agents
 
-Route to these agents based on the user's task domain. Each entry describes what the agent is for, not a keyword list.
+The 11 domain-specialist engineer agents were archived 2026-09-12 (usage evidence:
+5 lifetime invocations vs 1,240 for general-purpose; copies in
+`~/.claude/backups/agents-archived-2026-09-12/`). Domain work — Python, TypeScript,
+Cloudflare Workers, databases, Apps Script, classroom curriculum, hooks, UI, testing,
+toolkit governance — routes to **general-purpose**, paired with the matching skill
+from the tables below (e.g. `python-quality-gate`, `typescript-check`, `wrangler`,
+`e2e-testing`). The agents that remain are the pipeline and review specialists:
 
-| Agent | When to Route Here |
-|-------|-------------------|
-| **python-general-engineer** | User is working on Python code, .py files, pip packages, virtual environments, pytest, or any Python-language task. NOT: tasks that mention Python only as context ("this is like Python"). |
-| **typescript-frontend-engineer** | User is building or fixing TypeScript frontend code: React components, Next.js pages, UI logic, browser APIs, or frontend state management. Includes React architecture references (component patterns, hooks, state management, rendering optimization). |
-| **typescript-debugging-engineer** | User needs to debug TypeScript-specific issues: async bugs, race conditions, type errors at runtime, or hard-to-reproduce frontend failures. |
-| **nodejs-api-engineer** | User is building or maintaining Node.js backends: Express APIs, REST endpoints, middleware, or server-side JavaScript. |
-| **database-engineer** | User is designing schemas, writing SQL queries, optimizing database performance, or managing migrations. |
-| **research-coordinator-engineer** | User needs systematic research with multiple sources, parallel investigation, or evidence synthesis before acting. NOT: a quick web lookup or single-source check. |
-| **research-subagent-executor** | Subagent that executes delegated research tasks using OODA-loop investigation, intelligence gathering, and source evaluation. Dispatched by research-coordinator-engineer, not invoked directly by users. |
-| **project-coordinator-engineer** | User needs multi-agent coordination for a large project: spawning parallel agents, tracking cross-cutting tasks, or orchestrating a multi-phase effort. |
-| **pipeline-orchestrator-engineer** | User wants to create a new pipeline, scaffold a new structured workflow, or compose pipeline phases. |
-| **hook-development-engineer** | User wants to create or modify Python hooks for Claude Code's event-driven system (SessionStart, PostToolUse, etc.). |
-| **system-upgrade-engineer** | User wants to upgrade the agent/skill/hook ecosystem after a Claude model update or system-wide change. |
-| **technical-documentation-engineer** | User needs technical documentation created, maintained, or validated — API docs, READMEs, architecture guides. |
-| **ui-design-engineer** | User is designing or implementing UI/UX for web applications: layout, Tailwind styling, component design, or visual hierarchy. |
-| **performance-optimization-engineer** | User wants to improve web performance: Core Web Vitals, load times, bundle size, rendering optimization. Includes React performance references (React Compiler, memoization, concurrent features, profiling). |
-| **testing-automation-engineer** | User needs comprehensive testing strategy, E2E test setup, Playwright tests, or test infrastructure design. |
-| **toolkit-governance-engineer** | User wants to maintain or modify the toolkit's own internal structure: editing skill/agent files, updating routing tables, managing ADRs, regenerating INDEX.json, or enforcing frontmatter compliance. NOT: creating brand-new agents (use skill-creator), writing application code (domain agents), or reviewing external PRs (reviewer agents). |
+| Agent               | When to Route Here                                                                                     |
+| ------------------- | ------------------------------------------------------------------------------------------------------ |
+| **extractor**       | A PPTX file is present and the trigger is `Pipeline:` or `NB:` — produces SCENARIO_EXTRACT JSON.        |
+| **generator**       | After the user confirms SCENARIO_EXTRACT — generates PptxGenJS notebook slides per the generator spec.  |
+| **qa-gate**         | After any notebook, lesson plan, or game generation — runs gate checks and blocks delivery on failures. |
+| **reviewer-code**   | Code-quality review: conventions, naming, dead code, performance, test coverage.                        |
+| **reviewer-system** | System-level review: security, concurrency, error handling, observability, API contracts.               |
 
 ---
 
 ## Process & Execution Skills
 
-| Skill | When to Route Here |
-|-------|-------------------|
-| **quick (FORCE)** | User wants any lightweight change: a one-line typo fix, a trivial constant rename (use `--trivial` mode internally for ≤3 edits), or a contained multi-file change like adding a CLI flag, extracting a helper, renaming an interface. NOT: "quick" as a speed preference ("do this quickly"). NOT: "fix" in general ("fix this bug") — that requires diagnosis. The `--trivial` mode handles the zero-ceremony 1-3 edit case; the base mode handles multi-file contained changes. |
-| **code-linting** | User wants to run linters or formatters, fix lint errors, or check code style compliance. |
-| **universal-quality-gate** | User wants a quality check on code without a specific language or domain in mind. |
-| **typescript-check** | User wants to run TypeScript type checking, fix tsc errors, or validate TypeScript types. |
-| **vitest-runner** | User wants to run Vitest tests, parse test results, or check if Vitest tests pass. NOT: running Jest, Mocha, or other test runners. |
-| **read-only-ops** | User explicitly wants read-only operations: browsing, exploring, or examining without any modifications. |
-| **python-quality-gate** | User wants Python quality checks: ruff linting, mypy type checking, or combined Python quality validation. |
-| **condition-based-waiting** | User needs retry logic, backoff strategies, polling loops, or health check patterns in their code. |
-| **distinctive-frontend-design** | User wants context-driven aesthetic exploration for a frontend project with anti-cliche validation: typography exploration, visual identity, design language. |
-| **do** | Primary entry point for all delegated work: classifies user requests and routes to the correct agent + skill combination. |
-| **e2e-testing** | User wants Playwright-based end-to-end testing: page object models, browser tests, test flakiness reduction. NOT: unit tests or integration tests (use test-driven-development or vitest-runner). |
-| **testing-anti-patterns** | User wants to identify or fix flaky tests, or review tests for common anti-patterns. |
-| **subagent-driven-development** | User wants to execute a complex plan using subagents in fresh contexts, or needs a two-stage review/implementation cycle. |
-| **workflow-orchestrator** | User wants to execute an existing plan with structured phases, or says "run the plan", "execute this". |
-| **parallel-code-review** | User wants comprehensive review of a codebase from multiple reviewer perspectives simultaneously. |
-| **with-anti-rationalization** | User explicitly requests maximum rigor, thorough verification, or wants anti-rationalization patterns injected. |
-| **planning** (FORCE) | Planning lifecycle umbrella. Routes to one of seven intents: spec (user stories, acceptance criteria, scope), pre-plan (resolve ambiguities before planning begins), plan-files (persistent file-backed planning with working memory), check (validate plans against 10 dimensions with PASS/BLOCK verdict), manage (plan lifecycle via plan-manager.py: list, create, show, check, complete, abandon), pause (session handoff artifacts like HANDOFF.json and .continue-here.md), and resume (restore session state from handoff artifacts). |
-| **fish-shell-config** | User is configuring fish shell: editing config.fish, writing fish functions, or fixing fish-specific syntax. |
-| **adr-consultation** | User wants multi-agent consultation before making an architectural decision: dispatch 3+ agents to stress-test a plan before committing. |
-| **forensics** | User wants to diagnose a failed or stuck workflow after the fact: what went wrong, why it failed, session crash post-mortem, or incident review. NOT: debugging live code (use systematic-debugging). |
-| **integration-checker** | User wants to verify that components are correctly wired together: exports are imported and used, data flows through connections, output shapes match inputs. |
-| **pair-programming** | User wants collaborative coding with enforced micro-steps: announce each change, show diff, wait for confirmation before applying. |
-| **decision-helper** | User wants a weighted decision framework for architectural or technology choices: pros/cons, trade-off matrix, "which is better", "should I use X or Y". |
-| **socratic-debugging** | User wants to be guided to find the root cause themselves through questions rather than being given the answer directly: coaching mode, "teach me to find it". |
-| **plant-seed** | User wants to capture a forward-looking idea with trigger conditions so it surfaces automatically during future feature design. |
-| **install** | User wants to verify Claude Code Toolkit installation, diagnose setup issues, or check if the toolkit is correctly configured. |
-| **skill-creator** | User wants to create or improve a Claude Code skill, workflow automation, or agent configuration. |
-| **systematic-code-review** | User wants a structured 4-phase code review: UNDERSTAND changes, VERIFY claims against actual behavior, ASSESS security/performance/architecture risks, DOCUMENT findings with severity classification. |
-| **systematic-debugging** | User wants to diagnose why something is broken or not working as expected — root cause analysis, reproduce-isolate-identify-verify. Common phrasings: "why is this broken", "what's wrong with", "figure out why", "can't figure out", "not working", "slow", "performance", "taking too long", "optimize". NOT: debugging a past session (use forensics), guided self-discovery (use socratic-debugging). |
-| **systematic-refactoring** | User wants to improve existing code structure without changing behavior — extract, rename, simplify, restructure. Common phrasings: "clean this up", "improve this code", "make this better", "code quality". NOT: adding new features (use a domain agent), fixing a bug (use systematic-debugging). |
-| **test-driven-development** | User wants RED-GREEN-REFACTOR cycle with strict phase gates: write failing test first, make it pass with minimal code, then refactor. Common phrasings: "TDD", "test first", "red green refactor", "write tests before code". |
-| **threejs-builder** | User wants to build a Three.js 3D web application: scenes, WebGL, 3D animation, or 3D graphics in the browser. 4-phase workflow: Design, Build, Animate, Polish. |
-| **game-asset-generator** | User needs AI-generated or sourced game assets: 3D models via Meshy API (text-to-3D, image-to-3D), Gaussian Splat environments via World Labs, pixel art sprites, images/textures via fal.ai, or free pre-built assets from Sketchfab/Poly Haven/Poly.pizza. Triggers: "game asset", "generate 3d model", "text to 3d", "image to 3d", "meshy", "gaussian splat", "generate sprite", "pixel art", "game environment", "fal.ai", "fal ai". Category: game-development. NOT: game engine scripting, physics, or shader authoring (use threejs-builder or phaser-gamedev for scene integration). |
-| **game-pipeline** | User wants to orchestrate the full game development lifecycle across phases: scaffolding (project setup, EventBus), assets, visual design polish (juice, screen shake, particles), audio (Web Audio API), QA (Playwright visual regression), or deployment (GitHub Pages, Vercel, iOS via Capacitor). Triggers: "make game", "game pipeline", "game audio", "game testing", "game qa", "playtest", "deploy game", "ship game", "promo video", "game polish", "add juice", "screen shake", "capacitor ios". Category: game-development. NOT: Unity/Godot/native engines. |
-| **verification-before-completion** | User wants defense-in-depth verification before declaring a task complete: run full test suite, validate build, check for stub patterns, confirm artifacts exist. |
-| **worktree-agent** | Mandatory rules for agents operating in git worktree isolation: verify working directory, create feature branches, use absolute paths. Not user-invoked directly. |
+| Skill                              | When to Route Here                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| ---------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **read-only-ops**                  | User explicitly wants read-only operations: browsing, exploring, or examining without any modifications.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| **distinctive-frontend-design**    | User wants context-driven aesthetic exploration for a frontend project with anti-cliche validation: typography exploration, visual identity, design language.                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| **do**                             | Primary entry point for all delegated work: classifies user requests and routes to the correct agent + skill combination.                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| **install**                        | User wants to verify Claude Code Toolkit installation, diagnose setup issues, or check if the toolkit is correctly configured.                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| **threejs-builder**                | User wants to build a Three.js 3D web application: scenes, WebGL, 3D animation, or 3D graphics in the browser. 4-phase workflow: Design, Build, Animate, Polish.                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| **worktree-agent**                 | Mandatory rules for agents operating in git worktree isolation: verify working directory, create feature branches, use absolute paths. Not user-invoked directly.                                                                                                                                                                                                                                                                                                                                                                                                                             |
 
 ---
 
 ## Analysis & Discovery Skills
 
-| Skill | When to Route Here |
-|-------|-------------------|
-| **codebase-overview** | User wants a high-level understanding of a repository's structure, architecture, or purpose. |
-| **codebase-analyzer** | User wants statistical analysis of codebase patterns: pattern frequency, structural metrics, style vectors, or data-driven insights about code. NOT: a high-level overview (use codebase-overview). |
-| **code-cleanup** | User wants to remove stale TODOs, unused code, dead imports, or generally clean up accumulated debt. |
-| **comment-quality** | User wants to audit code comments for accuracy, temporal references, or staleness. |
-| **agent-evaluation** | User wants to grade or evaluate a skill, agent, or pipeline for quality and standards compliance. NOT: evaluating code output or test results. |
-| **agent-comparison** | User wants to A/B test agents, run autoresearch, optimize a skill description, or optimize a skill body with benchmark tasks. |
-| **agent-upgrade** | User wants to audit and systematically improve a specific agent to bring it up to current template standards. |
-| **testing-agents-with-subagents** | User wants to validate an agent by running it against real test cases in subagents. |
-| **skill-eval** | User wants to evaluate a skill, test triggers manually, benchmark it against scenarios, or inspect skill quality without running the autoresearch optimizer. |
-| **full-repo-review** | User wants a comprehensive 3-wave review of all source files in the entire repository. |
-| **github-notification-triage** | User wants to triage GitHub notifications: fetch, classify, and report actions needed. Common phrasings: "check notifications", "github inbox", "triage notifications". |
-| **repo-value-analysis** | User wants to systematically analyze an external repository to determine what ideas or patterns are worth adopting. |
-| **kb** | User wants to compile, query, or health-check a knowledge base wiki under `research/{topic}/`. Routes to compile/query/lint reference by intent. Triggers: "compile knowledge base", "kb compile", "compile wiki", "build knowledge base", "compile raw sources", "query knowledge base", "kb query", "ask knowledge base", "search kb", "kb question", "lint knowledge base", "kb lint", "check kb health", "knowledge base health", "kb consistency". Category: research. |
-| **roast** | User wants constructive critique of a design doc, idea, or code via 5 HackerNews personas with claim validation. Common phrasings: "roast this", "devil's advocate", "stress test this idea", "poke holes in this". |
-| **data-analysis** | User wants to analyze data: CSV files, metrics, A/B test results, cohort analysis, statistical distributions, KPIs, or funnel data. |
-| **kairos-lite** | User wants a project status briefing, health check, or to see what happened overnight — GitHub notifications, CI status, toolkit health. Common phrasings: "what happened", "morning briefing", "check notifications", "project status", "health check". NOT: specific PR status (use pr-workflow ci-check), specific CI debugging (use systematic-debugging). |
-| **pr-workflow** (miner mode) | User wants to extract review comments or learnings from past GitHub PRs, or coordinate batch mining. |
-| **skill-composer** | User wants to compose multiple skills into a multi-skill workflow. |
-| **routing-table-updater** | User wants to update routing tables after adding or changing agents/skills. |
-| **security-threat-model** | User wants a security threat model: scan for attack surface, supply-chain risks, injection vectors, or security posture audit. |
-| **docs-sync-checker** | User wants to check if README files or documentation are in sync with the actual code. |
-| **do-perspectives** | User wants multi-perspective analysis of a problem from 10 different lenses simultaneously. |
-| **do → parallel-analysis** | User wants parallel multi-angle extraction of insights from a document or codebase. Loaded from `skills/do/references/parallel-analysis.md`. |
-| **learn** | User wants to teach Claude a new error pattern or record a reusable insight. |
-| **retro** | User wants to interact with the learning system: view stats, list accumulated knowledge, search learnings, or graduate mature entries into agents/skills. |
-| **generate-claudemd** | User wants to generate a project-specific CLAUDE.md by analyzing the current repository's structure and conventions. |
-| **professional-communication** | User needs to write a professional email or formal business communication. |
-| **workflow-help** | User wants an explanation of how a workflow, pipeline, or process works. Also when user is lost or stuck: "help", "I'm stuck", "what should I do", "I don't know how", "where do I start". |
+| Skill                             | When to Route Here                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| --------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **pr-workflow** (miner mode)      | User wants to extract review comments or learnings from past GitHub PRs, or coordinate batch mining.                                                                                                                                                                                                                                                                                                                                                                        |
+| **routing-table-updater**         | User wants to update routing tables after adding or changing agents/skills.                                                                                                                                                                                                                                                                                                                                                                                                 |
+| **retro**                         | User wants to interact with the learning system: view stats, list accumulated knowledge, search learnings, or graduate mature entries into agents/skills.                                                                                                                                                                                                                                                                                                                   |
+| **generate-claudemd**             | User wants to generate a project-specific CLAUDE.md by analyzing the current repository's structure and conventions.                                                                                                                                                                                                                                                                                                                                                        |
 
 ---
 
 ## PR & Git Skills
 
-| Skill | When to Route Here |
-|-------|-------------------|
+| Skill                   | When to Route Here                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | **pr-workflow (FORCE)** | User wants to get local code changes onto GitHub — pushing a branch, creating a PR, syncing local commits to the remote, or creating a git commit from local changes (commit intent). Also handles: PR status checks, fixing review comments, cleaning up branches after merge, addressing PR feedback, mining tribal knowledge from PRs, generating/validating Git branch names (branch-name intent), checking GitHub Actions CI status after a push (ci-check intent), getting a second-opinion code review from OpenAI Codex CLI (codex-review intent). Common phrasings: "open a pull request", "create a PR", "make a PR", "submit PR", "push and PR", "pr status", "fix PR comments", "clean up branches", "mine PRs", "generate branch name", "check CI", "did CI pass", "commit this", "save my work", "checkpoint", "codex review", "second opinion". NOT: "push back" (disagree with a decision), "push the boundaries" (explore limits), "check this code" (review), "check my logic" (analysis), "commit to this approach" (deciding), "commit to the team" (dedication). The intent must be about git/GitHub operations. |
-| **/pr-review command** | User wants a comprehensive code review of a PR with retro learning applied. This is a command, not a skill — invoke it directly. |
+| **/pr-review command**  | User wants a comprehensive code review of a PR with retro learning applied. This is a command, not a skill — invoke it directly. |
 
 ### PR Workflow Policies
 
-| Repo Type | Detection | Commit/Push/PR | Review Gate | Merge |
-|-----------|-----------|----------------|-------------|-------|
-| **protected-org** (configured organizations) | `scripts/classify-repo.py` pattern match | **Human-gated**: confirm each step with user | Their reviewers handle review | **NEVER auto-merge** |
-| **personal** (all other repos) | Default | Auto-execute | `/pr-review` → fix loop (max 3 iterations) | Create PR after review passes |
+| Repo Type                                    | Detection                                | Commit/Push/PR                               | Review Gate                                | Merge                         |
+| -------------------------------------------- | ---------------------------------------- | -------------------------------------------- | ------------------------------------------ | ----------------------------- |
+| **protected-org** (configured organizations) | `scripts/classify-repo.py` pattern match | **Human-gated**: confirm each step with user | Their reviewers handle review              | **NEVER auto-merge**          |
+| **personal** (all other repos)               | Default                                  | Auto-execute                                 | `/pr-review` → fix loop (max 3 iterations) | Create PR after review passes |
 
 ---
 
 ## Content Creation Skills
 
-| Skill | When to Route Here |
-|-------|-------------------|
-| **de-ai-pipeline (FORCE)** | User wants to scan and systematically fix AI patterns across documentation or a content repository. |
-| **voice-calibrator** | User wants to refine or calibrate an existing voice profile against new samples. |
-| **pptx-generator** | User wants to generate a PowerPoint presentation, slide deck, or pitch deck from content or research. |
-| **frontend-slides** | User wants browser-based HTML presentations: reveal-style slide decks, kiosk presentations, or converting PPTX to web format. |
-| **gemini-image-generator** | User wants to generate images from text prompts via Google Gemini: sprites, character art, or AI-generated visuals. |
-| **image-to-video** | User wants to combine a static image with audio to create a video file (album art video, podcast video, music visualization). |
-| **headless-cron-creator** | User wants to generate a headless Claude Code cron job that runs a task on a schedule. |
-| **auto-dream** | User wants to run or configure the background memory consolidation and graduation system: trigger a dream cycle, check dream/graduation status, review the last dream report, check graduation candidates, or configure the nightly cron. Triggers: "dream", "memory consolidation", "consolidate memories", "auto-dream", "last dream", "graduate learnings", "promote learnings". Category: meta-tooling. |
-| **explanation-traces** | User wants to understand why the system made a specific decision: which agent was selected and why, which triggers were matched, which gate passed or failed, or a full session decision timeline. Reads `session-trace.json` and presents recorded decisions as a human-readable timeline — never reconstructs from memory. Triggers: "why did you", "explain routing", "show trace", "decision log", "why that agent", "explain decision", "show decisions", "trace log". Category: analysis. NOT: a general debugging request (use systematic-debugging) or live routing inspection. |
-| **multi-persona-critique** | User wants to stress-test proposals, feature ideas, or architectural decisions through parallel critique from 5 philosophical personas (The Logician, Pragmatic Builder, Systems Purist, End User Advocate, Skeptical Philosopher), with consensus synthesis showing where personas agree and disagree. Can critique provided proposals or generate ideas and then critique them. Triggers: "critique these ideas", "multi-persona review", "philosophical critique", "devil's advocate on ideas", "stress test proposals", "evaluate from multiple perspectives", "critique proposals". Category: analysis. NOT: code critique (use roast), single-dimension scoring (use decision-helper). |
-| **reference-enrichment** | User wants to improve an agent or skill by analyzing its reference depth and generating missing domain-specific reference files — version-specific pattern tables, anti-pattern catalogs with detection commands, and error-fix mappings. Upgrades components from Level 0-1 to Level 2-3 depth. Triggers: "enrich references", "improve reference depth", "generate references", "add reference files", "reference enrichment". Category: meta-tooling. |
-| **toolkit-evolution** | User wants to run a self-improvement cycle on the toolkit, diagnose gaps, propose improvements, build winners, A/B test, and ship via PR. Also triggers for: scheduled nightly improvement, evolving a specific subsystem (routing, hooks, agents), or asking what should be improved. Triggers: "evolve toolkit", "improve the system", "self-improve", "what should we improve", "evolve routing", "evolve hooks", "toolkit evolution", "run evolution", "nightly evolution", "self-improvement cycle". Category: meta-tooling. |
-| **nano-banana-builder** | User wants to build a Next.js web application using Google Gemini Nano Banana image generation APIs. |
-| **video-editing** | User wants to edit video: cut footage, assemble clips, create demo videos, or build screen recordings via FFmpeg and Remotion. |
+| Skill                      | When to Route Here                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| -------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **gemini-image-generator** | User wants to generate images from text prompts via Google Gemini: sprites, character art, or AI-generated visuals.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
 
 ---
 
 ## Voice Skills
 
-| Skill | When to Route Here |
-|-------|-------------------|
-| **voice-calibrator** | User wants to refine an existing voice profile or improve how well it captures their writing style. |
-
-
-**Wabi-sabi principle:** Perfection is an AI tell. Natural imperfections are features. Don't over-polish.
-
----
-
-## Feature Lifecycle Skills
-
-Sequential pipeline: design → plan → implement → validate → release. Each skill advances state via `scripts/feature-state.py`.
-
-| Skill | Phase | When to Route Here |
-|-------|-------|--------------------|
-| **feature-lifecycle (FORCE)** | 1-5 | All feature lifecycle phases: design, plan, implement, validate, release. Routes to the correct phase based on feature state. Entry point for all new features. |
-
-**Auto-detection**: When `.feature/` exists, `feature-state.py status` determines current phase and feature-lifecycle routes to the matching phase reference automatically.
-
-**Entry point**: New features always enter via feature-lifecycle (design phase). Skipping phases is not supported.
-
----
-
 ## Pipeline Skills
 
 All workflow pipelines live in `skills/workflow/references/` and are accessed via the workflow umbrella skill.
 
-| Pipeline | When to Route Here | Phases |
-|----------|--------------------|--------|
-| **workflow** (umbrella) | All structured multi-phase workflows. Routes to the correct workflow based on intent. Includes: toolkit-improvement, system-upgrade, research-to-article, explore, doc-generation, comprehensive-review, article-evaluation, voice-calibrator, de-ai, auto-pipeline, and more. Each workflow lives in `skills/workflow/references/`. |
-| **toolkit-improvement** (FORCE) | User wants to evaluate, audit, or improve the toolkit itself. Dispatches 30+ reviewer agents in waves, synthesizes findings, has a skeptical grader challenge them, creates ADRs, implements fixes, and validates. Use for: "improve the toolkit", "evaluate the repo", "audit the system", "find issues", "self-improvement", "repo health check", "what can be better", "how can we improve", "make the toolkit better". NOT: reviewing a single PR (use /pr-review) or fixing one bug (use /systematic-debugging). | EVALUATE → RESEARCH → SYNTHESIZE → CRITIQUE → REPORT → ADR → IMPLEMENT → VALIDATE → REMEDIATE → RECORD |
-| **system-upgrade** (system-upgrade-engineer) | User wants to upgrade the Claude Code toolkit after a model update, apply system-wide changes, or roll out agent improvements. NOT: upgrading a specific library dependency in user code. | CHANGELOG → AUDIT → PLAN → IMPLEMENT → VALIDATE → DEPLOY |
-| **workflow** (skill-creation, skill-creator) | User wants to create a new skill with formal quality gates, phase structure, and integration. | DISCOVER → DESIGN → SCAFFOLD → VALIDATE → INTEGRATE |
-| **research-pipeline** (research-coordinator-engineer) | User wants formal research with saved artifacts, multiple sources, and a synthesized deliverable. NOT: a quick lookup or single-source check. | SCOPE → GATHER → SYNTHESIZE → VALIDATE → DELIVER |
-| **agent-upgrade** (skill-creator) | User wants to audit and improve a specific agent to bring it up to current template standards. | AUDIT → DIFF → PLAN → IMPLEMENT → RE-EVALUATE |
-| **pr-workflow** (pipeline mode) | User wants the full structured PR workflow with review gates. | CLASSIFY → STAGE → REVIEW → COMMIT → PUSH → CREATE → VERIFY → CLEANUP |
-| **workflow-orchestrator** | User wants to orchestrate a plan with structured phases — brainstorm, plan, execute. | BRAINSTORM → WRITE-PLAN → EXECUTE-PLAN |
-| **do-perspectives** | User wants multi-lens analysis of a problem from 10 different perspectives. | VALIDATE → ANALYZE → SYNTHESIZE → APPLY → VERIFY |
+| Pipeline                                              | When to Route Here                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    | Phases                                                                                                 |
+| ----------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------ |
+| **workflow** (umbrella)                               | All structured multi-phase workflows. Routes to the correct workflow based on intent. Includes: toolkit-improvement, system-upgrade, research-to-article, explore, doc-generation, comprehensive-review, article-evaluation, voice-calibrator, de-ai, auto-pipeline, and more. Each workflow lives in `skills/workflow/references/`.                                                                                                                                                                                  |
+| **system-upgrade** (general-purpose)          | User wants to upgrade the Claude Code toolkit after a model update, apply system-wide changes, or roll out agent improvements. NOT: upgrading a specific library dependency in user code.                                                                                                                                                                                                                                                                                                                             | CHANGELOG → AUDIT → PLAN → IMPLEMENT → VALIDATE → DEPLOY                                               |
+| **workflow** (skill-creation, skill-creator)          | User wants to create a new skill with formal quality gates, phase structure, and integration.                                                                                                                                                                                                                                                                                                                                                                                                                         | DISCOVER → DESIGN → SCAFFOLD → VALIDATE → INTEGRATE                                                    |
+| **pr-workflow** (pipeline mode)                       | User wants the full structured PR workflow with review gates.                                                                                                                                                                                                                                                                                                                                                                                                                                                         | CLASSIFY → STAGE → REVIEW → COMMIT → PUSH → CREATE → VERIFY → CLEANUP                                  |
 
 ### Workflow Companion Map
 
 Workflows that work together in common sequences:
 
-| Workflow | Sequence | When |
-|----------|----------|------|
-| **Feature lifecycle** | workflow (explore) → workflow-orchestrator → pr-workflow | Understand → implement → ship |
-| **Code review** | workflow (comprehensive-review) → pr-workflow | Review then submit |
-| **Agent improvement** | agent-upgrade → skill-creator | Audit agent, then scaffold missing skills |
+| Workflow                | Sequence                                                        | When                                             |
+| ----------------------- | --------------------------------------------------------------- | ------------------------------------------------ |
+| **Feature lifecycle**   | workflow (explore) → workflow-orchestrator → pr-workflow        | Understand → implement → ship                    |
+| **Code review**         | workflow (comprehensive-review) → pr-workflow                   | Review then submit                               |
+| **Agent improvement**   | agent-upgrade → skill-creator                                   | Audit agent, then scaffold missing skills        |
 | **Toolkit improvement** | workflow (toolkit-improvement) → system-upgrade → agent-upgrade | Evaluate → fix → upgrade system → upgrade agents |
-| **System upgrade** | system-upgrade → agent-upgrade | Upgrade system, then individual agents |
-| **Documentation** | workflow (explore) → workflow (doc-generation) | Understand codebase → generate docs |
+| **System upgrade**      | system-upgrade → agent-upgrade                                  | Upgrade system, then individual agents           |
+| **Documentation**       | workflow (explore) → workflow (doc-generation)                  | Understand codebase → generate docs              |
 
 ---
 
-## GitHub Profile Analysis Skills
 
-| Skill | When to Route Here |
-|-------|-------------------|
-
----
-
-## Reddit Skills
-
-| Skill | When to Route Here |
-|-------|-------------------|
-
----
 
 ## Validation Skills
 
-| Skill | When to Route Here |
-|-------|-------------------|
-| **endpoint-validator** | User wants to validate that API endpoints are reachable and returning expected responses. |
-| **service-health-check** | User wants to check if a service is healthy or needs restarting. |
-| **cron-job-auditor** | User wants to audit cron jobs or scheduled scripts for reliability and correctness. |
+| Skill                    | When to Route Here                                                                        |
+| ------------------------ | ----------------------------------------------------------------------------------------- |
 
 ---
 
@@ -231,80 +116,65 @@ Workflows that work together in common sequences:
 Umbrella skill for all C-suite decision support. Detects mode (STRATEGY, TECHNOLOGY, GROWTH, COMPETITIVE, EVALUATION) and loads domain-specific references on demand.
 
 | Skill | When to Route Here |
-|-------|-------------------|
+| ----- | ------------------ |
 
 ---
 
-## Perses Skills
-
-| Skill | When to Route Here |
-|-------|-------------------|
-
----
 
 ## Reviewer Agents
 
 Consolidated reviewer agents, each covering multiple review perspectives:
 
-| Agent | When to Route Here |
-|-------|-------------------|
-| **reviewer-code** | Code quality review: conventions, naming, dead code, performance, types, tests, comments, config safety. Use for code style, readability, simplification, language idioms, naming consistency, unused code, comment accuracy, hot paths, type design, test coverage, and configuration review. |
-| **reviewer-system** | System review: security, concurrency, errors, observability, APIs, migrations, dependencies, docs. Use for vulnerability scans, race conditions, goroutine leaks, silent failures, error messages, logging quality, API contracts, migration safety, dependency audits, and documentation validation. |
-| **reviewer-perspectives** | Multi-perspective review: newcomer, senior, pedant, contrarian, user advocate, meta-process. Use for fresh-eyes critique, skeptical senior review, technical precision, assumption challenges, user impact analysis, and system design meta-review. |
-| **reviewer-domain** | Domain-specific review: ADR compliance, business logic, SAP CC structural, pragmatic builder. Use for architecture decision compliance, domain correctness, sapcc Go conventions, and production readiness critique. |
+| Agent                     | When to Route Here                                                                                                                                                                                                                                                                                    |
+| ------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **reviewer-code**         | Code quality review: conventions, naming, dead code, performance, types, tests, comments, config safety. Use for code style, readability, simplification, language idioms, naming consistency, unused code, comment accuracy, hot paths, type design, test coverage, and configuration review.        |
+| **reviewer-system**       | System review: security, concurrency, errors, observability, APIs, migrations, dependencies, docs. Use for vulnerability scans, race conditions, goroutine leaks, silent failures, error messages, logging quality, API contracts, migration safety, dependency audits, and documentation validation. |
 
 ---
 
 ## Quick Routing Examples
 
-| Request | Routes To | Reasoning |
-|---------|-----------|-----------|
-| "fix the typo in main.go" | **fast (FORCE)** | Mechanical one-character fix, no design judgment |
-| "rename this variable" | **fast (FORCE)** | Trivial rename, no logic change |
-| "add a --verbose flag to the CLI" | **quick (FORCE)** | Small self-contained change |
-| "small refactor: extract helper function" | **quick (FORCE)** | Contained, no design ambiguity |
-| "add auth to Python API" | python-general-engineer + workflow-orchestrator | Python domain, multi-step implementation |
-| "roast this design doc" | roast (5 personas) | Multi-persona critique |
-| "execute plan with subagents" | subagent-driven-development | Explicit subagent execution |
-| "debug TypeScript race condition" | typescript-debugging-engineer + systematic-debugging | TS debugging domain |
-| "comprehensive code review" | parallel-code-review (3 reviewers) | Multi-reviewer parallel review |
-| "design a rate limiter feature" | **feature-lifecycle (FORCE)** | New feature entry point (design phase) |
-| "plan this feature" | **feature-lifecycle (FORCE)** | Feature plan phase |
-| "build this feature" | **feature-lifecycle (FORCE)** | Feature implementation phase |
-| "review this PR" | /pr-review command (retro-enabled) | PR review command |
-| "submit a PR" | pr-workflow (pipeline mode) | Full PR workflow with gates |
-| "push my changes" | **pr-workflow (FORCE)** | Intent: get local changes onto GitHub |
-| "push back on this decision" | (not a routing target) | Intent: disagree — "push" is not a git push |
-| "commit this" | **pr-workflow (FORCE)** | Intent: create a git commit (commit intent) |
-| "commit to this approach" | (not a routing target) | Intent: decide — "commit" is not a git commit |
-| "did CI pass?" | **pr-workflow (FORCE)** | Intent: check CI status (ci-check intent) |
-| "check my logic here" | (domain agent + review) | Intent: review — not CI |
-| "get a second opinion on this code" | **pr-workflow (FORCE)** | Cross-model review via Codex CLI (codex-review intent) |
-| "codex review this PR" | **pr-workflow (FORCE)** | Explicit Codex review request (codex-review intent) |
-| "create a pipeline for X" | pipeline-orchestrator-engineer + workflow | Pipeline creation |
-| "improve the toolkit" | toolkit-improvement (FORCE) | Full 10-phase evaluation + improvement |
-| "evaluate the repo" | toolkit-improvement (FORCE) | Full 10-phase evaluation + improvement |
-| "audit the system" | toolkit-improvement (FORCE) | Full 10-phase evaluation + improvement |
-| "find issues" | toolkit-improvement (FORCE) | Full 10-phase evaluation + improvement |
-| "what can be better" | toolkit-improvement (FORCE) | Full 10-phase evaluation + improvement |
-| "self-improvement" | toolkit-improvement (FORCE) | Full 10-phase evaluation + improvement |
-| "upgrade system for new Claude version" | system-upgrade-engineer + system-upgrade | System-wide upgrade |
-| "create skill with quality gates" | skill-creator + workflow (skill-creation) | Formal skill creation |
-| "create hook (formal, with perf test)" | hook-development-engineer + workflow (hook-development) | Formal hook creation |
-| "research with saved artifacts" | research-coordinator-engineer + research-pipeline | Formal research pipeline |
-| "upgrade this specific agent" | skill-creator + agent-upgrade | Single agent improvement |
-| "create a 3D scene" | typescript-frontend-engineer + threejs-builder | Frontend domain, 3D task |
-| "generate image with Python" | python-general-engineer + gemini-image-generator | Python domain, image generation |
-| "open a pull request" | **pr-workflow (FORCE)** | Intent: create a PR on GitHub |
-| "make a PR" | **pr-workflow (FORCE)** | Intent: create a PR on GitHub |
-| "save my work" | **pr-workflow (FORCE)** | Intent: commit current changes (commit intent) |
-| "checkpoint" | **pr-workflow (FORCE)** | Intent: save progress as a commit (commit intent) |
-| "I'm stuck" | workflow-help | User is lost — guide them |
-| "where do I start" | workflow-help | User needs orientation |
-| "why is this broken" | systematic-debugging | Diagnosis request — root cause analysis |
-| "figure out why" | systematic-debugging | Diagnosis request — root cause analysis |
-| "it's slow" | systematic-debugging | Performance issue — diagnosis needed |
-| "clean this up" | systematic-refactoring | Code improvement — refactoring |
-| "make this better" | systematic-refactoring | Code quality improvement |
-| "review this" | comprehensive-review | Multi-wave code review |
-| "look at this code" | comprehensive-review | Code review request |
+| Request                                   | Routes To                                               | Reasoning                                              |
+| ----------------------------------------- | ------------------------------------------------------- | ------------------------------------------------------ |
+| "add auth to Python API"                  | general-purpose + workflow-orchestrator         | Python domain, multi-step implementation               |
+| "roast this design doc"                   | roast (5 personas)                                      | Multi-persona critique                                 |
+| "execute plan with subagents"             | subagent-driven-development                             | Explicit subagent execution                            |
+| "debug TypeScript race condition"         | general-purpose + systematic-debugging    | TS debugging domain                                    |
+| "comprehensive code review"               | parallel-code-review (3 reviewers)                      | Multi-reviewer parallel review                         |
+| "review this PR"                          | /pr-review command (retro-enabled)                      | PR review command                                      |
+| "submit a PR"                             | pr-workflow (pipeline mode)                             | Full PR workflow with gates                            |
+| "push my changes"                         | **pr-workflow (FORCE)**                                 | Intent: get local changes onto GitHub                  |
+| "push back on this decision"              | (not a routing target)                                  | Intent: disagree — "push" is not a git push            |
+| "commit this"                             | **pr-workflow (FORCE)**                                 | Intent: create a git commit (commit intent)            |
+| "commit to this approach"                 | (not a routing target)                                  | Intent: decide — "commit" is not a git commit          |
+| "did CI pass?"                            | **pr-workflow (FORCE)**                                 | Intent: check CI status (ci-check intent)              |
+| "check my logic here"                     | (domain agent + review)                                 | Intent: review — not CI                                |
+| "get a second opinion on this code"       | **pr-workflow (FORCE)**                                 | Cross-model review via Codex CLI (codex-review intent) |
+| "codex review this PR"                    | **pr-workflow (FORCE)**                                 | Explicit Codex review request (codex-review intent)    |
+| "create a pipeline for X"                 | general-purpose + workflow               | Pipeline creation                                      |
+| "improve the toolkit"                     | toolkit-improvement (FORCE)                             | Full 10-phase evaluation + improvement                 |
+| "evaluate the repo"                       | toolkit-improvement (FORCE)                             | Full 10-phase evaluation + improvement                 |
+| "audit the system"                        | toolkit-improvement (FORCE)                             | Full 10-phase evaluation + improvement                 |
+| "find issues"                             | toolkit-improvement (FORCE)                             | Full 10-phase evaluation + improvement                 |
+| "what can be better"                      | toolkit-improvement (FORCE)                             | Full 10-phase evaluation + improvement                 |
+| "self-improvement"                        | toolkit-improvement (FORCE)                             | Full 10-phase evaluation + improvement                 |
+| "upgrade system for new Claude version"   | general-purpose + system-upgrade                | System-wide upgrade                                    |
+| "create skill with quality gates"         | skill-creator + workflow (skill-creation)               | Formal skill creation                                  |
+| "create hook (formal, with perf test)"    | general-purpose + workflow (hook-development) | Formal hook creation                                   |
+| "research with saved artifacts"           | general-purpose + research-pipeline       | Formal research pipeline                               |
+| "upgrade this specific agent"             | skill-creator + agent-upgrade                           | Single agent improvement                               |
+| "create a 3D scene"                       | general-purpose + threejs-builder          | Frontend domain, 3D task                               |
+| "generate image with Python"              | general-purpose + gemini-image-generator        | Python domain, image generation                        |
+| "open a pull request"                     | **pr-workflow (FORCE)**                                 | Intent: create a PR on GitHub                          |
+| "make a PR"                               | **pr-workflow (FORCE)**                                 | Intent: create a PR on GitHub                          |
+| "save my work"                            | **pr-workflow (FORCE)**                                 | Intent: commit current changes (commit intent)         |
+| "checkpoint"                              | **pr-workflow (FORCE)**                                 | Intent: save progress as a commit (commit intent)      |
+| "I'm stuck"                               | workflow-help                                           | User is lost — guide them                              |
+| "where do I start"                        | workflow-help                                           | User needs orientation                                 |
+| "why is this broken"                      | systematic-debugging                                    | Diagnosis request — root cause analysis                |
+| "figure out why"                          | systematic-debugging                                    | Diagnosis request — root cause analysis                |
+| "it's slow"                               | systematic-debugging                                    | Performance issue — diagnosis needed                   |
+| "clean this up"                           | systematic-refactoring                                  | Code improvement — refactoring                         |
+| "make this better"                        | systematic-refactoring                                  | Code quality improvement                               |
+| "review this"                             | comprehensive-review                                    | Multi-wave code review                                 |
+| "look at this code"                       | comprehensive-review                                    | Code review request                                    |

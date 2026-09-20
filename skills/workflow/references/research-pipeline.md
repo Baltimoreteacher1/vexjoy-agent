@@ -3,7 +3,7 @@ name: research-pipeline
 description: "Formal 5-phase research pipeline with artifact saving and source quality gates. Min 3 parallel agents."
 user-invocable: true
 argument-hint: "<research topic>"
-agent: research-coordinator-engineer
+agent: general-purpose
 allowed-tools:
   - Read
   - Bash
@@ -35,7 +35,7 @@ routing:
 
 ## Overview
 
-This skill formalizes the research-coordinator-engineer's parallel research workflow into
+This skill formalizes the general-purpose's parallel research workflow into
 a 5-phase pipeline with artifact saving at each phase. It is the go-to path when research
 needs to produce a citable, resumable output — not just an in-session answer.
 
@@ -104,7 +104,7 @@ Write `research/{topic}/scope.md`:
 
 **Goal**: Execute parallel research with mandatory multi-agent dispatch.
 
-**Critical Constraint**: Dispatch minimum 3 parallel `research-subagent-executor` agents in a single message. Sequential research is forbidden — it produces lower quality output and takes 3-5x longer than parallel dispatch (validated by A/B testing). Each agent must be assigned a distinct angle and receive identical dispatch instructions in the same message; dispatch all agents simultaneously.
+**Critical Constraint**: Dispatch minimum 3 parallel `general-purpose` agents in a single message. Sequential research is forbidden — it produces lower quality output and takes 3-5x longer than parallel dispatch (validated by A/B testing). Each agent must be assigned a distinct angle and receive identical dispatch instructions in the same message; dispatch all agents simultaneously.
 
 **Step 1**: Assign a distinct angle to each agent. Angles should cover the scope without overlapping. Good angle patterns for most research topics:
 
@@ -364,4 +364,4 @@ Solution: Check if prior `report.md` exists. If it does, ask the user: re-run (o
 
 - [domain-research](./domain-research.md) - Subdomain discovery pipeline that uses similar parallel research patterns
 - [explore-pipeline](./explore-pipeline.md) - Systematic codebase exploration pipeline for research within a repository
-- [research-subagent-executor](../../agents/research-subagent-executor.md) - Agent dispatched in Phase 2 for parallel research execution
+- [general-purpose](../../agents/general-purpose.md) - Agent dispatched in Phase 2 for parallel research execution

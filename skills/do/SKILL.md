@@ -26,7 +26,7 @@ routing:
 
 **What the main thread does:** (1) Classify, (2) Select agent+skill, (3) Dispatch via Agent tool, (4) Evaluate if more work needed, (5) Route to ANOTHER agent if yes, (6) Report results.
 
-**The main thread delegates to agents:** code reading (Explore agent), file edits (domain agents), test runs (agent with skill), documentation (technical-documentation-engineer), all Simple+ tasks.
+**The main thread delegates to agents:** code reading (Explore agent), file edits (domain agents), test runs (agent with skill), documentation (general-purpose), all Simple+ tasks.
 
 The main thread is an **orchestrator**. If you find yourself reading source code, writing code, or doing analysis — pause and route to an agent instead.
 
@@ -81,7 +81,7 @@ Read and follow the repository CLAUDE.md before making any routing decision, bec
 
 **Maximize skill/agent/pipeline usage.** If a skill or pipeline exists for the task, USE IT. Skills encode domain patterns earned through prior work; using them gives you that expertise for free.
 
-**Check for parallel patterns FIRST** because independent work items finish fastest when dispatched concurrently, and the routing table below matches the shape of the work: 2+ independent failures or 3+ subtasks → `dispatching-parallel-agents`; broad research → `research-coordinator-engineer`; multi-agent coordination → `project-coordinator-engineer`; plan exists + "execute" → `subagent-driven-development`; new feature → `feature-lifecycle` (check `.feature/` directory; if present, use `feature-state.py status` for current phase).
+**Check for parallel patterns FIRST** because independent work items finish fastest when dispatched concurrently, and the routing table below matches the shape of the work: 2+ independent failures or 3+ subtasks → `dispatching-parallel-agents`; broad research → `general-purpose`; multi-agent coordination → `general-purpose`; plan exists + "execute" → `subagent-driven-development`; new feature → `feature-lifecycle` (check `.feature/` directory; if present, use `feature-state.py status` for current phase).
 
 **Optional: Force Direct** — OFF by default. When explicitly enabled, overrides routing for trivial operations. Only applies when the user explicitly requests it.
 
@@ -150,7 +150,7 @@ FORCE-ROUTE RULE: Entries marked "FORCE" in the manifest MUST be selected when t
 - "quick overview of the architecture" → NOT quick (user wants exploration)
 
 Rules:
-- Pick the most specific match. "TypeScript tests" → testing-automation-engineer + vitest-runner, not general-purpose.
+- Pick the most specific match. "TypeScript tests" → general-purpose + vitest-runner — the skill pairing is the specific part now that domain agents are archived.
 - Agent handles the domain. Skill handles the methodology. Pick both when possible.
 - If the request implies a task verb (review, debug, refactor, test), prefer skills that match that verb.
 - If nothing matches well, return all nulls with reasoning.
@@ -226,7 +226,7 @@ Retro knowledge is auto-injected by the `session-context` hook at SessionStart v
 | Any substantive work (code, design, plan) | **Auto-inject retro knowledge** (via `session-context` hook, pre-built by nightly `auto-dream`) |
 | "comprehensive" / "thorough" / "full"     | Add parallel reviewers (security + business + quality)                                          |
 | "with tests" / "production ready"         | Append test-driven-development + verification-before-completion                                 |
-| "research needed" / "investigate first"   | Prepend research-coordinator-engineer                                                           |
+| "research needed" / "investigate first"   | Prepend general-purpose                                                           |
 | "review" with 5+ files                    | Use parallel-code-review (3 reviewers)                                                          |
 | Complex implementation                    | Offer subagent-driven-development                                                               |
 
@@ -270,7 +270,7 @@ When the request is a code modification (implementation, bug fix, feature additi
 
 When quality-loop applies, it absorbs Step 0 (ADR creation) and Step 1 (plan creation) into its own PHASES 0-1. Do not run Steps 0-1 separately — the quality-loop handles them.
 
-The router still selects the best agent+skill in Phase 2 (e.g., `typescript-frontend-engineer` + `typescript-check`). That selection becomes the implementation agent for quality-loop PHASE 1. Force-route skills like `typescript-check` are used INSIDE the loop, not excluded from it — a TypeScript implementation gets TS-specific checks AND testing, review, and PR gates.
+The router still selects the best agent+skill in Phase 2 (e.g., `general-purpose` + `typescript-check`). That selection becomes the implementation agent for quality-loop PHASE 1. Force-route skills like `typescript-check` are used INSIDE the loop, not excluded from it — a TypeScript implementation gets TS-specific checks AND testing, review, and PR gates.
 
 The quality-loop does NOT apply when:
 
@@ -329,7 +329,7 @@ Record only observable facts (tool_errors, user_rerouted). Routing outcome quali
 
 ```bash
 python3 ~/.claude/scripts/learning-db.py learn --skill vitest-runner "insight about testing"
-python3 ~/.claude/scripts/learning-db.py learn --agent typescript-frontend-engineer "insight about agent"
+python3 ~/.claude/scripts/learning-db.py learn --agent general-purpose "insight about agent"
 python3 ~/.claude/scripts/learning-db.py learn "general insight without scope"
 ```
 

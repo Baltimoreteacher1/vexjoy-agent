@@ -161,7 +161,7 @@ If YES to any: **bind the existing component** rather than creating a new one. D
 Every pipeline — both the Pipeline Creator itself and every pipeline it generates — MUST produce an Architectural Decision Record (ADR).
 
 ### Pipeline Creator ADR (Phase 0)
-The `pipeline-orchestrator-engineer` creates `adr/pipeline-{name}.md` BEFORE discovery. This ADR is a living document updated at each phase. It serves as the pipeline's single source of truth.
+The `general-purpose` creates `adr/pipeline-{name}.md` BEFORE discovery. This ADR is a living document updated at each phase. It serves as the pipeline's single source of truth.
 
 ### Generated Pipeline ADR
 Every pipeline created by the Pipeline Creator MUST include ADR creation as its own Phase 0. The generated skill's instructions MUST include:

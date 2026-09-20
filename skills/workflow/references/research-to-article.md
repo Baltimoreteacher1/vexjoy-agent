@@ -71,17 +71,18 @@ Search for these in current news research:
 
 Launch ALL agents in a single message using `Task` with `run_in_background=True`. See `references/research-agents.md` for prompt templates and agent configuration.
 
-**Step 3: Monitor with timeouts**
+**Step 3: Wait on completion notifications, not status checks**
 
 ```
 Timeline:
-  0:00  - Launch all 5 agents
-  2:00  - First progress check (TaskOutput block=false)
-  4:00  - Second progress check
-  5:00  - HARD TIMEOUT: Proceed with available data
+  0:00  - Launch all 5 agents in one message
+  ....  - Agents report themselves as they finish (no polling)
+  5:00  - HARD TIMEOUT: TaskStop stragglers, proceed with available data
 ```
 
 Enforce a 5-minute hard timeout on research agents because diminishing returns set in after 3-4 agents provide sufficient data. Waiting indefinitely wastes time without improving quality.
+
+Do not poll the agents while they run. Each one emits a completion notification, so periodic `TaskOutput` checks spend a model turn each to learn nothing. If you must block until the deadline, block once with a long timeout instead of checking repeatedly.
 
 **Gate**: At least 3 of 5 agents have returned data. If fewer than 3, supplement with direct WebSearch. Proceed only when gate passes.
 

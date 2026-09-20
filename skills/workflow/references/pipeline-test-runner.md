@@ -2,7 +2,7 @@
 name: pipeline-test-runner
 description: "Test generated pipeline skills against real targets."
 user-invocable: false
-agent: pipeline-orchestrator-engineer
+agent: general-purpose
 model: opus
 allowed-tools:
   - Read
@@ -425,5 +425,5 @@ STOP and ask the user (wait for explicit confirmation) when:
 ## References
 
 - **Artifact Utilities**: [../../scripts/artifact-utils.py](../../scripts/artifact-utils.py) -- manifest creation and validation
-- **Pipeline Orchestrator**: [../../agents/pipeline-orchestrator-engineer.md](../../agents/pipeline-orchestrator-engineer.md) -- the parent orchestrator (this skill is Phase 5)
+- **Pipeline Orchestrator**: [../../agents/general-purpose.md](../../agents/general-purpose.md) -- the parent orchestrator (this skill is Phase 5)
 - **Pipeline Retro**: pipeline-retro skill (Phase 6) -- consumes this skill's report

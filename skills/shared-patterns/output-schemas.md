@@ -53,7 +53,7 @@ Standardized output patterns for different agent types. Agents SHOULD use the ap
 - [ ] [Action item]
 ```
 
-**Used by:** performance-optimization-engineer, codebase-analyzer, research-coordinator-engineer
+**Used by:** general-purpose, codebase-analyzer, general-purpose
 
 ---
 
@@ -129,7 +129,7 @@ Standardized output patterns for different agent types. Agents SHOULD use the ap
 - [Risk and mitigation]
 ```
 
-**Used by:** workflow-orchestrator skill, project-coordinator-engineer
+**Used by:** workflow-orchestrator skill, general-purpose
 
 ---
 

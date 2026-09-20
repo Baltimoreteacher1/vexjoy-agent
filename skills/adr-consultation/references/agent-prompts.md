@@ -4,7 +4,7 @@ Full prompt templates for the three standard consultation agents. Load this refe
 
 ---
 
-## Agent 1: reviewer-perspectives (contrarian lens)
+## Agent 1: reviewer-code (contrarian lens)
 
 Lens: Challenge assumptions, find simpler alternatives, validate premises.
 
@@ -16,7 +16,7 @@ solving the wrong problem.
 ADR Content:
 {full adr content}
 
-Write your consultation response to: adr/{adr-name}/reviewer-perspectives-contrarian.md
+Write your consultation response to: adr/{adr-name}/reviewer-code-contrarian.md
 
 Structure your response as:
 
@@ -45,7 +45,7 @@ Structure your response as:
 
 ---
 
-## Agent 2: reviewer-perspectives (user-advocate lens)
+## Agent 2: reviewer-code (user-advocate lens)
 
 Lens: Evaluate user impact, UX complexity cost, whether this makes the system harder to use.
 
@@ -57,7 +57,7 @@ user value? Who bears the cognitive load of this change?
 ADR Content:
 {full adr content}
 
-Write your consultation response to: adr/{adr-name}/reviewer-perspectives-user-advocate.md
+Write your consultation response to: adr/{adr-name}/reviewer-code-user-advocate.md
 
 Structure your response as:
 
@@ -86,7 +86,7 @@ Structure your response as:
 
 ---
 
-## Agent 3: reviewer-perspectives (meta-process lens)
+## Agent 3: reviewer-code (meta-process lens)
 
 Lens: System health, single points of failure, architecture alignment, hidden coupling.
 
@@ -101,7 +101,7 @@ ADR Content:
 
 Also read the repository's CLAUDE.md for established principles before analyzing.
 
-Write your consultation response to: adr/{adr-name}/reviewer-perspectives-meta-process.md
+Write your consultation response to: adr/{adr-name}/reviewer-code-meta-process.md
 
 Structure your response as:
 

@@ -37,11 +37,11 @@ Format as markdown with clear headers.
 
 ```
 # In a SINGLE message, launch all 5 with run_in_background:
-Task(subagent_type=research-subagent-executor, prompt="Research [subject] career/matches [year]...", run_in_background=True)
-Task(subagent_type=research-subagent-executor, prompt="Research [subject] storylines [year]...", run_in_background=True)
-Task(subagent_type=research-subagent-executor, prompt="Research [subject] outside ventures [year]...", run_in_background=True)
-Task(subagent_type=research-subagent-executor, prompt="Research [subject] fan reaction [year]...", run_in_background=True)
-Task(subagent_type=research-subagent-executor, prompt="Research [subject] contract/business [year]...", run_in_background=True)
+Task(subagent_type=general-purpose, prompt="Research [subject] career/matches [year]...", run_in_background=True)
+Task(subagent_type=general-purpose, prompt="Research [subject] storylines [year]...", run_in_background=True)
+Task(subagent_type=general-purpose, prompt="Research [subject] outside ventures [year]...", run_in_background=True)
+Task(subagent_type=general-purpose, prompt="Research [subject] fan reaction [year]...", run_in_background=True)
+Task(subagent_type=general-purpose, prompt="Research [subject] contract/business [year]...", run_in_background=True)
 ```
 
 ## Timeout Management
@@ -50,10 +50,9 @@ Task(subagent_type=research-subagent-executor, prompt="Research [subject] contra
 
 ```
 Timeline:
-  0:00  - Launch all 5 agents
-  2:00  - First progress check (TaskOutput block=false)
-  4:00  - Second progress check
-  5:00  - HARD TIMEOUT: Proceed with available data
+  0:00  - Launch all 5 agents in one message
+  ....  - Agents report themselves as they finish (no polling)
+  5:00  - HARD TIMEOUT: TaskStop stragglers, proceed with available data
 
 Graceful Degradation:
   5/5 complete -> Full pipeline
@@ -61,6 +60,8 @@ Graceful Degradation:
   1-2/5 complete -> Supplement with direct WebSearch
   0/5 complete -> Fallback to synchronous research
 ```
+
+**Do not poll while they run.** Each agent emits a completion notification on its own, so a periodic `TaskOutput` check spends a model turn to learn nothing. If you must block until the deadline, block once with a long timeout rather than checking repeatedly.
 
 **Why this matters:** In practice, agents can get stuck on paywall fetches for 29+ minutes. Proceeding with gathered data still achieves strong validation scores. Sufficient research > comprehensive research.
 

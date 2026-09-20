@@ -2,7 +2,7 @@
 name: chain-composer
 description: "Compose valid pipeline chains from the step menu per subdomain."
 user-invocable: false
-agent: pipeline-orchestrator-engineer
+agent: general-purpose
 model: opus
 allowed-tools:
   - Read

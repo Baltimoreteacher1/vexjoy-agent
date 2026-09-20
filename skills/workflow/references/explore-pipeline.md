@@ -30,7 +30,7 @@ routing:
   pairs_with:
     - codebase-overview
     - codebase-analyzer
-    - technical-documentation-engineer
+    - general-purpose
   complexity: medium
   category: meta
 ---

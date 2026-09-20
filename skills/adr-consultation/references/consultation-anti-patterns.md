@@ -23,9 +23,9 @@ masquerading as full review. Each failure mode has a detection command and a con
 ```bash
 # Look for single-agent output files — if contrarian exists but others don't yet,
 # dispatch was sequential
-ls adr/{name}/reviewer-perspectives-contrarian.md 2>/dev/null
-ls adr/{name}/reviewer-perspectives-user-advocate.md 2>/dev/null
-ls adr/{name}/reviewer-perspectives-meta-process.md 2>/dev/null
+ls adr/{name}/reviewer-code-contrarian.md 2>/dev/null
+ls adr/{name}/reviewer-code-user-advocate.md 2>/dev/null
+ls adr/{name}/reviewer-code-meta-process.md 2>/dev/null
 # All three should exist simultaneously after dispatch completes
 ```
 
@@ -50,7 +50,7 @@ agent 1's findings, undermining independence. The value is *simultaneous* indepe
 ```bash
 # If synthesis.md exists but agent files don't, synthesis came from context only
 ls adr/{name}/synthesis.md 2>/dev/null
-ls adr/{name}/reviewer-perspectives-*.md 2>/dev/null | wc -l
+ls adr/{name}/reviewer-code-*.md 2>/dev/null | wc -l
 # Healthy: synthesis.md + 3 agent files. Unhealthy: synthesis.md + 0 agent files.
 ```
 
@@ -66,7 +66,7 @@ ls adr/{name}/reviewer-perspectives-*.md 2>/dev/null | wc -l
 Synthesis built from context cannot be re-read, audited, or resumed. If the session drops
 mid-consultation, the entire analysis is lost. File-based artifacts are the permanent record.
 
-**Fix**: After all agents complete, explicitly read each `adr/{name}/reviewer-perspectives-*.md`
+**Fix**: After all agents complete, explicitly read each `adr/{name}/reviewer-code-*.md`
 file before synthesizing — even if Task return context is available.
 
 ---
@@ -109,7 +109,7 @@ the concern in the ADR itself and re-run consultation. Do not argue around it in
 **Detection**:
 ```bash
 # Standard mode: expect exactly 3 reviewer files
-count=$(ls adr/{name}/reviewer-perspectives-*.md 2>/dev/null | wc -l)
+count=$(ls adr/{name}/reviewer-code-*.md 2>/dev/null | wc -l)
 if [ "$count" -lt 3 ]; then
   echo "PARTIAL CONSULTATION: only $count/3 reviewers present"
 fi
@@ -165,7 +165,7 @@ wc -l < adr/{name}.md 2>/dev/null || echo "ADR NOT READ"
 consultation directory exists, and the ADR name has been confirmed.
 
 **Why wrong**: Agents need a valid directory to write output files. An agent that cannot
-write `adr/{name}/reviewer-perspectives-contrarian.md` because `adr/{name}/` doesn't exist
+write `adr/{name}/reviewer-code-contrarian.md` because `adr/{name}/` doesn't exist
 will either fail silently or write to the wrong location. The synthesis then has no files to read.
 
 **Fix**: Enforce the Phase 1 gate explicitly: confirm ADR content read, `mkdir -p adr/{name}`
@@ -178,7 +178,7 @@ complete, ADR name confirmed. Only then dispatch.
 **Detection**:
 ```bash
 # Count NEEDS_CHANGES vs PROCEED vs BLOCK in agent files
-grep -h "## Verdict:" adr/{name}/reviewer-perspectives-*.md 2>/dev/null | sort | uniq -c
+grep -h "## Verdict:" adr/{name}/reviewer-code-*.md 2>/dev/null | sort | uniq -c
 ```
 
 **What it looks like**:
@@ -221,10 +221,10 @@ accepted as known limitations.
 
 ```bash
 # Check for sequential dispatch (files should appear simultaneously)
-ls -lt adr/{name}/reviewer-perspectives-*.md 2>/dev/null
+ls -lt adr/{name}/reviewer-code-*.md 2>/dev/null
 
 # Verify complete consultation (expect 3 files in standard mode)
-ls adr/{name}/reviewer-perspectives-*.md 2>/dev/null | wc -l
+ls adr/{name}/reviewer-code-*.md 2>/dev/null | wc -l
 
 # Detect rationalized blocking concerns
 grep -l "Severity.*blocking" adr/*/concerns.md 2>/dev/null | while read f; do
@@ -233,7 +233,7 @@ grep -l "Severity.*blocking" adr/*/concerns.md 2>/dev/null | while read f; do
 done
 
 # Count verdict types across all agent files in a consultation
-grep -h "## Verdict:" adr/{name}/reviewer-perspectives-*.md 2>/dev/null | sort | uniq -c
+grep -h "## Verdict:" adr/{name}/reviewer-code-*.md 2>/dev/null | sort | uniq -c
 
 # Verify permanent artifacts after cleanup
 ls adr/{name}/synthesis.md adr/{name}/concerns.md 2>/dev/null

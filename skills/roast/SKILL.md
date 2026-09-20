@@ -116,13 +116,13 @@ Launch 5 general-purpose agents in parallel via Task tool. Load the full persona
 2. **Well-Actually Pedant** (`agents/reviewer-code.md`, pedant lens)
    Focus: Precision, intellectual honesty, terminological accuracy
 
-3. **Enthusiastic Newcomer** (`agents/reviewer-perspectives.md`, newcomer lens)
+3. **Enthusiastic Newcomer** (`agents/reviewer-code.md`, newcomer lens)
    Focus: Onboarding experience, documentation clarity, accessibility
 
-4. **Contrarian Provocateur** (`agents/reviewer-perspectives.md`, contrarian lens)
+4. **Contrarian Provocateur** (`agents/reviewer-code.md`, contrarian lens)
    Focus: Fundamental assumptions, alternative approaches
 
-5. **Pragmatic Builder** (`agents/reviewer-domain.md`, pragmatic-builder lens)
+5. **Pragmatic Builder** (`agents/reviewer-system.md`, pragmatic-builder lens)
    Focus: Production readiness, operational concerns
 
 **Each agent must:**
@@ -286,8 +286,8 @@ Solution:
 - `${CLAUDE_SKILL_DIR}/references/report-template.md`: Full report output template with tone transformation rules
 - `${CLAUDE_SKILL_DIR}/references/personas.md`: Persona specifications, prompt template, and claim format
 - `agents/reviewer-code.md`: Code quality reviewer (senior and pedant lenses)
-- `agents/reviewer-perspectives.md`: Perspectives reviewer (newcomer and contrarian lenses)
-- `agents/reviewer-domain.md`: Domain reviewer (pragmatic-builder lens)
+- `agents/reviewer-code.md`: Perspectives reviewer (newcomer and contrarian lenses)
+- `agents/reviewer-system.md`: Domain reviewer (pragmatic-builder lens)
 
 ### Dependencies
 - **read-only-ops skill**: Enforces no-modification guardrails during analysis

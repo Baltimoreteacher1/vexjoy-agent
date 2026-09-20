@@ -134,7 +134,7 @@ You asked: "Why did you choose the code reviewer?"
 
 Decision found at [TIMESTAMP]:
   Chosen: reviewer-code agent
-  Alternatives: reviewer-domain, reviewer-perspectives
+  Alternatives: reviewer-system, reviewer-code
   Evidence: Request matched "review this function" trigger; code-specific
             keywords ("function", "bug") scored highest for reviewer-code
   Context: User said "review this function for bugs"

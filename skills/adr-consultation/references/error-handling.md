@@ -66,11 +66,11 @@ the issue — do not dispatch agents without a confirmed writable directory.
 **Detection**:
 ```bash
 # Count agent output files (standard: expect 3)
-ls adr/{name}/reviewer-perspectives-*.md 2>/dev/null | wc -l
+ls adr/{name}/reviewer-code-*.md 2>/dev/null | wc -l
 
 # Identify which agents succeeded and which are missing
 for lens in contrarian user-advocate meta-process; do
-  f="adr/{name}/reviewer-perspectives-$lens.md"
+  f="adr/{name}/reviewer-code-$lens.md"
   if [ -f "$f" ]; then
     echo "OK:      $lens ($(wc -l < "$f") lines)"
   else
@@ -94,10 +94,10 @@ done
 **Detection**:
 ```bash
 # Check line counts across all agent files
-wc -l adr/{name}/reviewer-perspectives-*.md 2>/dev/null
+wc -l adr/{name}/reviewer-code-*.md 2>/dev/null
 
 # Verify each file has a Verdict section
-for f in adr/{name}/reviewer-perspectives-*.md; do
+for f in adr/{name}/reviewer-code-*.md; do
   grep -q "## Verdict:" "$f" \
     && echo "OK:      $(basename $f)" \
     || echo "NO VERDICT: $(basename $f)"
@@ -116,14 +116,14 @@ or failed mid-output. Re-run the affected agent. Do not synthesize from an incom
 **Detection**:
 ```bash
 # Search for recent reviewer output files regardless of where they landed
-find . -name "reviewer-perspectives-*.md" -newer adr/ 2>/dev/null | sort
+find . -name "reviewer-code-*.md" -newer adr/ 2>/dev/null | sort
 
 # Check if output landed in cwd instead of adr/{name}/
-ls reviewer-perspectives-*.md 2>/dev/null
+ls reviewer-code-*.md 2>/dev/null
 ```
 
 **Recovery**: Move misplaced files to `adr/{name}/` and verify the agent prompt contained the
-explicit output path `adr/{name}/reviewer-perspectives-{lens}.md`.
+explicit output path `adr/{name}/reviewer-code-{lens}.md`.
 
 ---
 
@@ -138,7 +138,7 @@ that never made it into concerns.md.
 ```bash
 # Extract all severity lines from agent files
 grep -hi "severity\|blocking\|important\|minor" \
-  adr/{name}/reviewer-perspectives-*.md 2>/dev/null
+  adr/{name}/reviewer-code-*.md 2>/dev/null
 
 # Compare against what made it into concerns.md
 grep "Severity:" adr/{name}/concerns.md 2>/dev/null
@@ -156,7 +156,7 @@ appears in concerns.md with severity and resolution. Add any missing entries.
 **Detection**:
 ```bash
 # Compare timestamps — if ADR is newer than agent files, it changed post-dispatch
-ls -lt adr/{name}.md adr/{name}/reviewer-perspectives-*.md 2>/dev/null | head -6
+ls -lt adr/{name}.md adr/{name}/reviewer-code-*.md 2>/dev/null | head -6
 ```
 
 **Recovery**: Re-run the full consultation. Agent verdicts based on outdated ADR content are
@@ -175,7 +175,7 @@ while reading all three files that Agent A's "acceptable tradeoff" creates Agent
 ```bash
 # Surface candidate cross-cutting terms across all agent files
 grep -hi "tradeoff\|trade.off\|acceptable\|assume\|assuming\|depends on\|relies on" \
-  adr/{name}/reviewer-perspectives-*.md 2>/dev/null
+  adr/{name}/reviewer-code-*.md 2>/dev/null
 ```
 
 **Recovery**: Document as an orchestrator-level concern in concerns.md:
@@ -243,7 +243,7 @@ concerns.md, add it to concerns.md with proper severity, then re-verify the verd
 | No ADR path found | Phase 1 | `cat .adr-session.json` | List ADRs, ask user |
 | Agent file missing after dispatch | Phase 2 | `ls adr/{name}/reviewer-*.md \| wc -l` | Re-run missing agent individually |
 | Agent file < 10 lines or no Verdict | Phase 2 | `wc -l adr/{name}/reviewer-*.md` | Re-run affected agent |
-| Agent output in wrong directory | Phase 2 | `find . -name "reviewer-perspectives-*.md" -newer adr/` | Move files; fix prompt path |
+| Agent output in wrong directory | Phase 2 | `find . -name "reviewer-code-*.md" -newer adr/` | Move files; fix prompt path |
 | Concern in agent file not in concerns.md | Phase 3 | `grep -hi "severity" adr/{name}/reviewer-*.md` | Re-extract from agent files |
 | ADR changed after dispatch | Phase 3 | `ls -lt adr/{name}.md adr/{name}/reviewer-*.md` | Re-run full consultation |
 | Blocking in concerns.md, PROCEED in synthesis | Phase 4 | `grep -c "Severity.*blocking" concerns.md` | Override to BLOCKED; address concern |

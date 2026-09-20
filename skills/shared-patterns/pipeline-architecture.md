@@ -316,28 +316,30 @@ When a pipeline step performs a deterministic operation (repo classification, fi
 #### Implementation Pattern
 
 ```python
-# When launching parallel agents, always use background mode with monitoring
+# Launch every independent agent in ONE message so they run concurrently
 Task(agent, prompt, run_in_background=True)
-
-# Check progress periodically (every 30-60 seconds)
-TaskOutput(task_id, block=False)  # Non-blocking check
-
-# After timeout threshold, proceed with available data
-# DO NOT wait indefinitely for agents that may be stuck on web fetches
 ```
+
+Then **stop and let them work**. Each agent emits a completion notification when
+it finishes; that notification is the signal, not a status check you initiate.
+
+Do not poll. A `TaskOutput(block=False)` loop costs a full model turn per check,
+usually returns "still running", and buys nothing — and `TaskOutput` is
+deprecated besides. Checking every 30-60s over a 5-minute phase burns ~10 turns
+to learn what the notification tells you for free.
+
+If you have nothing else to do and genuinely must block until the deadline, wait
+**once** with a long timeout rather than many short ones — or arm a `Monitor` /
+`Bash(run_in_background)` `until` loop that exits on the real condition.
 
 #### Timeout Decision Tree
 
 ```
-Agent Running > 5 minutes?
+Deadline reached (no completion notification yet)?
         │
-        ├── YES → Check progress with TaskOutput(block=False)
-        │         │
-        │         ├── Making progress? → Wait 2 more minutes
-        │         │
-        │         └── Stuck on web fetch? → PROCEED WITHOUT
+        ├── YES → TaskStop the stragglers, proceed with available data
         │
-        └── NO → Continue waiting
+        └── NO  → Do other useful work, or wait once. Do not re-check.
 ```
 
 #### Why Timeouts Matter
