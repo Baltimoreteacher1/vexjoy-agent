@@ -158,6 +158,21 @@ def _harvest(stdout_text: str, contexts: list[str], messages: list[str]) -> None
         contexts.append("\n".join(plain).strip())
 
 
+# Events that END a turn rather than preceding one.
+#
+# additionalContext on these does NOT annotate the finished turn — the harness
+# feeds it back to the model as new input, which starts ANOTHER turn, which ends,
+# which fires this chain again. The session then ping-pongs until
+# CLAUDE_CODE_STOP_HOOK_BLOCK_CAP trips. Observed 2026-09-23: session-summary.py
+# printed three plain lines, _harvest folded them into additionalContext, and the
+# model was re-invoked ~15 times on a finished session.
+#
+# Every hook in the Stop chain is informational (a summary, a decay pass, a
+# recorder, two proposers). None has anything the model must act on, so their
+# output goes to the transcript via stderr and stdout carries no context.
+TERMINAL_EVENTS = {"Stop", "SubagentStop", "SessionEnd"}
+
+
 def main():
     try:
         payload = sys.stdin.read() if not sys.stdin.isatty() else ""
@@ -191,6 +206,13 @@ def main():
         _harvest(_run_hook(path, payload, event), contexts, messages)
 
     inner = {"hookEventName": event}
+    if event in TERMINAL_EVENTS:
+        # Keep the text visible in the transcript, but never on stdout as
+        # additionalContext — see TERMINAL_EVENTS.
+        for line in contexts + messages:
+            print(line, file=sys.stderr)
+        print(json.dumps({"hookSpecificOutput": inner}))
+        sys.exit(0)
     if contexts:
         inner["additionalContext"] = "\n".join(contexts)
     if messages:
