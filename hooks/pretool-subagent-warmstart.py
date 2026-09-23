@@ -24,12 +24,11 @@ from pathlib import Path
 # Add lib directory to path for imports
 sys.path.insert(0, str(Path(__file__).parent / "lib"))
 
-from hook_utils import context_output, empty_output
+from hook_utils import context_output, empty_output, get_session_reads_file
 from stdin_timeout import read_stdin
 
 EVENT_NAME = "PreToolUse"
 
-SESSION_READS_FILE = ".claude/session-reads.txt"
 TASK_PLAN_FILE = "task_plan.md"
 ADR_SESSION_FILE = ".adr-session.json"
 DISCOVERIES_DIR = ".planning/discoveries"
@@ -255,7 +254,7 @@ def main() -> None:
         # this hook from spawning for non-Agent tools.
 
         # Gather context from various sources
-        files = load_recent_reads(Path(SESSION_READS_FILE))
+        files = load_recent_reads(get_session_reads_file(event))
         task_plan = extract_task_plan(Path(TASK_PLAN_FILE))
         decisions = extract_decisions(Path(TASK_PLAN_FILE))
         adr_session = load_adr_session(Path(ADR_SESSION_FILE))
