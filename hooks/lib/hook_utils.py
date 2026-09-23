@@ -262,6 +262,45 @@ def get_state_file(prefix: str) -> Path:
     return Path(f"/tmp/claude-{prefix}-{session_id}.state")
 
 
+def get_session_reads_file(event: Optional[dict[str, Any]] = None) -> Path:
+    """Path to this session's record of files the parent session has Read.
+
+    Written by posttool-session-reads.py, read by pretool-subagent-warmstart.py.
+    Both must agree, so the resolution lives here rather than in either hook.
+
+    Two bugs made this necessary. Both hooks used the *relative* path
+    ".claude/session-reads.txt":
+
+      1. The writer mkdir'd its parent, so every directory a session was ever
+         started in grew a stray `.claude/` - eighteen of them here, including
+         ~/Downloads, ~/.local/bin, ~/.codex and ~/.claude itself. An empty
+         `.claude/` also makes an ordinary folder look like a configured
+         project to Claude Code.
+      2. Resolution depended on the hook subprocess's CWD, and the file was
+         never truncated, so it accumulated across *every* session in a
+         directory. The warmstart hook then injected files read in unrelated
+         older sessions as "parent session context".
+
+    Keying on the session id from the hook payload fixes both: one file per
+    session, in a fixed location, regardless of CWD. /tmp is the same home the
+    file-backup hook uses, and it clears on reboot so nothing needs pruning.
+    The uid suffix and 0700 parent keep it private on a shared /tmp.
+    """
+    import tempfile
+
+    session_id = ""
+    if event:
+        session_id = str(event.get("session_id") or "").strip()
+    if not session_id:
+        session_id = get_session_id()
+    # Never let a crafted id escape the directory.
+    safe = "".join(c for c in session_id if c.isalnum() or c in "-_") or "unknown"
+
+    base = Path(tempfile.gettempdir()) / f".claude-session-reads-{os.getuid()}"
+    base.mkdir(mode=0o700, parents=True, exist_ok=True)
+    return base / f"{safe}.txt"
+
+
 # =============================================================================
 # File Discovery
 # =============================================================================

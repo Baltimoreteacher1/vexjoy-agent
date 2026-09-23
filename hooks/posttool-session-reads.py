@@ -3,10 +3,10 @@
 """
 PostToolUse Hook: Session Read Tracker
 
-Tracks files read during the session by appending file paths to
-.claude/session-reads.txt. This provides a lightweight record of
-files the parent session has seen, used by the warmstart hook to
-give subagents context about what's already been read.
+Tracks files read during the session by appending file paths to this
+session's read log (see hook_utils.get_session_reads_file). This provides
+a lightweight record of files the parent session has seen, used by the
+warmstart hook to give subagents context about what's already been read.
 
 Design Principles:
 - SILENT output (no context injection)
@@ -24,12 +24,10 @@ from pathlib import Path
 # Add lib directory to path for imports
 sys.path.insert(0, str(Path(__file__).parent / "lib"))
 
-from hook_utils import empty_output
+from hook_utils import empty_output, get_session_reads_file
 from stdin_timeout import read_stdin
 
 EVENT_NAME = "PostToolUse"
-
-SESSION_READS_FILE = ".claude/session-reads.txt"
 
 
 def main() -> None:
@@ -38,7 +36,7 @@ def main() -> None:
     Flow:
     1. Read stdin JSON, check tool_name == "Read"
     2. Extract file_path from tool_input
-    3. Append to .claude/session-reads.txt (deduplicated)
+    3. Append to this session's read log (deduplicated)
     4. Exit silently (no context injection)
     """
     try:
@@ -65,11 +63,9 @@ def main() -> None:
         if not file_path:
             return
 
-        # Resolve the session-reads file path
-        reads_path = Path(SESSION_READS_FILE)
-
-        # Ensure parent directory exists
-        reads_path.parent.mkdir(parents=True, exist_ok=True)
+        # Resolve the session-reads file. Keyed on this session's id and kept
+        # outside the project tree - see get_session_reads_file for why.
+        reads_path = get_session_reads_file(event)
 
         # Check for duplicates by reading existing entries
         existing_paths: set[str] = set()
