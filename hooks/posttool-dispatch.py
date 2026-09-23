@@ -2,7 +2,7 @@
 # hook-version: 1.0.0
 """PostToolUse dispatcher: run the PostToolUse chain in ONE interpreter.
 
-Why: the same problem pretool-bash-dispatch.py already solved on the PreToolUse
+Why: the same problem pretool-dispatch.py already solved on the PreToolUse
 side. PostToolUse was ten separate `python3 <hook>.py` invocations for an Edit
 and eight for a Bash - measured end to end at ~436ms and ~413ms respectively, on
 every single tool call. The hooks themselves are cheap; the process starts were

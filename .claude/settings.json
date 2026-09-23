@@ -14,61 +14,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 \"$HOME/.claude/hooks/sync-to-user-claude.py\"",
-            "once": true
-          },
-          {
-            "type": "command",
-            "command": "python3 \"$HOME/.claude/hooks/afk-mode.py\"",
-            "timeout": 5,
-            "once": true
-          },
-          {
-            "type": "command",
-            "command": "python3 \"$HOME/.claude/hooks/session-context.py\"",
-            "once": true
-          },
-          {
-            "type": "command",
-            "command": "python3 \"$HOME/.claude/hooks/fish-shell-detector.py\"",
-            "timeout": 5,
-            "once": true
-          },
-          {
-            "type": "command",
-            "command": "python3 \"$HOME/.claude/hooks/operator-context-detector.py\"",
-            "timeout": 5,
-            "once": true
-          },
-          {
-            "type": "command",
-            "command": "python3 \"$HOME/.claude/hooks/retro-knowledge-injector.py\"",
-            "timeout": 5,
-            "once": true
-          },
-          {
-            "type": "command",
-            "command": "python3 \"$HOME/.claude/hooks/kairos-briefing-injector.py\"",
-            "timeout": 5,
-            "once": true
-          },
-          {
-            "type": "command",
-            "command": "python3 \"$HOME/.claude/hooks/rules-distill-injector.py\"",
-            "timeout": 5,
-            "once": true
-          },
-          {
-            "type": "command",
-            "command": "python3 \"$HOME/.claude/hooks/team-config-loader.py\"",
-            "timeout": 5,
-            "once": true
-          },
-          {
-            "type": "command",
-            "command": "python3 \"$HOME/.claude/hooks/hook-health-report.py\"",
-            "timeout": 10,
-            "once": true
+            "command": "python3 \"$HOME/.claude/hooks/event-dispatch.py\"",
+            "timeout": 60
           }
         ]
       },
@@ -88,107 +35,20 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 \"$HOME/.claude/hooks/instruction-reminder.py\""
-          },
-          {
-            "type": "command",
-            "command": "python3 \"$HOME/.claude/hooks/pipeline-context-detector.py\"",
-            "timeout": 5
-          },
-          {
-            "type": "command",
-            "command": "python3 \"$HOME/.claude/hooks/user-correction-capture.py\"",
-            "timeout": 5
-          },
-          {
-            "type": "command",
-            "command": "python3 \"$HOME/.claude/hooks/auto-plan-detector.py\""
-          },
-          {
-            "type": "command",
-            "command": "python3 \"$HOME/.claude/hooks/codex-auto-review.py\"",
-            "timeout": 5
+            "command": "python3 \"$HOME/.claude/hooks/event-dispatch.py\"",
+            "timeout": 20
           }
         ]
       }
     ],
     "PreToolUse": [
       {
-        "matcher": "mcp__.*",
+        "matcher": "Bash|Write|Edit|Agent|mcp__.*",
         "hooks": [
           {
             "type": "command",
-            "command": "python3 \"$HOME/.claude/hooks/pretool-mcp-blast-radius-guard.py\"",
-            "timeout": 5
-          }
-        ]
-      },
-      {
-        "matcher": "Write|Edit",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "python3 \"$HOME/.claude/hooks/pretool-unified-gate.py\"",
-            "timeout": 5
-          }
-        ]
-      },
-      {
-        "matcher": "Bash",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "python3 \"$HOME/.claude/hooks/pretool-bash-dispatch.py\"",
-            "timeout": 15
-          }
-        ]
-      },
-      {
-        "matcher": "Edit",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "python3 \"$HOME/.claude/hooks/pretool-learning-injector.py\"",
-            "timeout": 5
-          }
-        ]
-      },
-      {
-        "matcher": "Write|Edit",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "python3 \"$HOME/.claude/hooks/pretool-prompt-injection-scanner.py\"",
-            "timeout": 5
-          },
-          {
-            "type": "command",
-            "command": "python3 \"$HOME/.claude/hooks/pretool-config-protection.py\""
-          }
-        ]
-      },
-      {
-        "matcher": "Edit",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "python3 \"$HOME/.claude/hooks/pretool-file-backup.py\"",
-            "timeout": 5
-          }
-        ]
-      },
-      {
-        "matcher": "Agent",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "python3 \"$HOME/.claude/hooks/reference-loading-enforcer.py\"",
-            "timeout": 5
-          },
-          {
-            "type": "command",
-            "command": "python3 \"$HOME/.claude/hooks/pretool-subagent-warmstart.py\"",
-            "timeout": 10
+            "command": "python3 \"$HOME/.claude/hooks/pretool-dispatch.py\"",
+            "timeout": 20
           }
         ]
       },
@@ -262,27 +122,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 \"$HOME/.claude/hooks/session-summary.py\""
-          },
-          {
-            "type": "command",
-            "command": "python3 \"$HOME/.claude/hooks/confidence-decay.py\"",
-            "timeout": 5
-          },
-          {
-            "type": "command",
-            "command": "python3 \"$HOME/.claude/hooks/session-learning-recorder.py\"",
-            "timeout": 5
-          },
-          {
-            "type": "command",
-            "command": "python3 \"$HOME/.claude/hooks/knowledge-graduation-proposer.py\"",
-            "timeout": 10
-          },
-          {
-            "type": "command",
-            "command": "python3 \"$HOME/.claude/hooks/rules-distill-trigger.py\"",
-            "timeout": 10
+            "command": "python3 \"$HOME/.claude/hooks/event-dispatch.py\"",
+            "timeout": 30
           }
         ]
       }
