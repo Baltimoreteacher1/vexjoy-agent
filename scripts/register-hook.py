@@ -78,7 +78,7 @@ def cmd_add(args: argparse.Namespace) -> None:
         sys.exit(1)
 
     target = HOOKS_DIR / source.name
-    hook_command = f'python3 "$HOME/.claude/hooks/{source.name}"'
+    hook_command = f'"${{HOOK_PYTHON:-python3}}" "$HOME/.claude/hooks/{source.name}"'
 
     # Step 1: DEPLOY file to ~/.claude/hooks/ FIRST
     HOOKS_DIR.mkdir(parents=True, exist_ok=True)

@@ -249,16 +249,9 @@ def get_profile_injection(profile: str, detection: str) -> str:
     """Build the context injection string for the detected profile."""
     guidance = PROFILE_GUIDANCE.get(profile, PROFILE_GUIDANCE["personal"])
 
-    return f"""[operator-context] Profile: {profile}
-[operator-context] Detection: {detection}
-
-Operator Profile: {profile}
-- personal: Full autonomy. No approval gates. Branch safety only.
-- work: Convention-enforced. APPROVE for production changes.
-- ci: Fully autonomous, disposable environment. Database ungated.
-- production: Maximum gates. APPROVE mandatory. SNAPSHOT before changes.
-
-Current profile ({profile}) means:
+    # Only the active profile's guidance is injected; listing the other three
+    # profiles cost tokens every session and gave the model rules that did not apply.
+    return f"""[operator-context] Profile: {profile} ({detection})
 {guidance}
 """
 

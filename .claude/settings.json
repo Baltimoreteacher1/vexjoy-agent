@@ -14,7 +14,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 \"$HOME/.claude/hooks/event-dispatch.py\"",
+            "command": "\"${HOOK_PYTHON:-python3}\" \"$HOME/.claude/hooks/event-dispatch.py\"",
             "timeout": 60
           }
         ]
@@ -35,7 +35,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 \"$HOME/.claude/hooks/event-dispatch.py\"",
+            "command": "\"${HOOK_PYTHON:-python3}\" \"$HOME/.claude/hooks/event-dispatch.py\"",
             "timeout": 20
           }
         ]
@@ -47,7 +47,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 \"$HOME/.claude/hooks/pretool-dispatch.py\"",
+            "command": "\"${HOOK_PYTHON:-python3}\" \"$HOME/.claude/hooks/pretool-dispatch.py\"",
             "timeout": 20
           }
         ]
@@ -68,7 +68,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 \"$HOME/.claude/hooks/posttool-dispatch.py\"",
+            "command": "\"${HOOK_PYTHON:-python3}\" \"$HOME/.claude/hooks/posttool-dispatch.py\"",
             "timeout": 15
           }
         ]
@@ -79,7 +79,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 \"$HOME/.claude/hooks/precompact-archive.py\""
+            "command": "\"${HOOK_PYTHON:-python3}\" \"$HOME/.claude/hooks/precompact-archive.py\""
           }
         ]
       }
@@ -89,7 +89,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 \"$HOME/.claude/hooks/subagent-completion-guard.py\"",
+            "command": "\"${HOOK_PYTHON:-python3}\" \"$HOME/.claude/hooks/subagent-completion-guard.py\"",
             "timeout": 10
           }
         ]
@@ -100,7 +100,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 \"$HOME/.claude/hooks/stop-failure-handler.py\"",
+            "command": "\"${HOOK_PYTHON:-python3}\" \"$HOME/.claude/hooks/stop-failure-handler.py\"",
             "timeout": 5
           }
         ]
@@ -111,7 +111,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 \"$HOME/.claude/hooks/postcompact-handler.py\"",
+            "command": "\"${HOOK_PYTHON:-python3}\" \"$HOME/.claude/hooks/postcompact-handler.py\"",
             "timeout": 5
           }
         ]
@@ -122,7 +122,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 \"$HOME/.claude/hooks/event-dispatch.py\"",
+            "command": "\"${HOOK_PYTHON:-python3}\" \"$HOME/.claude/hooks/event-dispatch.py\"",
             "timeout": 30
           }
         ]
@@ -133,7 +133,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 \"$HOME/.claude/hooks/notification-push.py\"",
+            "command": "\"${HOOK_PYTHON:-python3}\" \"$HOME/.claude/hooks/notification-push.py\"",
             "timeout": 8
           }
         ]
@@ -144,7 +144,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 \"$HOME/.claude/hooks/session-end-archive.py\"",
+            "command": "\"${HOOK_PYTHON:-python3}\" \"$HOME/.claude/hooks/session-end-archive.py\"",
             "timeout": 10
           }
         ]
@@ -155,7 +155,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 \"$HOME/.claude/hooks/record-waste.py\""
+            "command": "\"${HOOK_PYTHON:-python3}\" \"$HOME/.claude/hooks/record-waste.py\""
           }
         ]
       }
