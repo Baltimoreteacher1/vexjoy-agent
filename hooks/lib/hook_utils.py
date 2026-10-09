@@ -364,12 +364,22 @@ def discover_files(
 # YAML Frontmatter Parsing (with fallback)
 # =============================================================================
 
-try:
-    import yaml
+# PyYAML is imported on first use, not at module load: importing it costs
+# ~17ms, and nearly every hook process imports this module without ever
+# parsing frontmatter.
+_yaml = None
 
-    YAML_AVAILABLE = True
-except ImportError:
-    YAML_AVAILABLE = False
+
+def _load_yaml():
+    """Return the yaml module, or None if PyYAML is not installed."""
+    global _yaml
+    if _yaml is None:
+        try:
+            import yaml
+        except ImportError:
+            yaml = False
+        _yaml = yaml
+    return _yaml or None
 
 
 def parse_frontmatter(content: str) -> Optional[dict[str, Any]]:
@@ -398,7 +408,8 @@ def parse_frontmatter(content: str) -> Optional[dict[str, Any]]:
     frontmatter = content[4:end_match].strip()
 
     # Try YAML parser first
-    if YAML_AVAILABLE:
+    yaml = _load_yaml()
+    if yaml is not None:
         try:
             return yaml.safe_load(frontmatter)
         except yaml.YAMLError:

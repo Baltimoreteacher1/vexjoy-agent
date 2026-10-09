@@ -33,12 +33,13 @@ Hooks keep working standalone; nothing about their files changes.
 import io
 import json
 import os
-import runpy
 import sys
 from pathlib import Path
 
 HOOKS_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(HOOKS_DIR / "lib"))
+
+from script_runner import run_script
 
 try:
     import hook_health
@@ -79,7 +80,7 @@ def _run_hook(path: Path, payload: str) -> str:
     sys.stdin = io.StringIO(payload)
     sys.stdout = buf
     try:
-        runpy.run_path(str(path), run_name="__main__")
+        run_script(str(path))
     except SystemExit:
         pass  # Every hook ends in sys.exit(0); that is normal termination.
     except Exception as exc:

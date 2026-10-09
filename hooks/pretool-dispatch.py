@@ -50,12 +50,13 @@ import io
 import json
 import os
 import re
-import runpy
 import sys
 from pathlib import Path
 
 HOOKS_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(HOOKS_DIR / "lib"))
+
+from script_runner import run_script
 
 try:
     import hook_health
@@ -171,7 +172,7 @@ def _run_guard(path: Path, payload: str) -> str:
     sys.stdin = io.StringIO(payload)
     sys.stdout = buf
     try:
-        runpy.run_path(str(path), run_name="__main__")
+        run_script(str(path))
     except SystemExit:
         pass  # Every guard ends in sys.exit(0); that is normal termination.
     except Exception as exc:
