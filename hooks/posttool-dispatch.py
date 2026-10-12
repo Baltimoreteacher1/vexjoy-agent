@@ -60,7 +60,6 @@ CHAIN = [
     ("usage-tracker.py", "Skill|Agent"),
     ("review-capture.py", "Agent"),
     ("error-learner.py", None),
-    ("routing-gap-recorder.py", None),
     ("completion-evidence-check.py", None),
     ("sql-injection-detector.py", "Write|Edit"),
     ("safe-format-after-edit.py", "Write|Edit|MultiEdit"),

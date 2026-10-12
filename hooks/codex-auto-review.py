@@ -10,7 +10,7 @@ actually installed.
 
 Detection triggers:
   Skill invocations: /systematic-code-review, /parallel-code-review,
-                     /full-repo-review, /pr-review
+                     /full-repo-review, /pr-review, /code-review (built-in)
   Intent phrases: "review this pr", "review my changes", "code review",
                   "review the pr", "pr review"
 
@@ -46,7 +46,7 @@ EVENT_NAME = "UserPromptSubmit"
 # Skill invocations that trigger cross-model review injection.
 # /pr-workflow is excluded — it already handles Codex via codex-review intent.
 REVIEW_SKILL_PATTERN = re.compile(
-    r"/(?:systematic-code-review|parallel-code-review|full-repo-review|pr-review)\b",
+    r"/(?:systematic-code-review|parallel-code-review|full-repo-review|pr-review|code-review)\b",
     re.IGNORECASE,
 )
 
@@ -74,13 +74,11 @@ CODEX_INJECTION = (
 def extract_prompt(event: dict) -> str:
     """Extract the user's prompt text from the hook event.
 
-    Claude Code UserPromptSubmit events deliver the text in tool_input.prompt.
+    Claude Code UserPromptSubmit events deliver the text in the top-level
+    "prompt" field (there is no tool_input on this event).
     Returns empty string if the field is absent or not a string.
     """
-    tool_input = event.get("tool_input", {})
-    if not isinstance(tool_input, dict):
-        return ""
-    prompt = tool_input.get("prompt", "")
+    prompt = event.get("prompt", "")
     return prompt if isinstance(prompt, str) else ""
 
 

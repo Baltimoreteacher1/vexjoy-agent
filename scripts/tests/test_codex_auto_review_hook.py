@@ -43,8 +43,8 @@ def run_hook(event: dict) -> tuple[str, str, int]:
 def make_event(prompt: str) -> dict:
     """Build a minimal UserPromptSubmit event."""
     return {
-        "tool_name": "UserPromptSubmit",
-        "tool_input": {"prompt": prompt},
+        "hook_event_name": "UserPromptSubmit",
+        "prompt": prompt,
     }
 
 
@@ -311,8 +311,8 @@ class TestNonBlocking:
         )
         assert result.returncode == 0
 
-    def test_exits_zero_on_missing_tool_input(self):
-        event = {"tool_name": "UserPromptSubmit"}
+    def test_exits_zero_on_missing_prompt(self):
+        event = {"hook_event_name": "UserPromptSubmit"}
         result = subprocess.run(
             [sys.executable, str(HOOK_PATH)],
             input=json.dumps(event),

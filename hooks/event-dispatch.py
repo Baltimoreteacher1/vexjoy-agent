@@ -87,7 +87,6 @@ CHAINS: dict[str, list[str]] = {
         "instruction-reminder.py",
         "pipeline-context-detector.py",
         "user-correction-capture.py",
-        "auto-plan-detector.py",
         "codex-auto-review.py",
     ],
     "Stop": [
