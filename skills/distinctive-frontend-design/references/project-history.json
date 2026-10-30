@@ -17,6 +17,15 @@
       ],
       "palette_name": "Warm Scholarly",
       "timestamp": "2026-05-25T07:29:27.250160"
+    },
+    {
+      "name": "Unit Rate Market",
+      "fonts": [
+        "Fjalla One",
+        "DM Mono"
+      ],
+      "palette_name": "Market Receipt Lab",
+      "timestamp": "2026-09-24T07:29:22.661789"
     }
   ]
 }
