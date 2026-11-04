@@ -10,14 +10,21 @@ import json
 import subprocess
 import sys
 import tempfile
+import uuid
 from pathlib import Path
 from unittest.mock import patch
+
+import pytest
 
 # ---------------------------------------------------------------------------
 # Import the module under test
 # ---------------------------------------------------------------------------
 
 HOOK_PATH = Path(__file__).parent.parent / "pretool-subagent-warmstart.py"
+
+# The hook keys its reads log on the session id, so import the same resolver.
+sys.path.insert(0, str(HOOK_PATH.parent / "lib"))
+from hook_utils import get_session_reads_file
 
 spec = importlib.util.spec_from_file_location("pretool_subagent_warmstart", HOOK_PATH)
 mod = importlib.util.module_from_spec(spec)
@@ -48,6 +55,15 @@ def run_hook(event: dict) -> tuple[str, str, int]:
         timeout=10,
     )
     return result.stdout, result.stderr, result.returncode
+
+
+@pytest.fixture(autouse=True)
+def isolated_session_reads(monkeypatch):
+    """Give each test its own session id so its reads log is isolated (removed on teardown)."""
+    monkeypatch.setenv("CLAUDE_SESSION_ID", f"pytest-{uuid.uuid4().hex}")
+    reads_file = get_session_reads_file()
+    yield reads_file
+    reads_file.unlink(missing_ok=True)
 
 
 # ---------------------------------------------------------------------------
@@ -503,10 +519,8 @@ class TestGracefulDegradation:
         """Some context files present, some missing."""
         monkeypatch.chdir(tmp_path)
 
-        # Only create session-reads.txt
-        claude_dir = tmp_path / ".claude"
-        claude_dir.mkdir()
-        (claude_dir / "session-reads.txt").write_text("/a.py\n/b.go\n")
+        # Only create this session's reads log
+        get_session_reads_file().write_text("/a.py\n/b.go\n")
 
         event = {"tool_name": "Agent", "tool_input": {"prompt": "do work"}}
         stdout, stderr, code = run_hook(event)

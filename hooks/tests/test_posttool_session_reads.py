@@ -10,8 +10,11 @@ import json
 import subprocess
 import sys
 import tempfile
+import uuid
 from pathlib import Path
 from unittest.mock import patch
+
+import pytest
 
 # ---------------------------------------------------------------------------
 # Import the module under test
@@ -23,7 +26,22 @@ spec = importlib.util.spec_from_file_location("posttool_session_reads", HOOK_PAT
 mod = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(mod)
 
-SESSION_READS_FILE = mod.SESSION_READS_FILE
+# The hook keys its reads log on the session id, so import the same resolver.
+sys.path.insert(0, str(HOOK_PATH.parent / "lib"))
+from hook_utils import get_session_reads_file
+
+
+@pytest.fixture(autouse=True)
+def isolated_session_reads(monkeypatch):
+    """Give each test its own session id so its reads log is isolated.
+
+    The hook keys the log on CLAUDE_SESSION_ID (see hook_utils.get_session_reads_file),
+    and the hook subprocess inherits the env var. The log is removed on teardown.
+    """
+    monkeypatch.setenv("CLAUDE_SESSION_ID", f"pytest-{uuid.uuid4().hex}")
+    reads_file = get_session_reads_file()
+    yield reads_file
+    reads_file.unlink(missing_ok=True)
 
 
 # ---------------------------------------------------------------------------
@@ -98,8 +116,6 @@ class TestFilePathTracking:
     def test_tracks_read_file_path(self, tmp_path, monkeypatch):
         """Read tool event should append the file path to session-reads.txt."""
         monkeypatch.chdir(tmp_path)
-        reads_dir = tmp_path / ".claude"
-        reads_dir.mkdir()
 
         event = {
             "tool_name": "Read",
@@ -108,7 +124,7 @@ class TestFilePathTracking:
         stdout, stderr, code = run_hook(event)
 
         assert code == 0
-        reads_file = reads_dir / "session-reads.txt"
+        reads_file = get_session_reads_file()
         assert reads_file.exists()
         content = reads_file.read_text()
         assert "/home/user/project/main.py" in content
@@ -116,8 +132,6 @@ class TestFilePathTracking:
     def test_tracks_multiple_reads(self, tmp_path, monkeypatch):
         """Multiple Read events should all be tracked."""
         monkeypatch.chdir(tmp_path)
-        reads_dir = tmp_path / ".claude"
-        reads_dir.mkdir()
 
         paths = ["/a/file1.py", "/b/file2.go", "/c/file3.rs"]
         for p in paths:
@@ -127,7 +141,7 @@ class TestFilePathTracking:
             }
             run_hook(event)
 
-        reads_file = reads_dir / "session-reads.txt"
+        reads_file = get_session_reads_file()
         content = reads_file.read_text()
         lines = [line.strip() for line in content.splitlines() if line.strip()]
         assert len(lines) == 3
@@ -166,8 +180,6 @@ class TestDeduplication:
     def test_duplicate_path_not_appended(self, tmp_path, monkeypatch):
         """Reading the same file twice should only produce one entry."""
         monkeypatch.chdir(tmp_path)
-        reads_dir = tmp_path / ".claude"
-        reads_dir.mkdir()
 
         event = {
             "tool_name": "Read",
@@ -176,7 +188,7 @@ class TestDeduplication:
         run_hook(event)
         run_hook(event)
 
-        reads_file = reads_dir / "session-reads.txt"
+        reads_file = get_session_reads_file()
         content = reads_file.read_text()
         lines = [line.strip() for line in content.splitlines() if line.strip()]
         assert lines.count("/home/user/main.py") == 1
@@ -184,8 +196,6 @@ class TestDeduplication:
     def test_different_paths_both_tracked(self, tmp_path, monkeypatch):
         """Different paths should both be recorded."""
         monkeypatch.chdir(tmp_path)
-        reads_dir = tmp_path / ".claude"
-        reads_dir.mkdir()
 
         for p in ["/a.py", "/b.py"]:
             event = {
@@ -194,7 +204,7 @@ class TestDeduplication:
             }
             run_hook(event)
 
-        reads_file = reads_dir / "session-reads.txt"
+        reads_file = get_session_reads_file()
         content = reads_file.read_text()
         lines = [line.strip() for line in content.splitlines() if line.strip()]
         assert len(lines) == 2
