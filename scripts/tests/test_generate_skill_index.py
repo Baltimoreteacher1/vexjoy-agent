@@ -178,3 +178,21 @@ class TestCLIFlag:
         assert result.returncode == 0, f"CLI failed:\n{result.stderr}"
         assert custom_output.exists(), "Output file not created"
         json.loads(custom_output.read_text())  # must be valid JSON
+
+
+class TestFallbackTriggers:
+    """Skills without routing.triggers get name-derived triggers, each listed once."""
+
+    def test_single_word_name_not_duplicated(self, tmp_path):
+        """A name with no hyphen must not produce a duplicate trigger."""
+        skill_dir = _make_skill_dir(tmp_path, "wrangler")
+        (skill_dir / "SKILL.md").write_text(_SKILL_FRONTMATTER.format(name="wrangler"))
+        entry = gsi.build_entry({"name": "wrangler"}, skill_dir, "")
+        assert entry["triggers"] == ["wrangler"]
+
+    def test_hyphenated_name_derives_parts(self, tmp_path):
+        """A hyphenated name yields the full name first, then its significant parts."""
+        skill_dir = _make_skill_dir(tmp_path, "code-cleanup")
+        (skill_dir / "SKILL.md").write_text(_SKILL_FRONTMATTER.format(name="code-cleanup"))
+        entry = gsi.build_entry({"name": "code-cleanup"}, skill_dir, "")
+        assert entry["triggers"] == ["code-cleanup", "code", "cleanup"]

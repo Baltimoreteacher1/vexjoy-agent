@@ -228,7 +228,8 @@ def build_entry(
         name_parts = name.replace("-", " ").split()
         stop_words = {"skill", "pipeline", "the", "and", "for", "with"}
         triggers = [p for p in name_parts if len(p) > 2 and p.lower() not in stop_words]
-        entry["triggers"] = [name] + triggers
+        # A single-word name is also its only name part; dedupe so it is listed once.
+        entry["triggers"] = list(dict.fromkeys([name, *triggers]))
 
     # Category: from routing.category, omit if not present
     if isinstance(routing, dict) and "category" in routing:
