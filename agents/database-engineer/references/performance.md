@@ -89,9 +89,9 @@ DATABASE_URL = "postgresql://user:pass@localhost:6432/myapp"
 # SQLAlchemy: set pool_pre_ping to handle stale connections
 engine = create_engine(
     DATABASE_URL,
-    pool_pre_ping=True,         # Check connection health before use
-    pool_size=5,                # Connections per worker process
-    max_overflow=10,            # Additional connections when pool exhausted
+    pool_pre_ping=True,  # Check connection health before use
+    pool_size=5,  # Connections per worker process
+    max_overflow=10,  # Additional connections when pool exhausted
 )
 ```
 

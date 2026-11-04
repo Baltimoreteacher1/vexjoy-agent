@@ -18,6 +18,7 @@ def process_command(command: dict) -> str:
         case _:
             return "Invalid command"
 
+
 # Pattern matching with guards
 def classify_age(age: int) -> str:
     match age:
@@ -40,6 +41,7 @@ async def fetch_all():
         tg.create_task(fetch_users())
         tg.create_task(fetch_orders())
 
+
 # Catch exception groups
 try:
     async with asyncio.TaskGroup() as tg:
@@ -56,6 +58,7 @@ except* TypeError as eg:
 ```python
 from typing import Self
 
+
 class Builder:
     def __init__(self) -> None:
         self.value = 0
@@ -68,6 +71,7 @@ class Builder:
         self.value *= n
         return self
 
+
 # Type inference works with method chaining
 result = Builder().add(5).multiply(2).add(3)  # Type is Builder
 ```
@@ -77,11 +81,13 @@ result = Builder().add(5).multiply(2).add(3)  # Type is Builder
 ```python
 from typing import TypedDict, NotRequired
 
+
 class UserDict(TypedDict):
     id: int
     name: str
     email: str
     age: NotRequired[int]  # Optional field
+
 
 user: UserDict = {"id": 1, "name": "Alice", "email": "alice@example.com"}
 # age is optional
@@ -97,17 +103,21 @@ from typing import TypeVar, Generic
 
 T = TypeVar("T")
 
+
 class Container(Generic[T]):
     def __init__(self, value: T) -> None:
         self.value = value
+
 
 # New PEP 695 style (3.12+)
 class Container[T]:
     def __init__(self, value: T) -> None:
         self.value = value
 
+
 def first[T](items: list[T]) -> T | None:
     return items[0] if items else None
+
 
 # Type aliases
 type Point = tuple[float, float]
@@ -118,6 +128,7 @@ type Vector[T] = list[T]
 
 ```python
 import asyncio
+
 
 # Structured concurrency - all tasks must complete
 async def fetch_all_data() -> dict:
@@ -130,6 +141,7 @@ async def fetch_all_data() -> dict:
     results["users"] = users_task.result()
     results["orders"] = orders_task.result()
     return results
+
 
 # With timeout
 async def fetch_with_timeout() -> dict:
@@ -151,6 +163,7 @@ async def fetch_with_timeout() -> dict:
 
 ```python
 from pydantic import BaseModel, Field, ConfigDict, field_validator, computed_field
+
 
 class User(BaseModel):
     model_config = ConfigDict(
@@ -220,6 +233,7 @@ from fastapi import FastAPI, Depends
 from contextlib import asynccontextmanager
 from typing import Annotated
 
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Startup
@@ -228,13 +242,17 @@ async def lifespan(app: FastAPI):
     # Shutdown
     await app.state.db.close()
 
+
 app = FastAPI(lifespan=lifespan)
+
 
 async def get_db():
     async with app.state.db.acquire() as conn:
         yield conn
 
+
 DB = Annotated[Connection, Depends(get_db)]
+
 
 @app.get("/users/{user_id}")
 async def get_user(user_id: int, db: DB) -> User:

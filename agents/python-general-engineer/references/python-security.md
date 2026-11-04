@@ -42,6 +42,7 @@ from pathlib import Path
 with tarfile.open(uploaded_archive) as tar:
     tar.extractall(target_dir, filter="data")
 
+
 # Correct (pre-3.12): manual containment check
 def safe_extract(tar: tarfile.TarFile, target: str) -> None:
     target_path = Path(target).resolve()
@@ -57,6 +58,7 @@ For zipfile, validate paths even though Python 3.6.2+ sanitizes `..`, because ab
 ```python
 import zipfile
 from pathlib import Path
+
 
 def safe_extract_zip(zf: zipfile.ZipFile, target: str) -> None:
     target_path = Path(target).resolve()
@@ -85,19 +87,25 @@ Render templates from disk files, never from user-supplied strings. Flask's `ren
 # Correct: render from a file with user data as context variables
 from flask import render_template
 
+
 @app.route("/preview")
 def preview():
     return render_template("preview.html", body=request.args["body"])
 
+
 # Correct: Django always renders from files by default
 from django.shortcuts import render
+
 
 def preview(request):
     return render(request, "preview.html", {"body": request.GET["body"]})
 
+
 # Correct: FastAPI Jinja2 with literal template name
 from fastapi.templating import Jinja2Templates
+
 templates = Jinja2Templates(directory="templates")
+
 
 @app.get("/page")
 async def page(request: Request):
@@ -130,9 +138,11 @@ config = yaml.safe_load(config_string)
 # Correct: Pydantic for structured validation
 from pydantic import BaseModel
 
+
 class UserConfig(BaseModel):
     theme: str
     language: str
+
 
 validated = UserConfig.model_validate_json(request_body)
 ```
@@ -158,6 +168,7 @@ class InvoiceViewSet(ModelViewSet):
 
     def get_queryset(self):
         return Invoice.objects.filter(organization=self.request.user.organization)
+
 
 # Correct: scope individual lookups
 def get_invoice(request, invoice_id: int):
@@ -186,11 +197,13 @@ Always use an explicit field allowlist on Django REST Framework serializers. Nev
 ```python
 from rest_framework import serializers
 
+
 # Correct: explicit field allowlist
 class UserPublicSerializer(serializers.ModelSerializer):
     class Meta:
         model = User
         fields = ["id", "display_name", "avatar_url", "timezone"]
+
 
 # Correct: mark sensitive fields as write-only
 class UserRegistrationSerializer(serializers.ModelSerializer):
@@ -228,6 +241,7 @@ with connection.cursor() as cur:
 
 # Correct: SQLAlchemy with named bind parameters
 from sqlalchemy import text
+
 session.execute(text("SELECT * FROM users WHERE name = :name"), {"name": name})
 
 # Correct: SQLAlchemy expression form
@@ -251,6 +265,7 @@ Enforce authentication and authorization through FastAPI's dependency injection 
 ```python
 from fastapi import Depends, HTTPException
 
+
 async def get_current_user(token: str = Depends(oauth2_scheme)) -> User:
     """Verify JWT and return the authenticated user."""
     try:
@@ -262,10 +277,12 @@ async def get_current_user(token: str = Depends(oauth2_scheme)) -> User:
     except jwt.InvalidTokenError:
         raise HTTPException(status_code=401, detail="invalid credentials")
 
+
 # Correct: auth enforced via dependency
 @app.get("/users/me", response_model=UserPublic)
 async def read_me(current_user: User = Depends(get_current_user)):
     return current_user
+
 
 # Correct: apply to entire router
 router = APIRouter(dependencies=[Depends(get_current_user)])
@@ -287,12 +304,14 @@ Declare a `response_model` Pydantic schema on every endpoint that returns databa
 ```python
 from pydantic import BaseModel, ConfigDict
 
+
 class UserPublic(BaseModel):
     model_config = ConfigDict(extra="ignore")  # Never "allow" on response DTOs
 
     id: int
     display_name: str
     avatar_url: str | None
+
 
 @app.get("/users/{user_id}", response_model=UserPublic)
 async def get_user(user_id: int):
@@ -319,6 +338,7 @@ from flask import send_from_directory, abort
 
 BASE_DIR = Path("/var/app/exports").resolve()
 
+
 @app.route("/download")
 def download():
     name = request.args["name"]
@@ -334,6 +354,7 @@ For file uploads, sanitize the filename:
 
 ```python
 import uuid
+
 
 def user_upload_path(instance, filename: str) -> str:
     # Replace user-supplied filename with UUID to prevent path traversal
@@ -366,6 +387,7 @@ app.config["SECRET_KEY"] = os.environ.get("FLASK_SECRET_KEY") or secrets.token_h
 app.config["SESSION_COOKIE_HTTPONLY"] = True
 app.config["SESSION_COOKIE_SECURE"] = True  # HTTPS only
 app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
+
 
 # Correct: use send_from_directory (applies safe_join internally)
 @app.route("/download/<filename>")
@@ -439,6 +461,7 @@ DISALLOWED_NETWORKS = [
     ipaddress.ip_network("fc00::/7"),
 ]
 
+
 def validate_url(url: str) -> str:
     """Validate a user-supplied URL is safe to fetch."""
     parsed = urlparse(url)
@@ -450,6 +473,7 @@ def validate_url(url: str) -> str:
         if ip in net:
             raise ValueError(f"disallowed IP range: {net}")
     return url
+
 
 # Usage
 validated = validate_url(user_url)

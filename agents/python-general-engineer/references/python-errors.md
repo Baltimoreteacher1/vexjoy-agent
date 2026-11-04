@@ -24,18 +24,22 @@ async def fetch_data():
     result = async_api_call()  # Missing await!
     return result
 
+
 # GOOD - Proper await
 async def fetch_data():
     result = await async_api_call()
     return result
 
+
 # BAD - Awaiting non-awaitable
 async def process():
     data = await regular_function()  # Not async!
 
+
 # GOOD - Don't await sync functions
 async def process():
     data = regular_function()  # Sync call, no await
+
 
 # Use TaskGroup for structured concurrency
 async def fetch_multiple():
@@ -68,6 +72,7 @@ async def fetch_multiple():
 ```python
 # In Jupyter or nested async context
 import nest_asyncio
+
 nest_asyncio.apply()
 
 # Or use await directly instead of asyncio.run()
@@ -109,6 +114,7 @@ def get_user(user_id: int) -> User:
     user = db.query(user_id)  # Returns User | None
     return user  # type: ignore  # Bug! Can return None
 
+
 # GOOD - Fix the actual issue
 def get_user(user_id: int) -> User:
     user = db.query(user_id)
@@ -116,9 +122,11 @@ def get_user(user_id: int) -> User:
         raise NotFoundError(f"User {user_id} not found")
     return user
 
+
 # Or update return type if None is valid
 def get_user(user_id: int) -> User | None:
     return db.query(user_id)
+
 
 # Type narrowing for dicts
 data: dict[str, Any] = get_json()
@@ -126,11 +134,13 @@ data: dict[str, Any] = get_json()
 # BAD - mypy doesn't know types
 name = data["name"]  # type is Any
 
+
 # GOOD - Use TypedDict
 class UserData(TypedDict):
     name: str
     email: str
     age: int
+
 
 data: UserData = get_json()
 name = data["name"]  # type is str
@@ -196,9 +206,11 @@ def add_item(item: str, items: list[str] = []) -> list[str]:
     items.append(item)
     return items
 
+
 # All calls share same list!
 add_item("a")  # ["a"]
 add_item("b")  # ["a", "b"] - unexpected!
+
 
 # GOOD - Use None
 def add_item(item: str, items: list[str] | None = None) -> list[str]:
@@ -206,6 +218,7 @@ def add_item(item: str, items: list[str] | None = None) -> list[str]:
         items = []
     items.append(item)
     return items
+
 
 # Or don't mutate, return new list
 def add_item(item: str, items: list[str] | None = None) -> list[str]:
@@ -234,17 +247,24 @@ def add_item(item: str, items: list[str] | None = None) -> list[str]:
 # BAD - Deprecated typing imports
 from typing import List, Dict, Tuple, Set
 
+
 def process(items: List[str]) -> Dict[str, int]:
     return {item: len(item) for item in items}
+
 
 # GOOD - Built-in generics (Python 3.9+)
 def process(items: list[str]) -> dict[str, int]:
     return {item: len(item) for item in items}
 
+
 # Correct imports for modern Python
 from typing import (
-    Any, TypeVar, Protocol,
-    Callable, Literal, TypedDict,
+    Any,
+    TypeVar,
+    Protocol,
+    Callable,
+    Literal,
+    TypedDict,
     Self,  # 3.11+
 )
 ```
@@ -276,19 +296,24 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from services import UserService  # Only imported for type checking
 
+
 class User:
     def process(self, service: "UserService") -> None:  # String annotation
         service.handle(self)
 
+
 # file: services.py
 from models import User  # No circular import at runtime
+
 
 class UserService:
     def handle(self, user: User) -> None:
         pass
 
+
 # Alternative: Use forward references
 from __future__ import annotations  # Top of file
+
 
 class User:
     def process(self, service: UserService) -> None:  # No quotes needed
@@ -374,14 +399,17 @@ pip install pytest-asyncio
 # Add decorator to async tests
 import pytest
 
+
 @pytest.mark.asyncio
 async def test_fetch_users():
     users = await fetch_users()
     assert len(users) > 0
 
+
 # Or configure in pyproject.toml
 [tool.pytest.ini_options]
 asyncio_mode = "auto"  # Automatically detect async tests
+
 
 # Then no decorator needed
 async def test_fetch_users():  # Automatically recognized
@@ -453,6 +481,7 @@ uv sync  # Sync environment with lockfile
 ```python
 from pydantic import BaseModel, Field, field_validator
 
+
 class User(BaseModel):
     name: str = Field(min_length=1)
     email: str
@@ -464,6 +493,7 @@ class User(BaseModel):
         if "@" not in v:
             raise ValueError("Invalid email format")
         return v.lower()
+
 
 # Handle validation errors
 from pydantic import ValidationError

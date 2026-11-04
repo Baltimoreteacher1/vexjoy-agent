@@ -15,12 +15,15 @@ class UserRepository:
     def save(self, user: User) -> None:
         insert_db(user)
 
+
 # When you need interface abstraction, use Protocol (structural subtyping)
 from typing import Protocol
+
 
 class UserRepository(Protocol):
     def get(self, id: int) -> User: ...
     def save(self, user: User) -> None: ...
+
 
 # Any class with these methods satisfies the protocol
 # No inheritance needed!
@@ -46,6 +49,7 @@ Use `async/await` only for I/O-bound operations (network, database, file). Pure 
 def calculate_total(items: list[Item]) -> float:
     return sum(item.price * item.quantity for item in items)
 
+
 # Async only when doing actual I/O
 async def fetch_and_calculate(user_id: int) -> float:
     async with httpx.AsyncClient() as client:
@@ -53,13 +57,11 @@ async def fetch_and_calculate(user_id: int) -> float:
         items = [Item(**item) for item in response.json()]
     return calculate_total(items)  # Sync calculation -- no await needed
 
+
 # Use TaskGroup for concurrent I/O (Python 3.11+)
 async def fetch_multiple_users(user_ids: list[int]) -> list[float]:
     async with asyncio.TaskGroup() as tg:
-        tasks = [
-            tg.create_task(fetch_and_calculate(uid))
-            for uid in user_ids
-        ]
+        tasks = [tg.create_task(fetch_and_calculate(uid)) for uid in user_ids]
     return [task.result() for task in tasks]
 ```
 
@@ -82,25 +84,32 @@ Define proper types for your data structures using `TypedDict` or Pydantic model
 ```python
 from typing import TypedDict
 
+
 class UserDict(TypedDict):
     id: int
     name: str
 
+
 class ResponseData(TypedDict):
     users: list[UserDict]
+
 
 def process_data(data: ResponseData) -> list[User]:
     return [User(id=item["id"], name=item["name"]) for item in data["users"]]
 
+
 # Or use Pydantic for runtime validation
 from pydantic import BaseModel
+
 
 class UserData(BaseModel):
     id: int
     name: str
 
+
 class Response(BaseModel):
     users: list[UserData]
+
 
 def process_data(data: dict) -> list[User]:
     response = Response(**data)  # Validates at runtime
@@ -129,13 +138,16 @@ def add_item(item: str, items: list[str] | None = None) -> list[str]:
     items.append(item)
     return items
 
+
 # Even better: don't mutate the input
 def add_item(item: str, items: list[str] | None = None) -> list[str]:
     items = items or []
     return [*items, item]
 
+
 # For dataclasses, use field(default_factory=...)
 from dataclasses import dataclass, field
+
 
 @dataclass
 class Cart:
@@ -158,9 +170,11 @@ Use `"\n".join(items)` or a list-then-join pattern to assemble strings. String c
 def build_message(items: list[str]) -> str:
     return "\n".join(items)
 
+
 # Join with formatting
 def build_message(items: list[str]) -> str:
     return "\n".join(f"Item: {item}" for item in items)
+
 
 # List-then-join for complex assembly
 def build_html(items: list[str]) -> str:
@@ -225,6 +239,7 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+
 def process_order(order_id: int):
     logger.info("Processing order", extra={"order_id": order_id})
     order = get_order(order_id)
@@ -232,8 +247,10 @@ def process_order(order_id: int):
     process(order)
     logger.info("Order processed successfully", extra={"order_id": order_id})
 
+
 # Structured logging with JSON formatter
 import json
+
 
 class JSONFormatter(logging.Formatter):
     def format(self, record: logging.LogRecord) -> str:
@@ -272,10 +289,12 @@ def process_file(path: str):
         data = f.read()
     return process(data)  # File automatically closed
 
+
 # Multiple context managers on one line
 def copy_file(src: str, dst: str):
     with open(src) as src_f, open(dst, "w") as dst_f:
         dst_f.write(src_f.read())
+
 
 # Async context managers
 async def fetch_data():
@@ -283,8 +302,10 @@ async def fetch_data():
         data = await conn.fetch()
         return data  # Connection automatically closed
 
+
 # Custom context manager with transaction semantics
 from contextlib import contextmanager
+
 
 @contextmanager
 def transaction(db):
@@ -295,6 +316,7 @@ def transaction(db):
     except Exception:
         db.rollback()
         raise
+
 
 with transaction(db):
     db.execute("INSERT ...")
@@ -324,12 +346,17 @@ from module import User, Order, Product
 
 # Or import the module for namespaced access
 import module
+
 user = module.User()
 
 # For many imports, use explicit parenthesized form
 from typing import (
-    Any, TypeVar, Protocol,
-    Callable, Sequence, Mapping,
+    Any,
+    TypeVar,
+    Protocol,
+    Callable,
+    Sequence,
+    Mapping,
 )
 
 # Type-only imports to avoid circular dependencies
@@ -390,6 +417,7 @@ Keep decorator usage to one or two per function. When behavior requires more cro
 def fetch_user(user_id: int) -> User:
     return api.get(f"/users/{user_id}")
 
+
 # For complex behavior, use a class with explicit configuration
 class UserFetcher:
     def __init__(self, cache_ttl: int = 300):
@@ -405,6 +433,7 @@ class UserFetcher:
 
         self.cache.set(user_id, user)
         return user
+
 
 # Or make retry logic explicit where needed
 def fetch_user(user_id: int) -> User:

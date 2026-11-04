@@ -176,13 +176,11 @@ def search_media(keyword: str, per_page: int = 10) -> list[dict]:
     pwd = os.environ.get("WORDPRESS_APP_PASSWORD", env.get("WORDPRESS_APP_PASSWORD", ""))
     token = base64.b64encode(f"{user}:{pwd}".encode()).decode()
 
-    qs = urllib.parse.urlencode(
-        {
-            "search": keyword,
-            "per_page": per_page,
-            "_fields": "id,source_url,title,alt_text,date",
-        }
-    )
+    qs = urllib.parse.urlencode({
+        "search": keyword,
+        "per_page": per_page,
+        "_fields": "id,source_url,title,alt_text,date",
+    })
     req = urllib.request.Request(
         f"{site}/wp-json/wp/v2/media?{qs}",
         headers={"Authorization": f"Basic {token}"},
@@ -196,7 +194,9 @@ if __name__ == "__main__":
 
     keyword = sys.argv[1] if len(sys.argv) > 1 else "<KEYWORD>"
     for item in search_media(keyword):
-        title = item.get("title", {}).get("rendered", "") if isinstance(item.get("title"), dict) else item.get("title", "")
+        title = (
+            item.get("title", {}).get("rendered", "") if isinstance(item.get("title"), dict) else item.get("title", "")
+        )
         print(f"{item['id']}\t{title}\t{item['source_url']}")
 ```
 

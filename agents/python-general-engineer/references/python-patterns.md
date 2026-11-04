@@ -11,12 +11,14 @@ Use type hints on all function signatures, class attributes, and module-level va
 def process(items: list[str]) -> dict[str, int]:
     return {item: len(item) for item in items}
 
+
 # Union with | operator (3.10+)
-def find(key: str) -> str | None:
-    ...
+def find(key: str) -> str | None: ...
+
 
 # Type parameter syntax (3.12+)
 type Vector[T] = list[T]
+
 
 def first[T](items: list[T]) -> T:
     return items[0]
@@ -30,6 +32,7 @@ Each serves a different purpose. Choose based on mutability and usage context.
 from dataclasses import dataclass, field
 from typing import NamedTuple, TypedDict
 
+
 # Dataclass — mutable structured data, methods, defaults, validation
 @dataclass
 class User:
@@ -41,19 +44,23 @@ class User:
     def is_admin(self) -> bool:
         return "admin" in self.roles
 
+
 # NamedTuple — immutable record, works as dict key, unpacking
 class Coordinate(NamedTuple):
     lat: float
     lon: float
 
+
 point = Coordinate(40.7, -74.0)
 lat, lon = point  # unpacking works
+
 
 # TypedDict — typed dict for JSON-like data, API responses
 class APIResponse(TypedDict):
     status: int
     data: list[dict[str, str]]
     error: str | None
+
 
 # When to use:
 # - Dataclass: domain objects, mutable state, methods needed
@@ -68,24 +75,29 @@ Protocols define interfaces without inheritance. Objects satisfy a Protocol if t
 ```python
 from typing import Protocol, runtime_checkable
 
+
 @runtime_checkable
 class Renderable(Protocol):
     def render(self) -> str: ...
+
 
 class HTMLWidget:
     def render(self) -> str:
         return "<div>widget</div>"
 
+
 class MarkdownDoc:
     def render(self) -> str:
         return "# Document"
+
 
 # Both satisfy Renderable without inheriting from it
 def display(item: Renderable) -> None:
     print(item.render())
 
-display(HTMLWidget())    # works
-display(MarkdownDoc())   # works
+
+display(HTMLWidget())  # works
+display(MarkdownDoc())  # works
 
 # runtime_checkable allows isinstance checks
 assert isinstance(HTMLWidget(), Renderable)
@@ -99,6 +111,7 @@ The `@contextmanager` decorator turns a generator function into a context manage
 from contextlib import contextmanager
 import time
 
+
 @contextmanager
 def timer(label: str):
     start = time.perf_counter()
@@ -108,11 +121,13 @@ def timer(label: str):
         elapsed = time.perf_counter() - start
         print(f"{label}: {elapsed:.3f}s")
 
+
 with timer("database query"):
     results = db.execute(query)
 
 # Async version
 from contextlib import asynccontextmanager
+
 
 @asynccontextmanager
 async def managed_connection(url: str):
@@ -131,13 +146,16 @@ Pass dependencies in so code stays testable and configurable.
 from dataclasses import dataclass, field
 from typing import Protocol
 
+
 class EmailSender(Protocol):
     def send(self, to: str, body: str) -> None: ...
+
 
 class SMTPSender:
     def send(self, to: str, body: str) -> None:
         # real SMTP logic
         ...
+
 
 class FakeSender:
     def __init__(self):
@@ -146,12 +164,14 @@ class FakeSender:
     def send(self, to: str, body: str) -> None:
         self.sent.append((to, body))
 
+
 @dataclass
 class NotificationService:
     sender: EmailSender  # injected, not hard-coded
 
     def notify_user(self, user_email: str, message: str) -> None:
         self.sender.send(user_email, message)
+
 
 # Production
 service = NotificationService(sender=SMTPSender())
@@ -170,6 +190,7 @@ The `functools` module provides powerful function composition tools.
 ```python
 from functools import lru_cache, singledispatch, wraps
 
+
 # lru_cache — memoize expensive pure functions
 @lru_cache(maxsize=512)
 def fibonacci(n: int) -> int:
@@ -177,22 +198,27 @@ def fibonacci(n: int) -> int:
         return n
     return fibonacci(n - 1) + fibonacci(n - 2)
 
+
 # singledispatch — function overloading by first argument type
 @singledispatch
 def serialize(obj) -> str:
     raise TypeError(f"Cannot serialize {type(obj)}")
 
+
 @serialize.register
 def _(obj: str) -> str:
     return f'"{obj}"'
+
 
 @serialize.register
 def _(obj: int) -> str:
     return str(obj)
 
+
 @serialize.register
 def _(obj: list) -> str:
     return "[" + ", ".join(serialize(x) for x in obj) + "]"
+
 
 # wraps — preserve metadata on decorators
 def retry(max_attempts: int = 3):
@@ -205,7 +231,9 @@ def retry(max_attempts: int = 3):
                 except Exception:
                     if attempt == max_attempts - 1:
                         raise
+
         return wrapper
+
     return decorator
 ```
 
@@ -225,6 +253,7 @@ flat = list(chain.from_iterable(nested))  # [1, 2, 3, 4, 5]
 
 # groupby — group sorted items by key
 from operator import attrgetter
+
 users_by_role = {
     role: list(group)
     for role, group in groupby(
@@ -248,12 +277,14 @@ Enums provide type-safe named constants. Combine with `auto()` and `match/case` 
 ```python
 from enum import Enum, auto
 
+
 class OrderStatus(Enum):
     PENDING = auto()
     CONFIRMED = auto()
     SHIPPED = auto()
     DELIVERED = auto()
     CANCELLED = auto()
+
 
 def advance(status: OrderStatus) -> OrderStatus:
     match status:
@@ -284,11 +315,13 @@ def handle_command(command: dict) -> str:
         case _:
             return "Invalid command"
 
+
 # Match on class instances
 @dataclass
 class Point:
     x: float
     y: float
+
 
 def classify(point: Point) -> str:
     match point:
@@ -311,6 +344,7 @@ Modern async patterns for concurrent work.
 ```python
 import asyncio
 
+
 # TaskGroup — structured concurrency (3.11+)
 async def fetch_all(urls: list[str]) -> list[Response]:
     results = []
@@ -321,6 +355,7 @@ async def fetch_all(urls: list[str]) -> list[Response]:
     return [t.result() for t in results]
     # If any task raises, all others are cancelled
 
+
 # Async generator — stream results as they arrive
 async def stream_results(query: str):
     async with aiohttp.ClientSession() as session:
@@ -328,10 +363,12 @@ async def stream_results(query: str):
             async for line in resp.content:
                 yield json.loads(line)
 
+
 # Consuming async generators
 async def process_stream():
     async for result in stream_results("python"):
         print(result)
+
 
 # Semaphore for rate limiting
 async def bounded_fetch(urls: list[str], max_concurrent: int = 10):

@@ -160,10 +160,7 @@ cursor.execute("SELECT * FROM users WHERE id = %s", (user_id,))
 
 **Fix**:
 ```python
-cursor.execute(
-    "SELECT id, name, email, created_at FROM users WHERE id = %s",
-    (user_id,)
-)
+cursor.execute("SELECT id, name, email, created_at FROM users WHERE id = %s", (user_id,))
 ```
 
 ---
@@ -214,7 +211,7 @@ grep -rn "\"SELECT.*\+.*\|query.*\+.*where" src/ --include="*.go" --include="*.j
 **Signal**:
 ```python
 # SQL injection vulnerability
-user_id = request.args.get('id')
+user_id = request.args.get("id")
 query = f"SELECT * FROM users WHERE id = {user_id}"  # NEVER DO THIS
 cursor.execute(query)
 ```

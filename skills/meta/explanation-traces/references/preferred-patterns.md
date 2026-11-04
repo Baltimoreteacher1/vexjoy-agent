@@ -147,6 +147,7 @@ unrecoverable.
 ```python
 import json, os
 
+
 def append_trace(entry):
     path = "session-trace.json"
     if os.path.exists(path):
