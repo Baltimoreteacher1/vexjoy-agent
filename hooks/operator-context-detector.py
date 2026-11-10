@@ -51,9 +51,10 @@ PRODUCTION_BRANCH_PATTERN = re.compile(r"^(refs/heads/)?(release/|production$)")
 # Profile-specific behavioral guidance
 PROFILE_GUIDANCE = {
     "personal": (
-        "Full autonomy. No approval gates. Branch safety only.\n"
+        "Autonomous for local work: edit, build, test, and commit without asking.\n"
         "- Create feature branches for changes (never commit to main)\n"
-        "- No additional approval steps required\n"
+        "- Still ask first, per CLAUDE.md: push, deploy, shared/remote/production data,\n"
+        "  messages sent on Joel's behalf, history rewrites, secrets\n"
         "- Learning database updates ungated"
     ),
     "work": (

@@ -27,7 +27,7 @@ Contract preserved exactly (verified against all fifteen guards):
   - So: forward each guard's stderr untouched, inspect its stdout, and stop at
     the first guard that returns a deny/ask decision - which is what the
     sequential chain did, since Claude Code honours the first decision it sees.
-  - Non-decision stdout (e.g. ci-merge-gate's WARNING lines, the learning
+  - Non-decision stdout (e.g. the learning
     injector's context) is preserved, but MERGED rather than concatenated.
     This matters: sequentially, Claude Code parsed each guard's stdout on its
     own, so three guards each printing the no-op envelope
@@ -80,7 +80,6 @@ CHAIN = [
     ("mcp-health-check.py", r"mcp__.*"),
     ("pretool-unified-gate.py", r"Bash|Write|Edit"),
     ("pretool-branch-safety.py", r"Bash"),
-    ("ci-merge-gate.py", r"Bash"),
     ("pretool-classroom-deploy-guard.py", r"Bash"),
     ("pretool-git-stray-ref-detector.py", r"Bash"),
     ("pretool-ref-delete-guard.py", r"Bash"),
