@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# hook-version: 1.0.0
+# hook-version: 1.0.1
 """
 PostToolUse:Write Hook: Voice Quality Check
 
@@ -20,6 +20,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent / "lib"))
+from hook_utils import hook_error
 from stdin_timeout import read_stdin
 
 _BANNED_WORDS = re.compile(
@@ -70,7 +71,15 @@ def _check_content(content: str) -> list:
     return issues
 
 
+_BYPASS_ENV = "POSTTOOL_VOICE_QUALITY_CHECK_BYPASS"
+
+
 def main():
+    if os.environ.get(_BYPASS_ENV) == "1":
+        if os.environ.get("CLAUDE_HOOKS_DEBUG"):
+            print("[posttool-voice-quality-check] Bypassed via POSTTOOL_VOICE_QUALITY_CHECK_BYPASS=1", file=sys.stderr)
+        sys.exit(0)
+
     try:
         event_data = read_stdin(timeout=2)
         event = json.loads(event_data)
@@ -100,11 +109,7 @@ def main():
             print("[voice-quality] PASS: 0 issues")
 
     except Exception as e:
-        if os.environ.get("CLAUDE_HOOKS_DEBUG"):
-            import traceback
-
-            print(f"[voice-quality] HOOK-ERROR: {type(e).__name__}: {e}", file=sys.stderr)
-            traceback.print_exc(file=sys.stderr)
+        hook_error("posttool-voice-quality-check", e)
     finally:
         sys.exit(0)
 

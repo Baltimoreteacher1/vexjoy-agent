@@ -1,0 +1,178 @@
+# HTML Artifact Design System
+
+Theme selection and artifact-specific rules for html-builder. General judgment (hierarchy, spacing, type, color, states, look-then-fix) lives in `skills/shared-patterns/ui-design-judgment.md`; read it first. CSS implementations are in `templates/themes/`, injected by `assemble-template.py`.
+
+---
+
+## Theme Selection
+
+**Default themes vary by shape** — see table below.
+
+| Shape | Default Theme | Rationale |
+|---|---|---|
+| spec | Birchline | Warm professional tone for comparison grids |
+| code-review | Dark Focus | Developer-familiar, high-contrast diffs |
+| prototype | Interactive Warm | Clean surface, prominent interactive controls |
+| report | Birchline | Professional, scannable long-form |
+| editor | Interactive Warm | Clear affordances, prominent shadows |
+| data-viz | Dark Focus | Charts pop on dark backgrounds |
+| diagram | Dark Focus | SVG elements pop, technical aesthetic |
+| deck | Dark Focus | Slide contrast, presentation-ready |
+
+**Fallback:** Minimal Document for long-form reading. These are defaults: override with `--theme` when the reader or content calls for it (for example, a report read on a projector or printed suits a light theme).
+
+**Dark mode toggle:** Add the `theme-toggle` component (`assemble-template.py --components theme-toggle`) when the artifact will be read in both settings. Dark values come from their own tokens, not inverted light values: slightly lighter surfaces for elevation, less saturated accents, no pure black under pure white text.
+
+---
+
+## Theme Files (in templates/themes/)
+
+| Theme | File | Character |
+|---|---|---|
+| Birchline | `birchline.css` | Warm, earthy, professional. Clay accent (#D97757) |
+| Dark Focus | `dark-focus.css` | Dark bg, inset shadows, blue accent (#64B5F6) |
+| Interactive Warm | `interactive-warm.css` | Clean white, blue accent (#3D6FD9), shadowed controls |
+| Minimal Document | `minimal-document.css` | Serif headings, 680px max-width, generous whitespace |
+
+### Contrast Ratios (computed from the theme files)
+
+| Theme | Text on Bg | Secondary on Bg | Muted on Bg | Accent note |
+|---|---|---|---|---|
+| Dark Focus | 12.9:1 | 6.7:1 | 5.2:1 | Accent on bg 7.7:1 |
+| Interactive Warm | 13.2:1 | 6.6:1 | 4.9:1 | `--accent-text` (#2F5FC4) 5.7:1 on bg |
+| Minimal Document | 12.4:1 | 7.5:1 | 3.5:1 (large text only) | Gray accent |
+| Birchline | 17.5:1 | 10.3:1 | 5.2:1 | Clay accent 3.0:1 on ivory: decorative fills, borders, and large text only. `--accent-text` (#963F22) 6.6:1 on ivory, 5.0:1 on oat |
+
+### Filled controls: `--accent-fill`
+
+Primary buttons, active filter chips, checked toggles, and other selected states fill with `--accent-fill` and set their label in `--on-accent-fill` (white). Hover uses `--accent-fill-hover`. Keep `--accent` for decorative fills, borders, focus rings, progress bars, and large display text.
+
+| Theme | `--accent` (white on it) | `--accent-fill` (white on it) | `--accent-fill-hover` (white on it) |
+|---|---|---|---|
+| Birchline | #D97757 (3.12:1) | #B45636 (4.86:1) | #963F22 (6.93:1) |
+| Dark Focus | #64B5F6 (2.21:1) | #2077B4 (4.82:1) | #1B74B0 (5.03:1) |
+| Interactive Warm | #3D6FD9 (4.69:1) | #3D6FD9 (4.69:1) | #2F5FC4 (5.91:1) |
+| Minimal Document | #555555 (7.46:1) | #555555 (7.46:1) | #333333 (12.63:1) |
+| `theme-toggle` dark block | #64B5F6 (2.21:1) | #2077B4 (4.82:1) | #1B74B0 (5.03:1) |
+
+How the fills were picked: where white on the accent fails 4.5:1, darken the accent in OKLCH at the same hue and chroma, and take the first step at 4.8:1 or higher (a margin over 4.5:1). Hover takes a darker step on the same hue at 5:1 or higher; in dark mode it must also stay 3:1 against the page and surface. Where white on the accent already passes, the accent is the fill. `test_assemble_template.py` checks every theme, alone and under the dark block, and scans every template rule that puts white text on a fill.
+
+For status fills (warning, success), do not put white text on the solid color: use a 12 to 15% tint of the color with `--text-primary` and a border in the color, as `.copy-btn.copied` and `.pending-badge` do.
+
+Recheck any pair you add or change: 4.5:1 body text, 3:1 large text and UI boundaries.
+
+Color small text (tags, captions, active tabs, links) with `--accent-text`, not `--accent`. Every theme defines it; it equals `--accent` where the accent already passes 4.5:1. The `theme-toggle` dark block resets it and the `--accent-fill` tokens too.
+
+---
+
+## Token Architecture
+
+All themes share the same semantic alias layer. Components reference aliases, not raw values.
+
+| Layer | Examples | Purpose |
+|---|---|---|
+| Raw colors | `--color-primary`, `--color-danger` | Theme-specific palette |
+| Typography | `--font-heading`, `--type-display`, `--type-h1`, `--type-body`, `--type-caption` | Font stacks with weight/size/line-height. Display and heading tokens use `--font-heading` (Archivo Black) |
+| Spacing | `--sp-1` through `--sp-8` | 4px base scale |
+| Semantic | `--bg-page`, `--text-primary`, `--accent`, `--accent-text`, `--accent-fill`, `--accent-fill-hover`, `--on-accent-fill` | Component-facing aliases |
+
+**Rule:** Components use semantic aliases (`--bg-surface`, `--text-muted`, `--accent`). Never reference raw color values directly.
+
+---
+
+## Heading Font: Archivo Black
+
+Archivo Black is the required heading face for every HTML artifact. `validate-artifact.py` errors on any page with h1–h3 that lacks an embedded Archivo Black `@font-face` (a `data:` URL) or a rule applying it.
+
+- **Source:** `templates/fonts/archivo-black.css` embeds the latin subset as a base64 woff2 (about 10 KB) and defines `--font-heading`. `assemble-template.py` injects it after the reset, so every shape and theme gets it. Saved templates in `templates/saved/` carry their own copy; a test fails if a copy drifts from the source file.
+- **Hand-written artifacts:** inline the whole file into the page's `<style>`. Don't add a Google Fonts `<link>`: `validate-artifact.py` rejects external stylesheets, and an embedded face also renders offline from `file://`.
+- **Where it applies:** h1–h3, the `--type-display`, `--type-h1` and `--type-h2` tokens, and short title elements such as card titles and decision picks. Body text, captions, nav, labels, table cells and SVG diagram labels keep the theme's text face (`--font-sans`, or `--font-mono` for code). Archivo Black is a heavy display face and hurts readability below about 16px or in running text.
+- **Weight:** the face has one weight, 400. Set `font-weight: 400` and `font-synthesis: none` wherever it is used. Never ask for 600–800: the browser fakes the bold and smears the letterforms.
+- **Fallback:** `"Arial Black", "Helvetica Neue", system-ui, sans-serif` keeps a heavy weight if the embedded face fails.
+- **License:** SIL OFL 1.1, in `templates/fonts/ArchivoBlack-OFL.txt`. Embedding and redistribution are permitted.
+
+---
+
+## Button Variants
+
+One primary button per region. `interactive-warm.css` styles a bare `<button>` as neutral secondary at zero specificity, so component classes own their look. Opt in to the others:
+
+| Variant | Class | Use for |
+|---|---|---|
+| Primary | `.btn-primary` | The one main action in the region |
+| Secondary | `.btn-secondary` | Other actions that need a visible boundary |
+| Outline | `.btn-outline` | A second emphasized action next to the primary |
+| Ghost | `.btn-ghost` | Low-weight actions: cancel, dismiss, toolbar items |
+
+---
+
+## Card Variants
+
+Six structural treatments. Pick one container style per artifact and group with spacing inside it; do not nest cards in cards. Use semantic aliases so cards adapt to any theme.
+
+| Variant | Class | Use For |
+|---|---|---|
+| Flat | `.card-flat` | Dense lists, inline content |
+| Outlined | `.card-outlined` | Comparison items, content cards |
+| Elevated | `.card-elevated` | Draggable items, interactive cards |
+| Accent stripe | `.card-accent` | One priority item or callout; a stripe on every card is a generated-UI tell |
+| Inset | `.card-inset` | Nested content, code blocks |
+| Horizontal | `.card-horizontal` | Scannable rows, search results |
+
+---
+
+## Responsive Breakpoints
+
+| Breakpoint | Width | Behavior |
+|---|---|---|
+| Mobile | < 640px | Single column, stacked |
+| Tablet | 640-1024px | 2 columns where applicable |
+| Desktop | > 1024px | Full layout, side-by-side panels |
+
+Use `min-width` media queries (mobile-first). Container max-width: 1200px; prose 60-75 characters per line. Check the render at 375, 768, and 1280 px.
+
+---
+
+## SVG Illustration Conventions
+
+| Property | Value |
+|---|---|
+| Dimensions | 720 x 320px viewBox (standard) |
+| Rendering | Flat -- no gradients, no drop shadows |
+| Stroke width | 1.5-2px |
+| Corner radius | rx="10" |
+| Label font | 11px monospace |
+| Annotation font | 12px sans-serif |
+| Color source | CSS custom properties via embedded `<style>` |
+| Self-contained | Embed `<style>` block inside the SVG |
+| Accessibility | `role="img"` + `aria-label` on every `<svg>` |
+
+---
+
+## Accessibility Checklist
+
+1. Color contrast: text on background >= 4.5:1 (normal), >= 3:1 (large text)
+2. Focus indicators: all interactive elements have `:focus-visible` styles
+3. Semantic HTML: headings in order, lists for lists, tables for tabular data
+4. Alt text: every `<img>` has `alt`, every `<svg>` has `role="img"` + `aria-label`
+5. Reduced motion: global reset handles via `prefers-reduced-motion`
+6. Touch targets: interactive elements minimum 44x44px hit area
+7. Language: `<html lang="en">` on root element
+8. States: every data view has empty, loading, and error content; every control has hover, focus-visible, active, and disabled
+
+---
+
+## Patterns to Replace
+
+| Common Mistake | Preferred Approach |
+|---|---|
+| CSS frameworks (Bootstrap, Tailwind CDN) | Use the token system via templates |
+| Random colors per artifact | Use theme tokens |
+| Hardcoded px values | Use `--sp-N` tokens and `--type-*` scale |
+| Dark theme = invert colors | Use Dark Focus preset, or build dark tokens from their own values |
+| Every button styled as primary | One primary action per region; secondary actions as outline or text buttons |
+| `outline: none` without replacement | Add `:focus-visible` with ring |
+| `<div onclick>` | Use `<button>` or `<a>` elements |
+| Heading level skipping (h1 to h3) | Sequential heading levels |
+| Text as images | Real text with CSS styling |
+| `color-mix()` without fallback | Provide fallback hex for critical paths |

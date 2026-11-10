@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# hook-version: 1.0.0
+# hook-version: 1.1.2
 """
 SessionStart Hook: Cross-Repo Agent Discovery
 
@@ -14,6 +14,25 @@ Design Principles:
 - Non-blocking (always exits 0)
 """
 
+import sys  # vexjoy-pyguard
+
+if sys.version_info < (3, 10):  # vexjoy-pyguard advisory
+    import os
+
+    if not os.environ.get("VEXJOY_PYGUARD_REEXEC"):
+        os.environ["VEXJOY_PYGUARD_REEXEC"] = "1"
+        for _d in [*os.environ.get("PATH", "").split(os.pathsep), "/opt/homebrew/bin", "/usr/local/bin", "/usr/bin"]:
+            for _v in ("14", "13", "12", "11", "10"):
+                _p = os.path.join(_d, "python3." + _v)
+                if _d and "/shims" not in _d and os.access(_p, os.X_OK):
+                    os.execv(_p, [_p, *sys.argv])
+    sys.stderr.write(
+        "[vexjoy] hook %s needs Python 3.10+, got %s (%s); run ./install.sh in vexjoy-agent from a terminal"
+        " outside Claude Code (gated tool calls stay blocked until then)\n"
+        % (__file__.rsplit("/", 1)[-1], sys.version.split()[0], sys.executable)
+    )
+    sys.exit(0)
+
 import os
 import re
 import sys
@@ -22,7 +41,7 @@ from pathlib import Path
 # Add lib directory to path for imports
 sys.path.insert(0, str(Path(__file__).parent / "lib"))
 
-from hook_utils import context_output, empty_output
+from hook_utils import context_output, empty_output, hook_error
 
 EVENT_NAME = "SessionStart"
 
@@ -83,9 +102,7 @@ def extract_agent_info(agent_path: Path) -> dict | None:
         return info
 
     except Exception as e:
-        if os.environ.get("CLAUDE_HOOKS_DEBUG"):
-            print(f"[cross-repo] Failed to parse {agent_path}: {e}", file=sys.stderr)
-        return None
+        hook_error("cross-repo-agents", e)
 
 
 def discover_local_agents(cwd: str) -> list[dict]:
@@ -104,8 +121,16 @@ def discover_local_agents(cwd: str) -> list[dict]:
     return sorted(agents, key=lambda x: x["name"])
 
 
+_BYPASS_ENV = "CROSS_REPO_AGENTS_BYPASS"
+
+
 def main():
     """Discover and inject local agents at session start."""
+    if os.environ.get(_BYPASS_ENV) == "1":
+        if os.environ.get("CLAUDE_HOOKS_DEBUG"):
+            print("[cross-repo-agents] Bypassed via CROSS_REPO_AGENTS_BYPASS=1", file=sys.stderr)
+        sys.exit(0)
+
     try:
         cwd = os.getcwd()
 
@@ -115,27 +140,23 @@ def main():
         if not agents:
             empty_output(EVENT_NAME).print_and_exit()
 
-        # Aggregate output lines
-        lines = []
-        lines.append(f"[cross-repo] Found {len(agents)} local agent(s) in .claude/agents/")
-        lines.append("[cross-repo] Available local agents:")
+        # Keep every local identity; names can override globally installed agents.
+        agents_dir = Path(cwd) / ".claude" / "agents"
+        lines = [
+            f"[cross-repo] {len(agents)} local agents. Files below are relative to {agents_dir}/",
+            "name [file] | description | triggers",
+        ]
         for agent in agents:
             triggers = ", ".join(agent["triggers"][:3])
-            lines.append(f"  - {agent['name']}: {agent['description']}")
-            lines.append(f"    Triggers: {triggers}")
-            lines.append(f"    File: {agent['file']}")
+            filename = Path(agent["file"]).name
+            lines.append(f"{agent['name']} [{filename}] | {agent['description']} | {triggers}")
 
-        lines.append("")
-        lines.append("[cross-repo] To use local agents, read the agent file and follow its instructions.")
-        lines.append("[cross-repo] The /do router can invoke these via: Task tool with prompt referencing agent file")
+        lines.append("[cross-repo] /do can dispatch these agents; read the selected file for instructions.")
 
         context_output(EVENT_NAME, "\n".join(lines)).print_and_exit()
 
     except Exception as e:
-        # Log to stderr if debug enabled, but never fail
-        if os.environ.get("CLAUDE_HOOKS_DEBUG"):
-            print(f"[cross-repo] Error: {e}", file=sys.stderr)
-        empty_output(EVENT_NAME).print_and_exit()
+        hook_error("cross-repo-agents", e)
 
 
 if __name__ == "__main__":

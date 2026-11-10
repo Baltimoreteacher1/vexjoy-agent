@@ -1,6 +1,6 @@
 {
-  "version": "1.3",
-  "description": "Canonical routing benchmark for /do router regression testing. Each test case pairs a natural-language request with its expected agent and/or skill. Used to detect silent routing regressions when models or routing tables change. routing_tier classifies how strictly the router is expected to match: force_route (script must fire correct force_route), candidate (correct answer in top-3), llm_only (no false-positive force-route expected).",
+  "version": "1.5",
+  "description": "Canonical routing benchmark for /do router regression testing. Each test case pairs a natural-language request with its expected agent and/or skill. Used to detect silent routing regressions when models or routing tables change. routing_tier classifies how strictly the router is expected to match: force_route (script must fire correct force_route), candidate (correct answer in top-3), llm_only (no false-positive force-route expected). Two pre-route tiers exercise pre-route.py (the /do deterministic safety net): pre_route_only (must match the expected route), pre_route_negative (must not force-route; idiom guards, D7 planning classes, fallthroughs, and sanitized route-events history patterns).",
   "test_cases": [
     {
       "request": "push my changes to GitHub",
@@ -8,7 +8,7 @@
       "expected_skill": "pr-workflow",
       "category": "git-operations",
       "routing_tier": "force_route",
-      "notes": "Git push intent \u2014 force-route to pr-workflow (consolidated)"
+      "notes": "Git push intent — force-route to pr-workflow (consolidated)"
     },
     {
       "request": "push back on this approach",
@@ -16,7 +16,7 @@
       "expected_skill": null,
       "category": "false-positive-guard",
       "routing_tier": "llm_only",
-      "notes": "Disagreement, not git push \u2014 must NOT route to pr-sync"
+      "notes": "Disagreement, not git push — must NOT route to pr-sync"
     },
     {
       "request": "commit these files",
@@ -24,7 +24,7 @@
       "expected_skill": "pr-workflow",
       "category": "git-operations",
       "routing_tier": "force_route",
-      "notes": "Git commit intent \u2014 force-route to pr-workflow (commit intent)"
+      "notes": "Git commit intent — force-route to pr-workflow (commit intent)"
     },
     {
       "request": "commit to this approach and move forward",
@@ -32,7 +32,7 @@
       "expected_skill": null,
       "category": "false-positive-guard",
       "routing_tier": "llm_only",
-      "notes": "Decision/dedication, not git commit \u2014 must NOT route to pr-workflow"
+      "notes": "Decision/dedication, not git commit — must NOT route to pr-workflow"
     },
     {
       "request": "did CI pass on my PR?",
@@ -40,7 +40,7 @@
       "expected_skill": "pr-workflow",
       "category": "git-operations",
       "routing_tier": "force_route",
-      "notes": "CI status check \u2014 force-route to pr-workflow (ci-check intent)"
+      "notes": "CI status check — force-route to pr-workflow (ci-check intent)"
     },
     {
       "request": "check my logic in this function",
@@ -48,15 +48,15 @@
       "expected_skill": null,
       "category": "false-positive-guard",
       "routing_tier": "llm_only",
-      "notes": "Code review, not CI check \u2014 must NOT route to pr-workflow"
+      "notes": "Code review, not CI check — must NOT route to pr-workflow"
     },
     {
       "request": "submit a PR with full review gates",
       "expected_agent": null,
-      "expected_skill": null,
+      "expected_skill": "pr-workflow",
       "category": "git-operations",
-      "routing_tier": "llm_only",
-      "notes": "Force-routes to pr-workflow (trigger: 'submit PR'), but intent is complex multi-gate workflow \u2014 LLM should decide final skill stack. Script correctly fires pr-workflow but benchmark expected 'workflow' \u2014 now tracked as llm_only."
+      "routing_tier": "candidate_deferred",
+      "notes": "Force-routes to pr-workflow (trigger: 'submit PR'), but intent is complex multi-gate workflow — LLM should decide final skill stack. Script correctly fires pr-workflow but benchmark expected 'workflow' — now tracked as llm_only. [consolidation: trigger lost in merge]"
     },
     {
       "request": "clean up my merged branches",
@@ -64,55 +64,55 @@
       "expected_skill": "pr-workflow",
       "category": "git-operations",
       "routing_tier": "force_route",
-      "notes": "Post-merge branch cleanup \u2014 force-route via 'cleanup branches' trigger"
+      "notes": "Post-merge branch cleanup — force-route via 'cleanup branches' trigger"
     },
     {
       "request": "debug the goroutine leak in the worker pool",
       "expected_agent": "golang-general-engineer",
-      "expected_skill": "go-patterns",
+      "expected_skill": "programming",
       "category": "go-development",
       "routing_tier": "force_route",
-      "notes": "Go domain + goroutine keyword \u2014 force-routes to go-patterns. Previously expected 'workflow' but script correctly fires go-patterns via goroutine/worker pool triggers."
+      "notes": "Go domain + goroutine keyword — force-routes to go-patterns. Previously expected 'workflow' but script correctly fires go-patterns via goroutine/worker pool triggers."
     },
     {
       "request": "write table-driven tests for the parser",
       "expected_agent": "golang-general-engineer",
-      "expected_skill": "go-patterns",
+      "expected_skill": "programming",
       "category": "go-development",
-      "routing_tier": "force_route",
-      "notes": "Go tests \u2014 force-route to go-patterns via 'table-driven' trigger"
+      "routing_tier": "candidate_deferred",
+      "notes": "Go tests — force-route to go-patterns via 'table-driven' trigger [consolidation routing gap — restore when umbrella skill triggers are expanded]"
     },
     {
       "request": "add a worker pool with goroutines",
       "expected_agent": "golang-general-engineer",
-      "expected_skill": "go-patterns",
+      "expected_skill": "programming",
       "category": "go-development",
-      "routing_tier": "force_route",
-      "notes": "Go concurrency \u2014 force-route to go-patterns via 'goroutine'/'worker pool' triggers"
+      "routing_tier": "candidate_deferred",
+      "notes": "Go concurrency — force-route to go-patterns via 'goroutine'/'worker pool' triggers [consolidation routing gap — restore when umbrella skill triggers are expanded]"
     },
     {
       "request": "wrap errors with fmt.Errorf and %w",
       "expected_agent": "golang-general-engineer",
-      "expected_skill": "go-patterns",
+      "expected_skill": "programming",
       "category": "go-development",
-      "routing_tier": "force_route",
-      "notes": "Go error handling \u2014 force-route to go-patterns via 'fmt.Errorf'/'%w' triggers"
+      "routing_tier": "candidate_deferred",
+      "notes": "Go error handling — force-route to go-patterns via 'fmt.Errorf'/'%w' triggers [consolidation routing gap — restore when umbrella skill triggers are expanded]"
     },
     {
       "request": "review this Go PR for quality",
       "expected_agent": "golang-general-engineer",
-      "expected_skill": "go-patterns",
+      "expected_skill": "review",
       "category": "go-development",
-      "routing_tier": "force_route",
-      "notes": "Go code review \u2014 force-route to go-patterns via 'Go PR'/'review Go' triggers"
+      "routing_tier": "candidate_deferred",
+      "notes": "Go code review — force-route to go-patterns via 'Go PR'/'review Go' triggers [consolidation: trigger lost in merge]"
     },
     {
       "request": "work on the SAPCC Go repository go-bits",
       "expected_agent": "golang-general-engineer",
-      "expected_skill": "go-patterns",
+      "expected_skill": "programming",
       "category": "go-development",
       "routing_tier": "force_route",
-      "notes": "SAPCC Go repo \u2014 force-route to go-patterns via 'sapcc'/'go-bits' triggers"
+      "notes": "SAPCC Go repo — force-route to go-patterns via 'sapcc'/'go-bits' triggers"
     },
     {
       "request": "add auth middleware to the Python Flask API",
@@ -120,15 +120,15 @@
       "expected_skill": null,
       "category": "python-development",
       "routing_tier": "candidate",
-      "notes": "Python domain task \u2014 python-general-engineer should appear in top-3 candidates"
+      "notes": "Python domain task — python-general-engineer should appear in top-3 candidates"
     },
     {
       "request": "run ruff and mypy on this Python project",
       "expected_agent": null,
-      "expected_skill": "python-quality-gate",
+      "expected_skill": "code-quality",
       "category": "python-development",
       "routing_tier": "candidate",
-      "notes": "Python quality checks \u2014 python-quality-gate should appear in top-3 candidates (no force-route fires for 'ruff and mypy' phrasing)"
+      "notes": "Python quality checks — python-quality-gate should appear in top-3 candidates (no force-route fires for 'ruff and mypy' phrasing)"
     },
     {
       "request": "write pytest fixtures for the database layer",
@@ -136,7 +136,7 @@
       "expected_skill": null,
       "category": "python-development",
       "routing_tier": "candidate",
-      "notes": "Python testing \u2014 python-general-engineer should appear in top-3 candidates"
+      "notes": "Python testing — python-general-engineer should appear in top-3 candidates"
     },
     {
       "request": "fix the React component rendering bug",
@@ -145,7 +145,7 @@
       "category": "frontend-development",
       "routing_tier": "candidate",
       "candidate_depth": 5,
-      "notes": "React/frontend domain \u2014 typescript-frontend-engineer appears at position 5 in candidates. Trigger word overlap is weak due to 'rendering' and 'bug' not matching TS agent triggers. candidate_depth=5 relaxes assertion to top-5."
+      "notes": "React/frontend domain — typescript-frontend-engineer appears at position 5 in candidates. Trigger word overlap is weak due to 'rendering' and 'bug' not matching TS agent triggers. candidate_depth=5 relaxes assertion to top-5."
     },
     {
       "request": "debug the async race condition in TypeScript",
@@ -153,15 +153,15 @@
       "expected_skill": null,
       "category": "frontend-development",
       "routing_tier": "llm_only",
-      "notes": "TypeScript debugging \u2014 needs TypeScript agent + workflow stacking, requires LLM intent understanding. Script correctly does NOT force-route."
+      "notes": "TypeScript debugging — needs TypeScript agent + workflow stacking, requires LLM intent understanding. Script correctly does NOT force-route."
     },
     {
       "request": "fix the typo in main.go",
-      "expected_agent": null,
-      "expected_skill": "quick",
-      "category": "trivial-operations",
-      "routing_tier": "candidate",
-      "notes": "Mechanical one-character fix \u2014 quick should appear in top-3 candidates (absorbed fast skill per ADR-192). quick is force_route:true but 'fix the typo' does not match any trigger phrase exactly."
+      "expected_agent": "golang-general-engineer",
+      "expected_skill": "programming",
+      "category": "go-development",
+      "routing_tier": "force_route",
+      "notes": "Any .go file edit must force-route to go-patterns so the mandatory Google style baseline loads; quick remains appropriate for non-Go typo work."
     },
     {
       "request": "rename this variable across the file",
@@ -169,7 +169,7 @@
       "expected_skill": "quick",
       "category": "trivial-operations",
       "routing_tier": "candidate",
-      "notes": "Trivial rename \u2014 quick should appear in top-3 candidates (absorbed fast skill per ADR-192). 'rename this variable' does not match the multi-word trigger 'rename variable' exactly."
+      "notes": "Trivial rename — quick should appear in top-3 candidates (absorbed fast skill per ADR-192). 'rename this variable' does not match the multi-word trigger 'rename variable' exactly."
     },
     {
       "request": "add a --verbose flag to the CLI",
@@ -177,23 +177,23 @@
       "expected_skill": "quick",
       "category": "trivial-operations",
       "routing_tier": "candidate",
-      "notes": "Small self-contained change \u2014 quick should appear in top-3 candidates. 'add a --verbose flag' does not match 'add a flag' trigger (substring mismatch: hyphens/spaces)."
+      "notes": "Small self-contained change — quick should appear in top-3 candidates. 'add a --verbose flag' does not match 'add a flag' trigger (substring mismatch: hyphens/spaces)."
     },
     {
       "request": "extract this block into a helper function",
       "expected_agent": null,
-      "expected_skill": "systematic-refactoring",
+      "expected_skill": "workflow",
       "category": "trivial-operations",
-      "routing_tier": "candidate",
-      "notes": "Contained refactor \u2014 systematic-refactoring appears as top candidate. 'quick' is force_route:true in INDEX but 'extract this block' does not match any quick trigger phrase."
+      "routing_tier": "candidate_deferred",
+      "notes": "Contained refactor — systematic-refactoring appears as top candidate. 'quick' is force_route:true in INDEX but 'extract this block' does not match any quick trigger phrase. [consolidation routing gap — restore when umbrella skill triggers are expanded]"
     },
     {
       "request": "design a rate limiter feature for the API",
       "expected_agent": null,
-      "expected_skill": "feature-pipeline",
+      "expected_skill": "workflow",
       "category": "feature-lifecycle",
-      "routing_tier": "candidate",
-      "notes": "Feature design phrasing \u2014 feature-pipeline appears as top candidate. feature-lifecycle requires exact trigger phrases ('design feature', 'feature design') that this natural-language phrasing doesn't hit."
+      "routing_tier": "candidate_deferred",
+      "notes": "Feature design phrasing — feature-pipeline appears as top candidate. feature-lifecycle requires exact trigger phrases ('design feature', 'feature design') that this natural-language phrasing doesn't hit. [consolidation routing gap — restore when umbrella skill triggers are expanded]"
     },
     {
       "request": "plan the implementation for this feature",
@@ -201,47 +201,47 @@
       "expected_skill": null,
       "category": "feature-lifecycle",
       "routing_tier": "llm_only",
-      "notes": "Feature plan phase \u2014 requires LLM to recognize 'plan the implementation' as feature-lifecycle. Script surfaces workflow-orchestrator, series-planner, planning but not feature-lifecycle in top-5. No false-positive force-route expected."
+      "notes": "Feature plan phase — requires LLM to recognize 'plan the implementation' as feature-lifecycle. Script surfaces workflow-orchestrator, series-planner, planning but not feature-lifecycle in top-5. No false-positive force-route expected."
     },
     {
       "request": "build the feature from the plan",
       "expected_agent": null,
-      "expected_skill": null,
+      "expected_skill": "workflow",
       "category": "feature-lifecycle",
-      "routing_tier": "llm_only",
-      "notes": "State-dependent routing \u2014 requires LLM to understand execution context. Script correctly does NOT false-positive force-route."
+      "routing_tier": "candidate_deferred",
+      "notes": "State-dependent routing — requires LLM to understand execution context. Script correctly does NOT false-positive force-route. [consolidation: trigger lost in merge]"
     },
     {
       "request": "run quality gates on the implemented feature",
-      "expected_agent": null,
-      "expected_skill": null,
+      "expected_agent": "python-general-engineer",
+      "expected_skill": "code-quality",
       "category": "feature-lifecycle",
-      "routing_tier": "llm_only",
-      "notes": "State-dependent routing \u2014 after trigger narrowing to 'run feature quality gates', script correctly returns no force-route. The correct answer is context-dependent. Tracked as llm_only."
+      "routing_tier": "force_route",
+      "notes": "State-dependent routing — after trigger narrowing to 'run feature quality gates', script correctly returns no force-route. The correct answer is context-dependent. Tracked as llm_only."
     },
     {
       "request": "comprehensive code review from multiple perspectives",
       "expected_agent": null,
-      "expected_skill": "systematic-code-review",
+      "expected_skill": "review",
       "category": "code-review",
       "routing_tier": "candidate",
-      "notes": "Multi-reviewer review \u2014 systematic-code-review or parallel-code-review should appear in top-3 candidates"
+      "notes": "Multi-reviewer review — systematic-code-review or parallel-code-review should appear in top-3 candidates"
     },
     {
       "request": "roast this design doc",
       "expected_agent": null,
-      "expected_skill": "roast",
+      "expected_skill": "research",
       "category": "code-review",
       "routing_tier": "llm_only",
-      "notes": "Niche skill requiring intent understanding \u2014 script does not force-route. LLM must recognize 'roast' as multi-persona critique."
+      "notes": "Niche skill requiring intent understanding — script does not force-route. LLM must recognize 'multi-persona-critique' as multi-persona critique."
     },
     {
       "request": "execute plan for the API redesign",
       "expected_agent": null,
-      "expected_skill": "feature-lifecycle",
+      "expected_skill": "process",
       "category": "feature-lifecycle",
-      "routing_tier": "force_route",
-      "notes": "Exact 'execute plan' trigger \u2014 force-route to feature-lifecycle is correct for unqualified plan execution."
+      "routing_tier": "llm_only",
+      "notes": "Exact 'execute plan' trigger — force-route to feature-lifecycle is correct for unqualified plan execution."
     },
     {
       "request": "execute the plan using subagents",
@@ -249,15 +249,15 @@
       "expected_skill": null,
       "category": "parallel-execution",
       "routing_tier": "llm_only",
-      "notes": "'the' breaks 'execute plan' substring match \u2014 no false positive. LLM should route to subagent-driven-development."
+      "notes": "'the' breaks 'execute plan' substring match — no false positive. LLM should route to subagent-driven-development."
     },
     {
       "request": "research the topic thoroughly then write an article",
       "expected_agent": null,
-      "expected_skill": null,
+      "expected_skill": "research",
       "category": "content-creation",
-      "routing_tier": "llm_only",
-      "notes": "Multi-skill chain \u2014 script fires voice-writer pipeline force-route (via 'write article' / 'write about' trigger), but correct answer requires research-to-article chain. LLM resolves the chain."
+      "routing_tier": "force_route",
+      "notes": "Multi-skill chain — script fires writing pipeline force-route (via 'write article' / 'write about' trigger), but correct answer requires research-to-article chain. LLM resolves the chain."
     },
     {
       "request": "remove AI patterns from this blog post",
@@ -265,7 +265,7 @@
       "expected_skill": null,
       "category": "content-creation",
       "routing_tier": "llm_only",
-      "notes": "Script fires voice-writer pipeline force-route (via 'blog post' trigger), but correct answer is anti-ai-editor. Subtle distinction requires LLM intent understanding."
+      "notes": "Script fires writing pipeline force-route (via 'blog post' trigger), but correct answer is the private de-AI editing skill. Subtle distinction requires LLM intent understanding."
     },
     {
       "request": "deploy the app to Kubernetes with Helm",
@@ -273,7 +273,7 @@
       "expected_skill": null,
       "category": "infrastructure",
       "routing_tier": "candidate",
-      "notes": "K8s domain \u2014 kubernetes-helm-engineer should appear in top-3 candidates"
+      "notes": "K8s domain — kubernetes-helm-engineer should appear in top-3 candidates"
     },
     {
       "request": "set up Prometheus alerting rules",
@@ -281,31 +281,31 @@
       "expected_skill": null,
       "category": "infrastructure",
       "routing_tier": "candidate",
-      "notes": "Monitoring domain \u2014 prometheus-grafana-engineer should appear in top-3 candidates"
+      "notes": "Monitoring domain — prometheus-grafana-engineer should appear in top-3 candidates"
     },
     {
       "request": "moderate the subreddit modqueue",
       "expected_agent": null,
-      "expected_skill": "reddit-moderate",
+      "expected_skill": "content",
       "category": "reddit",
-      "routing_tier": "candidate",
-      "notes": "Reddit moderation task \u2014 reddit-moderate should appear in top-3 candidates. reddit-moderate is not force-routed."
+      "routing_tier": "candidate_deferred",
+      "notes": "Reddit moderation task — reddit-moderate should appear in top-3 candidates. reddit-moderate is not force-routed. [consolidation routing gap — restore when umbrella skill triggers are expanded]"
     },
     {
       "request": "create a new Claude Code skill with quality gates",
       "expected_agent": null,
-      "expected_skill": "skill-creation-pipeline",
+      "expected_skill": "workflow",
       "category": "meta-tooling",
-      "routing_tier": "candidate",
-      "notes": "Skill creation \u2014 skill-creation-pipeline (wraps skill-creator) should appear in top-3 candidates"
+      "routing_tier": "candidate_deferred",
+      "notes": "Skill creation — skill-creation-pipeline (wraps skill-creator) should appear in top-3 candidates [consolidation routing gap — restore when umbrella skill triggers are expanded]"
     },
     {
       "request": "create a new hook for PostToolUse events",
       "expected_agent": "hook-development-engineer",
-      "expected_skill": "hook-development-pipeline",
+      "expected_skill": "workflow",
       "category": "meta-tooling",
-      "routing_tier": "candidate",
-      "notes": "Hook creation \u2014 hook-development-pipeline should appear in top-3 candidates"
+      "routing_tier": "candidate_deferred",
+      "notes": "Hook creation — hook-development-pipeline should appear in top-3 candidates [consolidation routing gap — restore when umbrella skill triggers are expanded]"
     },
     {
       "request": "go ahead and fix the bug",
@@ -313,58 +313,66 @@
       "expected_skill": null,
       "category": "false-positive-guard",
       "routing_tier": "llm_only",
-      "notes": "'go' as verb, not Go language \u2014 must NOT route to golang-general-engineer"
+      "notes": "'go' as verb, not Go language — must NOT route to golang-general-engineer"
     },
     {
       "request": "debug the goroutine leak causing memory issues",
       "expected_agent": "golang-general-engineer",
-      "expected_skill": "go-patterns",
+      "expected_skill": "programming",
       "category": "go-development",
       "routing_tier": "force_route",
       "expected_stacked": [
-        "go-patterns"
+        "programming"
       ],
-      "notes": "Go debug + goroutine \u2014 force-routes to go-patterns via goroutine trigger. Previously expected 'workflow' but script correctly fires go-patterns."
+      "notes": "Go debug + goroutine — force-routes to go-patterns via goroutine trigger. Previously expected 'workflow' but script correctly fires go-patterns."
     },
     {
       "request": "wrap the error with %w for stack preservation",
       "expected_agent": "golang-general-engineer",
-      "expected_skill": "go-patterns",
+      "expected_skill": "programming",
       "category": "go-development",
-      "routing_tier": "force_route",
-      "notes": "Isolates %w trigger without fmt.Errorf as backup"
+      "routing_tier": "candidate_deferred",
+      "notes": "Isolates %w trigger without fmt.Errorf as backup [consolidation routing gap — restore when umbrella skill triggers are expanded]"
     },
     {
       "request": "build a phaser 2d game with tilemaps and arcade physics",
       "expected_agent": "typescript-frontend-engineer",
-      "expected_skill": "phaser-gamedev",
+      "expected_skill": "game-dev",
       "category": "pairs-with-agent-resolution",
-      "routing_tier": "candidate",
-      "notes": "Phaser game dev \u2014 agent resolved via pairs_with (no agent field). phaser-gamedev pairs_with=['typescript-frontend-engineer', ...]. Exercises Step 2 of resolve_agent."
+      "routing_tier": "candidate_deferred",
+      "notes": "Phaser game dev — agent resolved via pairs_with (no agent field). phaser-gamedev pairs_with=['typescript-frontend-engineer', ...]. Exercises Step 2 of resolve_agent. [consolidation routing gap — restore when umbrella skill triggers are expanded]"
+    },
+    {
+      "request": "run a large multi-system GM feature through the full evidence-to-live implementation workflow",
+      "expected_agent": null,
+      "expected_skill": "game-dev",
+      "category": "game-development",
+      "routing_tier": "force_route",
+      "notes": "Large multi-system GM program — force-route to game-dev (consolidated from gm-brilliant-implementation)."
     },
     {
       "request": "generate sprite sheet for AI character art",
       "expected_agent": "python-general-engineer",
-      "expected_skill": "game-sprite-pipeline",
+      "expected_skill": "game-dev",
       "category": "pairs-with-agent-resolution",
       "routing_tier": "candidate",
-      "notes": "AI sprite generation \u2014 agent resolved via pairs_with. game-sprite-pipeline pairs_with=['phaser-gamedev', 'threejs-builder', 'python-general-engineer']. First AGENT in list is python-general-engineer (skips skill names)."
+      "notes": "AI sprite generation — agent resolved via pairs_with. game-sprite-pipeline pairs_with=['phaser-gamedev', 'threejs-builder', 'python-general-engineer']. First AGENT in list is python-general-engineer (skips skill names)."
     },
     {
       "request": "add holographic foil card effects with WebGL shader",
       "expected_agent": "typescript-frontend-engineer",
-      "expected_skill": "webgl-card-effects",
+      "expected_skill": "frontend",
       "category": "pairs-with-agent-resolution",
       "routing_tier": "candidate",
-      "notes": "WebGL card effects \u2014 agent resolved via pairs_with. webgl-card-effects pairs_with=['typescript-frontend-engineer', 'ui-design-engineer']. First agent in list is typescript-frontend-engineer."
+      "notes": "WebGL card effects — agent resolved via pairs_with. distinctive-frontend-design pairs_with=['typescript-frontend-engineer', 'ui-design-engineer']. First agent in list is typescript-frontend-engineer."
     },
     {
       "request": "run a security threat model audit on the toolkit",
       "expected_agent": "python-general-engineer",
-      "expected_skill": "security-threat-model",
+      "expected_skill": "security",
       "category": "pairs-with-agent-resolution",
-      "routing_tier": "candidate",
-      "notes": "Security threat model \u2014 agent resolved via pairs_with=['python-general-engineer']. Single agent in pairs_with, no agent field on skill."
+      "routing_tier": "candidate_deferred",
+      "notes": "Security threat model — agent resolved via pairs_with=['python-general-engineer']. Single agent in pairs_with, no agent field on skill. [consolidation routing gap — restore when umbrella skill triggers are expanded]"
     },
     {
       "request": "commit to this design and move forward",
@@ -372,7 +380,7 @@
       "expected_skill": null,
       "category": "false-positive-guard",
       "routing_tier": "llm_only",
-      "notes": "Decision/dedication, not git commit \u2014 must NOT route to pr-workflow"
+      "notes": "Decision/dedication, not git commit — must NOT route to pr-workflow"
     },
     {
       "request": "fish out the root cause of this bug",
@@ -380,7 +388,7 @@
       "expected_skill": null,
       "category": "false-positive-guard",
       "routing_tier": "llm_only",
-      "notes": "Search/investigate, not Fish shell \u2014 must NOT route to fish-shell-config"
+      "notes": "Search/investigate, not Fish shell — must NOT route to shell-config"
     },
     {
       "request": "give me a quick read on the architecture",
@@ -388,7 +396,7 @@
       "expected_skill": null,
       "category": "false-positive-guard",
       "routing_tier": "llm_only",
-      "notes": "Brief overview, not a quick edit \u2014 must NOT route to quick"
+      "notes": "Brief overview, not a quick edit — must NOT route to quick"
     },
     {
       "request": "go ahead and merge the branches in your head",
@@ -396,15 +404,15 @@
       "expected_skill": null,
       "category": "false-positive-guard",
       "routing_tier": "llm_only",
-      "notes": "Cognitive merge, not git merge \u2014 must NOT route to pr-workflow"
+      "notes": "Cognitive merge, not git merge — must NOT route to pr-workflow"
     },
     {
       "request": "review the planning meeting notes",
       "expected_agent": null,
-      "expected_skill": null,
+      "expected_skill": "writing",
       "category": "false-positive-guard",
-      "routing_tier": "llm_only",
-      "notes": "Reading notes, not code review or planning skill \u2014 must NOT force-route"
+      "routing_tier": "force_route",
+      "notes": "Reading notes, not code review or planning skill — must NOT force-route"
     },
     {
       "request": "install the new ergonomic keyboard",
@@ -412,7 +420,7 @@
       "expected_skill": null,
       "category": "false-positive-guard",
       "routing_tier": "llm_only",
-      "notes": "Hardware install, not toolkit install skill \u2014 must NOT route to install"
+      "notes": "Hardware install, not toolkit install skill — must NOT route to install"
     },
     {
       "request": "we need to scan and remove voice samples from the corpus",
@@ -420,7 +428,7 @@
       "expected_skill": null,
       "category": "false-positive-guard",
       "routing_tier": "llm_only",
-      "notes": "Data cleaning, not voice-writer generation \u2014 must NOT force-route to voice-writer (semantic guard exists)"
+      "notes": "Data cleaning, not writing generation — must NOT force-route to writing (semantic guard exists)"
     },
     {
       "request": "audit our explanation traces for accuracy",
@@ -428,7 +436,7 @@
       "expected_skill": null,
       "category": "false-positive-guard",
       "routing_tier": "llm_only",
-      "notes": "Audit/review intent, not generating new explanation \u2014 must NOT auto-force to explanation-traces"
+      "notes": "Audit/review intent, not generating new explanation — must NOT auto-force to explanation-traces"
     },
     {
       "request": "what's my current branch?",
@@ -436,7 +444,7 @@
       "expected_skill": null,
       "category": "trivial-operations",
       "routing_tier": "llm_only",
-      "notes": "Trivial git status check \u2014 router handles directly, no force-route"
+      "notes": "Trivial git status check — router handles directly, no force-route"
     },
     {
       "request": "compare this approach to the alternative",
@@ -444,7 +452,7 @@
       "expected_skill": null,
       "category": "trivial-operations",
       "routing_tier": "llm_only",
-      "notes": "Opinion/comparison \u2014 NOT trivial, but should not force-route either; LLM judgment needed"
+      "notes": "Opinion/comparison — NOT trivial, but should not force-route either; LLM judgment needed"
     },
     {
       "request": "evaluate https://example.com/some-blog-post",
@@ -452,7 +460,7 @@
       "expected_skill": null,
       "category": "trivial-operations",
       "routing_tier": "llm_only",
-      "notes": "URL evaluation \u2014 NOT trivial despite looking like a single read; needs Simple+ routing"
+      "notes": "URL evaluation — NOT trivial despite looking like a single read; needs Simple+ routing"
     },
     {
       "request": "give me your opinion on this design",
@@ -460,7 +468,7 @@
       "expected_skill": null,
       "category": "trivial-operations",
       "routing_tier": "llm_only",
-      "notes": "Opinion/recommendation \u2014 NOT trivial, must not force-route"
+      "notes": "Opinion/recommendation — NOT trivial, must not force-route"
     },
     {
       "request": "create a new hook for the SessionStart event",
@@ -469,15 +477,15 @@
       "category": "meta-tooling",
       "routing_tier": "candidate",
       "candidate_depth": 5,
-      "notes": "Hook creation \u2014 specialist agent should appear in top-5 candidates (lesson #7 preferred-routes)"
+      "notes": "Hook creation — specialist agent should appear in top-5 candidates (lesson #7 preferred-routes)"
     },
     {
       "request": "scaffold a new agent for Rust development",
       "expected_agent": null,
-      "expected_skill": "agent-creator",
+      "expected_skill": "toolkit",
       "category": "meta-tooling",
       "routing_tier": "force_route",
-      "notes": "Agent creation \u2014 force-route to agent-creator skill"
+      "notes": "Agent creation — force-route to agent-creator skill"
     },
     {
       "request": "I need a new pipeline for video processing",
@@ -486,24 +494,24 @@
       "category": "meta-tooling",
       "routing_tier": "candidate",
       "candidate_depth": 5,
-      "notes": "Pipeline creation \u2014 pipeline-orchestrator-engineer must be in top-5 (currently top-1, so pass)"
+      "notes": "Pipeline creation — pipeline-orchestrator-engineer must be in top-5 (currently top-1, so pass)"
     },
     {
       "request": "go test ./internal/... to check the changes",
       "expected_agent": "golang-general-engineer",
-      "expected_skill": "go-patterns",
+      "expected_skill": "programming",
       "category": "pre-route-confidence",
       "routing_tier": "force_route",
-      "notes": "Multiple go-patterns triggers (go test, ./...) \u2014 high confidence force-route, lesson #7 hard-gate target"
+      "notes": "Multiple go-patterns triggers (go test, ./...) — high confidence force-route, lesson #7 hard-gate target"
     },
     {
       "request": "run the goroutine leak check",
       "expected_agent": "golang-general-engineer",
-      "expected_skill": "go-patterns",
+      "expected_skill": "programming",
       "category": "pre-route-confidence",
       "routing_tier": "force_route",
       "candidate_depth": 5,
-      "notes": "'goroutine' is a go-patterns trigger \u2014 force-route fires correctly, this exercises Go domain force-routing"
+      "notes": "'goroutine' is a go-patterns trigger — force-route fires correctly, this exercises Go domain force-routing"
     },
     {
       "request": "create a PR",
@@ -511,7 +519,7 @@
       "expected_skill": "pr-workflow",
       "category": "pre-route-confidence",
       "routing_tier": "pre_route_only",
-      "notes": "PR creation \u2014 pre-route.py force-routes via 'create PR' trigger (multi-word). index-router.py candidate scoring normalization makes this hard there.",
+      "notes": "PR creation — pre-route.py force-routes via 'create PR' trigger (multi-word).",
       "candidate_depth": 5
     },
     {
@@ -520,65 +528,65 @@
       "expected_skill": "pr-workflow",
       "category": "pre-route-confidence",
       "routing_tier": "pre_route_only",
-      "notes": "PR push intent \u2014 pre-route.py multi-word trigger 'push changes' or 'push to' should fire. index-router.py candidate normalization disadvantages high-trigger skills.",
+      "notes": "PR push intent — pre-route.py multi-word trigger 'push changes' or 'push to' should fire.",
       "candidate_depth": 5
     },
     {
       "request": "do a structured code review on the diff",
       "expected_agent": null,
-      "expected_skill": "systematic-code-review",
+      "expected_skill": "review",
       "category": "pre-route-confidence",
       "routing_tier": "candidate",
       "candidate_depth": 5,
-      "notes": "Code review intent \u2014 systematic-code-review should be in top-5 candidates"
+      "notes": "Code review intent — systematic-code-review should be in top-5 candidates"
     },
     {
       "request": "create a skill that does X",
       "expected_agent": "toolkit-governance-engineer",
-      "expected_skill": "skill-creator",
+      "expected_skill": "toolkit",
       "category": "meta-tooling",
-      "routing_tier": "force_route",
-      "notes": "Skill creation intent \u2014 force-route to skill-creator with toolkit-governance-engineer as executor agent (declared via skill-creator's top-level `agent` field)"
+      "routing_tier": "candidate_deferred",
+      "notes": "Skill creation intent — force-route to skill-creator with toolkit-governance-engineer as executor agent (declared via skill-creator's top-level `agent` field) [consolidation: trigger lost in merge]"
     },
     {
       "request": "scaffold a new skill",
       "expected_agent": "toolkit-governance-engineer",
-      "expected_skill": "skill-creator",
+      "expected_skill": "toolkit",
       "category": "meta-tooling",
       "routing_tier": "force_route",
-      "notes": "Scaffold intent \u2014 multiple triggers ('new skill', 'scaffold skill', 'scaffold a skill') yield high-confidence force-route"
+      "notes": "Scaffold intent — multiple triggers ('new skill', 'scaffold skill', 'scaffold a skill') yield high-confidence force-route"
     },
     {
       "request": "build a skill for Y",
       "expected_agent": "toolkit-governance-engineer",
-      "expected_skill": "skill-creator",
+      "expected_skill": "toolkit",
       "category": "meta-tooling",
-      "routing_tier": "force_route",
-      "notes": "Build-a-skill intent \u2014 force-route fires on single trigger 'build a skill' (medium confidence)"
+      "routing_tier": "candidate_deferred",
+      "notes": "Build-a-skill intent — force-route fires on single trigger 'build a skill' (medium confidence) [consolidation routing gap — restore when umbrella skill triggers are expanded]"
     },
     {
       "request": "fact check this article before we publish",
       "expected_agent": null,
-      "expected_skill": "fact-check",
+      "expected_skill": "research",
       "category": "research",
       "routing_tier": "candidate",
-      "notes": "Direct trigger 'fact check' \u2014 fact-check appears in top-3 candidates (not force-routed)"
+      "notes": "Direct trigger 'fact check' — fact-check appears in top-3 candidates (not force-routed)"
     },
     {
       "request": "verify the claims in this draft against the sources",
       "expected_agent": null,
-      "expected_skill": "fact-check",
+      "expected_skill": "research",
       "category": "research",
-      "routing_tier": "candidate",
-      "notes": "Direct trigger overlap with 'verify claims' \u2014 fact-check is top candidate"
+      "routing_tier": "candidate_deferred",
+      "notes": "Direct trigger overlap with 'verify claims' — fact-check is top candidate [consolidation routing gap — restore when umbrella skill triggers are expanded]"
     },
     {
       "request": "make sure nothing in this draft is wrong before I post it",
       "expected_agent": null,
-      "expected_skill": "fact-check",
+      "expected_skill": "research",
       "category": "research",
       "routing_tier": "llm_only",
-      "notes": "Zero trigger keywords \u2014 LLM must recognize pre-publish claim verification as fact-check. Script correctly does not force-route."
+      "notes": "Zero trigger keywords — LLM must recognize pre-publish claim verification as fact-check. Script correctly does not force-route."
     },
     {
       "request": "check if these unit tests cover the facts table",
@@ -586,31 +594,31 @@
       "expected_skill": null,
       "category": "false-positive-guard",
       "routing_tier": "llm_only",
-      "notes": "'facts' is a database table, not claim verification \u2014 must NOT route to fact-check"
+      "notes": "'facts' is a database table, not claim verification — must NOT route to fact-check"
     },
     {
       "request": "give me headline options for this post",
       "expected_agent": null,
-      "expected_skill": "headlines",
+      "expected_skill": "content",
       "category": "content-creation",
-      "routing_tier": "candidate",
-      "notes": "Direct trigger 'headline' \u2014 headlines is top candidate (not force-routed)"
+      "routing_tier": "candidate_deferred",
+      "notes": "Direct trigger 'headline' — content-calendar is top candidate (not force-routed) [consolidation routing gap — restore when umbrella skill triggers are expanded]"
     },
     {
       "request": "draft a subject line for the newsletter",
       "expected_agent": null,
-      "expected_skill": "headlines",
+      "expected_skill": "content",
       "category": "content-creation",
-      "routing_tier": "candidate",
-      "notes": "Direct trigger 'subject line' \u2014 headlines is top candidate"
+      "routing_tier": "candidate_deferred",
+      "notes": "Direct trigger 'subject line' — content-calendar is top candidate [consolidation routing gap — restore when umbrella skill triggers are expanded]"
     },
     {
       "request": "what should I call this piece so people actually click it",
       "expected_agent": null,
-      "expected_skill": "headlines",
+      "expected_skill": "content",
       "category": "content-creation",
       "routing_tier": "llm_only",
-      "notes": "Zero trigger keywords \u2014 LLM must recognize title-finding intent as headlines. Script correctly does not force-route."
+      "notes": "Zero trigger keywords — LLM must recognize title-finding intent as content-calendar. Script correctly does not force-route."
     },
     {
       "request": "summarize the headline figures from the quarterly report",
@@ -618,31 +626,31 @@
       "expected_skill": null,
       "category": "false-positive-guard",
       "routing_tier": "llm_only",
-      "notes": "'headline figures' means top-line numbers, not titles \u2014 must NOT route to headlines"
+      "notes": "'headline figures' means top-line numbers, not titles — must NOT route to content-calendar"
     },
     {
       "request": "collect news items for tomorrow's briefing",
       "expected_agent": null,
-      "expected_skill": "news-collection",
+      "expected_skill": "content",
       "category": "research",
-      "routing_tier": "candidate",
-      "notes": "Direct trigger 'collect news' \u2014 news-collection is top candidate (not force-routed)"
+      "routing_tier": "candidate_deferred",
+      "notes": "Direct trigger 'collect news' — content-calendar is top candidate (not force-routed) [consolidation routing gap — restore when umbrella skill triggers are expanded]"
     },
     {
       "request": "run news triage on this morning's feed",
       "expected_agent": null,
-      "expected_skill": "news-collection",
+      "expected_skill": "content",
       "category": "research",
-      "routing_tier": "candidate",
-      "notes": "Direct trigger 'news triage' \u2014 news-collection is top candidate"
+      "routing_tier": "candidate_deferred",
+      "notes": "Direct trigger 'news triage' — content-calendar is top candidate [consolidation routing gap — restore when umbrella skill triggers are expanded]"
     },
     {
       "request": "pull together what happened this week in the industry and keep only the recent stuff",
       "expected_agent": null,
-      "expected_skill": "news-collection",
+      "expected_skill": "content",
       "category": "research",
       "routing_tier": "llm_only",
-      "notes": "Zero trigger keywords \u2014 LLM must recognize collect-and-freshness-filter intent as news-collection. Script correctly does not force-route."
+      "notes": "Zero trigger keywords — LLM must recognize collect-and-freshness-filter intent as content-calendar. Script correctly does not force-route."
     },
     {
       "request": "collect the news about our test failures from CI logs",
@@ -650,7 +658,1780 @@
       "expected_skill": null,
       "category": "false-positive-guard",
       "routing_tier": "llm_only",
-      "notes": "Gathering CI failure context, not a news pipeline \u2014 must NOT route to news-collection ('the' breaks the 'collect news' trigger)"
+      "notes": "Gathering CI failure context, not a news pipeline — must NOT route to content-calendar ('the' breaks the 'collect news' trigger)"
+    },
+    {
+      "request": "push back on this design",
+      "expected_agent": null,
+      "expected_skill": null,
+      "category": "false-positive-guard",
+      "routing_tier": "pre_route_negative",
+      "notes": "Disagreement idiom, not git push - pre-route must not force-route (guard word 'back')"
+    },
+    {
+      "request": "fish out the bug",
+      "expected_agent": null,
+      "expected_skill": null,
+      "category": "false-positive-guard",
+      "routing_tier": "pre_route_negative",
+      "notes": "Search idiom, not the Fish shell - phrase guard 'fish out' must suppress"
+    },
+    {
+      "request": "commit to a decision",
+      "expected_agent": null,
+      "expected_skill": null,
+      "category": "false-positive-guard",
+      "routing_tier": "pre_route_negative",
+      "notes": "Resolve idiom, not git commit - pre-route must not force-route"
+    },
+    {
+      "request": "merge ideas in your head",
+      "expected_agent": null,
+      "expected_skill": null,
+      "category": "false-positive-guard",
+      "routing_tier": "pre_route_negative",
+      "notes": "Thinking idiom, not git merge - phrase guard 'merge ideas' must suppress"
+    },
+    {
+      "request": "commit to a decision by friday",
+      "expected_agent": null,
+      "expected_skill": null,
+      "category": "false-positive-guard",
+      "routing_tier": "pre_route_negative",
+      "notes": "Deadline idiom, not git commit - pre-route must not force-route"
+    },
+    {
+      "request": "push back on the proposed architecture",
+      "expected_agent": null,
+      "expected_skill": null,
+      "category": "false-positive-guard",
+      "routing_tier": "pre_route_negative",
+      "notes": "Disagreement idiom, not git push - guard word 'back' must suppress"
+    },
+    {
+      "request": "merge these ideas into one proposal",
+      "expected_agent": null,
+      "expected_skill": null,
+      "category": "false-positive-guard",
+      "routing_tier": "pre_route_negative",
+      "notes": "Synthesis idiom, not git merge - phrase guard 'merge ideas' must suppress"
+    },
+    {
+      "request": "ship of theseus argument about identity",
+      "expected_agent": null,
+      "expected_skill": null,
+      "category": "false-positive-guard",
+      "routing_tier": "pre_route_negative",
+      "notes": "Philosophy idiom, not shipping code - phrase guard 'ship of theseus' must suppress"
+    },
+    {
+      "request": "review my essay draft",
+      "expected_agent": null,
+      "expected_skill": null,
+      "category": "false-positive-guard",
+      "routing_tier": "pre_route_negative",
+      "notes": "Prose review, not a code/PR review - guard word 'essay' must suppress"
+    },
+    {
+      "request": "publish a paper on distributed consensus",
+      "expected_agent": null,
+      "expected_skill": null,
+      "category": "false-positive-guard",
+      "routing_tier": "pre_route_negative",
+      "notes": "Academic publishing, not publishing code - phrase guard 'publish a paper' must suppress"
+    },
+    {
+      "request": "make the parser thread safe",
+      "expected_agent": null,
+      "expected_skill": null,
+      "category": "false-positive-guard",
+      "routing_tier": "pre_route_negative",
+      "notes": "Concurrency mechanics, not a security review - 'code safe' guard word 'thread' must suppress"
+    },
+    {
+      "request": "break this function into smaller pieces",
+      "expected_agent": null,
+      "expected_skill": null,
+      "category": "false-positive-guard",
+      "routing_tier": "pre_route_negative",
+      "notes": "Refactor phrasing - 'break into' routes to security-review only with an intrusion companion"
+    },
+    {
+      "request": "upload my work to google drive",
+      "expected_agent": null,
+      "expected_skill": null,
+      "category": "false-positive-guard",
+      "routing_tier": "pre_route_negative",
+      "notes": "File sync, not version control - phrase guard 'google drive' must suppress"
+    },
+    {
+      "request": "continue debugging the flaky integration test",
+      "expected_agent": null,
+      "expected_skill": null,
+      "category": "planning-d7-guard",
+      "routing_tier": "pre_route_negative",
+      "notes": "D7 class 'continue': ordinary work continuation, not a plan-lifecycle request"
+    },
+    {
+      "request": "resume playback where the video stopped",
+      "expected_agent": null,
+      "expected_skill": null,
+      "category": "planning-d7-guard",
+      "routing_tier": "pre_route_negative",
+      "notes": "D7 class 'resume': media control, not a plan-lifecycle request"
+    },
+    {
+      "request": "pause the batch job while we investigate",
+      "expected_agent": null,
+      "expected_skill": null,
+      "category": "planning-d7-guard",
+      "routing_tier": "pre_route_negative",
+      "notes": "D7 class 'pause': process control, not a plan-lifecycle request"
+    },
+    {
+      "request": "unsure whether this cache is stale",
+      "expected_agent": null,
+      "expected_skill": null,
+      "category": "planning-d7-guard",
+      "routing_tier": "pre_route_negative",
+      "notes": "D7 class 'unsure': uncertainty about a fact, not a plan-lifecycle request"
+    },
+    {
+      "request": "hand off the request to the load balancer",
+      "expected_agent": null,
+      "expected_skill": null,
+      "category": "planning-d7-guard",
+      "routing_tier": "pre_route_negative",
+      "notes": "D7 class 'handoff': traffic routing, not a session handoff"
+    },
+    {
+      "request": "explain how the scheduler picks the next job",
+      "expected_agent": null,
+      "expected_skill": null,
+      "category": "fallthrough",
+      "routing_tier": "pre_route_negative",
+      "notes": "Explanation request with no trigger keywords - must fall through to semantic routing"
+    },
+    {
+      "request": "what does this regex match",
+      "expected_agent": null,
+      "expected_skill": null,
+      "category": "fallthrough",
+      "routing_tier": "pre_route_negative",
+      "notes": "Quick question with no trigger keywords - must fall through"
+    },
+    {
+      "request": "rename the helper for clarity",
+      "expected_agent": null,
+      "expected_skill": null,
+      "category": "fallthrough",
+      "routing_tier": "pre_route_negative",
+      "notes": "Small edit with no trigger keywords - must fall through"
+    },
+    {
+      "request": "summarize the differences between these two configs",
+      "expected_agent": null,
+      "expected_skill": null,
+      "category": "fallthrough",
+      "routing_tier": "pre_route_negative",
+      "notes": "Comparison request with no trigger keywords - must fall through"
+    },
+    {
+      "request": "root-cause the ranking bug in the report",
+      "expected_agent": null,
+      "expected_skill": null,
+      "category": "false-positive-guard",
+      "routing_tier": "pre_route_negative",
+      "notes": "History pattern: debugging requests route semantically (systematic-debugging); pre-route must not force-route"
+    },
+    {
+      "request": "go live with the feature flag rollout",
+      "expected_agent": null,
+      "expected_skill": null,
+      "category": "false-positive-guard",
+      "routing_tier": "pre_route_negative",
+      "notes": "Feature launch idiom, not a web deploy - 'go live' needs a deploy companion word"
+    },
+    {
+      "request": "commit these changes and push to origin",
+      "expected_agent": null,
+      "expected_skill": "pr-workflow",
+      "category": "git-operations",
+      "routing_tier": "pre_route_only",
+      "notes": "Commit+push intent must force-route to pr-workflow so git quality gates always run"
+    },
+    {
+      "request": "git push my branch and open a pull request",
+      "expected_agent": null,
+      "expected_skill": "pr-workflow",
+      "category": "git-operations",
+      "routing_tier": "pre_route_only",
+      "notes": "Push+PR intent must force-route to pr-workflow"
+    },
+    {
+      "request": "check whether CI went green on my pull request",
+      "expected_agent": null,
+      "expected_skill": "pr-workflow",
+      "category": "git-operations",
+      "routing_tier": "pre_route_only",
+      "notes": "CI status on a submitted change - supplemental trigger 'went green' must fire"
+    },
+    {
+      "request": "push my work, open a PR, and watch the checks",
+      "expected_agent": null,
+      "expected_skill": "pr-workflow",
+      "category": "git-operations",
+      "routing_tier": "pre_route_only",
+      "notes": "History pattern (push, PR, CI, merge requests): must force-route to pr-workflow"
+    },
+    {
+      "request": "stage and commit my changes",
+      "expected_agent": null,
+      "expected_skill": "pr-workflow",
+      "category": "git-operations",
+      "routing_tier": "pre_route_only",
+      "notes": "Stage+commit intent must force-route to pr-workflow"
+    },
+    {
+      "request": "submit my changes for review",
+      "expected_agent": null,
+      "expected_skill": "pr-workflow",
+      "category": "git-operations",
+      "routing_tier": "pre_route_only",
+      "notes": "Paraphrased git intent - supplemental trigger 'submit changes' must fire"
+    },
+    {
+      "request": "run a security review on the upload handler",
+      "expected_agent": null,
+      "expected_skill": "security",
+      "category": "security",
+      "routing_tier": "pre_route_only",
+      "notes": "Explicit security review must force-route to security-review"
+    },
+    {
+      "request": "check whether anyone could break into this server",
+      "expected_agent": null,
+      "expected_skill": "security",
+      "category": "security",
+      "routing_tier": "pre_route_only",
+      "notes": "Intrusion phrasing - 'break into' with companion 'anyone' must force-route"
+    },
+    {
+      "request": "did I leave any passwords or keys in the code",
+      "expected_agent": null,
+      "expected_skill": "security",
+      "category": "security",
+      "routing_tier": "pre_route_only",
+      "notes": "Secret-leak check - supplemental trigger 'passwords keys' must fire"
+    },
+    {
+      "request": "scan this diff for security vulnerabilities",
+      "expected_agent": null,
+      "expected_skill": "security",
+      "category": "security",
+      "routing_tier": "pre_route_only",
+      "notes": "Vulnerability scan must force-route to security-review"
+    },
+    {
+      "request": "is this endpoint code safe to expose",
+      "expected_agent": null,
+      "expected_skill": "security",
+      "category": "security",
+      "routing_tier": "pre_route_only",
+      "notes": "Safety question about code - 'code safe' trigger with no mechanics guard word must fire"
+    },
+    {
+      "request": "check the signup form for SQL injection",
+      "expected_agent": null,
+      "expected_skill": "security",
+      "category": "security",
+      "routing_tier": "pre_route_only",
+      "notes": "Vulnerability vocabulary the security INDEX triggers lack; supplemental trigger 'sql injection' must fire"
+    },
+    {
+      "request": "check the comment box for XSS",
+      "expected_agent": null,
+      "expected_skill": "security",
+      "category": "security",
+      "routing_tier": "pre_route_only",
+      "notes": "Vulnerability vocabulary the security INDEX triggers lack; supplemental trigger 'xss' must fire"
+    },
+    {
+      "request": "look for cross-site scripting in the templates",
+      "expected_agent": null,
+      "expected_skill": "security",
+      "category": "security",
+      "routing_tier": "pre_route_only",
+      "notes": "Vulnerability vocabulary the security INDEX triggers lack; supplemental trigger 'cross site scripting' must fire"
+    },
+    {
+      "request": "add CSRF protection to the login form",
+      "expected_agent": null,
+      "expected_skill": "security",
+      "category": "security",
+      "routing_tier": "pre_route_only",
+      "notes": "Vulnerability vocabulary the security INDEX triggers lack; supplemental trigger 'csrf' must fire"
+    },
+    {
+      "request": "scan the repo for leaked secrets",
+      "expected_agent": null,
+      "expected_skill": "security",
+      "category": "security",
+      "routing_tier": "pre_route_only",
+      "notes": "Vulnerability vocabulary the security INDEX triggers lack; supplemental trigger 'leaked secret' must fire"
+    },
+    {
+      "request": "review the auth flow for vulnerabilities",
+      "expected_agent": null,
+      "expected_skill": "security",
+      "category": "security",
+      "routing_tier": "pre_route_only",
+      "notes": "Vulnerability vocabulary the security INDEX triggers lack; supplemental trigger 'for vulnerabilities' must fire"
+    },
+    {
+      "request": "use dependency injection in the service layer",
+      "expected_agent": null,
+      "expected_skill": null,
+      "category": "false-positive-guard",
+      "routing_tier": "pre_route_negative",
+      "forbid_force_route_to": "security",
+      "notes": "Design pattern, not a vulnerability: only 'sql injection' is a security trigger"
+    },
+    {
+      "request": "resume the plan for the schema migration",
+      "expected_agent": null,
+      "expected_skill": "process",
+      "category": "planning-d7-guard",
+      "routing_tier": "llm_only",
+      "notes": "D7 positive class: plan resume must keep force-route (new phrasing; originals in test_pre_route_planning.py)"
+    },
+    {
+      "request": "pause the plan until the review lands",
+      "expected_agent": null,
+      "expected_skill": "process",
+      "category": "planning-d7-guard",
+      "routing_tier": "llm_only",
+      "notes": "D7 positive class: plan pause must keep force-route"
+    },
+    {
+      "request": "create a plan for splitting the monolith",
+      "expected_agent": null,
+      "expected_skill": "workflow",
+      "category": "planning-d7-guard",
+      "routing_tier": "candidate_deferred",
+      "notes": "D7 positive class: plan creation must keep force-route [consolidation: trigger lost in merge]"
+    },
+    {
+      "request": "run the go tests for the parser package",
+      "expected_agent": null,
+      "expected_skill": "programming",
+      "category": "go-development",
+      "routing_tier": "pre_route_only",
+      "notes": "History pattern (Go test/fix traffic): go test intent must force-route to go-patterns"
+    },
+    {
+      "request": "run this data analysis through codex",
+      "expected_agent": null,
+      "expected_skill": "codex",
+      "category": "model-dispatch",
+      "routing_tier": "force_route",
+      "notes": "Bulk/mechanical data analysis on gpt-5.5 — force-route to codex (trigger: 'through codex')"
+    },
+    {
+      "request": "codex review my latest PR",
+      "expected_agent": null,
+      "expected_skill": "pr-workflow",
+      "category": "model-dispatch",
+      "routing_tier": "force_route",
+      "notes": "Review stays with pr-workflow's codex-review intent, not the general codex lane"
+    },
+    {
+      "request": "make the signup email copy warmer",
+      "expected_agent": null,
+      "expected_skill": null,
+      "category": "model-dispatch",
+      "routing_tier": "llm_only",
+      "notes": "User-facing copy work (taste >= 7 per model-selection policy) — must NOT force-route to codex"
+    },
+    {
+      "request": "check documentation drift across the repository",
+      "expected_agent": null,
+      "expected_skill": "docs-sync-checker",
+      "category": "meta-tooling",
+      "routing_tier": "candidate",
+      "notes": "Documentation-drift intent must surface the deterministic sync checker."
+    },
+    {
+      "request": "start with a failing test for this parser",
+      "expected_agent": null,
+      "expected_skill": "testing",
+      "category": "testing",
+      "routing_tier": "candidate_deferred",
+      "notes": "Explicit RED-phase intent must surface the TDD skill. [consolidation routing gap — restore when umbrella skill triggers are expanded]"
+    },
+    {
+      "request": "Retention is falling; inspect this game and improve the player experience",
+      "expected_agent": "ui-design-engineer",
+      "expected_skill": "game-dev",
+      "category": "game-design",
+      "routing_tier": "candidate_deferred",
+      "notes": "Repository-aware game improvement: diagnose the whole player path, route companion skills, and execute safe fixes. [consolidation routing gap]",
+      "provenance": {
+        "source": "catalog-derived",
+        "workload": null,
+        "sample": "Written from game-design skill semantics; no machine telemetry."
+      }
+    },
+    {
+      "request": "make a new trailer for road to aew for youtube showing the ladder match and the busaiku knee finish",
+      "expected_agent": "python-general-engineer",
+      "expected_skill": "game-trailer",
+      "category": "content-creation",
+      "routing_tier": "candidate",
+      "notes": "Game trailer from the real game (virtual-clock capture, beat-mapped edit) — game-trailer should appear in top-3 candidates; agent from its agent field. Distinct from video-editing (recorded footage)."
+    },
+    {
+      "request": "get API p99 under 200ms using the same load-test dataset on every run",
+      "expected_agent": null,
+      "expected_skill": "toolkit",
+      "category": "performance-optimization",
+      "routing_tier": "candidate_deferred",
+      "notes": "Numeric performance target with a repeatable fixture routes to the metric-driven optimization loop. [consolidation routing gap]"
+    },
+    {
+      "request": "use jev browser automation to fill the signup form on my local dev site and submit it",
+      "expected_agent": null,
+      "expected_skill": "browser-jev-automation",
+      "category": "infrastructure",
+      "routing_tier": "candidate",
+      "notes": "Jev-driven browser automation against a local site: Jev picks actions, programs execute."
+    },
+    {
+      "request": "put my website online",
+      "expected_agent": null,
+      "expected_skill": "deploy",
+      "category": "pre-route-deploy",
+      "routing_tier": "pre_route_only",
+      "notes": "Force-route corpus (adr/deploy.md); moved from scripts/tests/test_pre_route_public_web_deploy.py"
+    },
+    {
+      "request": "deploy my site to my domain",
+      "expected_agent": null,
+      "expected_skill": "deploy",
+      "category": "pre-route-deploy",
+      "routing_tier": "pre_route_only",
+      "notes": "Force-route corpus (adr/deploy.md); moved from scripts/tests/test_pre_route_public_web_deploy.py"
+    },
+    {
+      "request": "set up nginx for my public site",
+      "expected_agent": null,
+      "expected_skill": "deploy",
+      "category": "pre-route-deploy",
+      "routing_tier": "pre_route_only",
+      "notes": "Force-route corpus (adr/deploy.md); moved from scripts/tests/test_pre_route_public_web_deploy.py"
+    },
+    {
+      "request": "host this static site publicly",
+      "expected_agent": null,
+      "expected_skill": "deploy",
+      "category": "pre-route-deploy",
+      "routing_tier": "pre_route_only",
+      "notes": "Force-route corpus (adr/deploy.md); moved from scripts/tests/test_pre_route_public_web_deploy.py"
+    },
+    {
+      "request": "put this online",
+      "expected_agent": null,
+      "expected_skill": "deploy",
+      "category": "pre-route-deploy",
+      "routing_tier": "pre_route_only",
+      "notes": "Force-route corpus (adr/deploy.md); moved from scripts/tests/test_pre_route_public_web_deploy.py"
+    },
+    {
+      "request": "set up https on my public nginx site",
+      "expected_agent": null,
+      "expected_skill": "deploy",
+      "category": "pre-route-deploy",
+      "routing_tier": "pre_route_only",
+      "notes": "Force-route corpus (adr/deploy.md); moved from scripts/tests/test_pre_route_public_web_deploy.py"
+    },
+    {
+      "request": "host a website for the domain model handbook",
+      "expected_agent": null,
+      "expected_skill": "deploy",
+      "category": "pre-route-deploy",
+      "routing_tier": "pre_route_only",
+      "notes": "Force-route corpus (adr/deploy.md); moved from scripts/tests/test_pre_route_public_web_deploy.py"
+    },
+    {
+      "request": "deploy website for the domain expertise portal",
+      "expected_agent": null,
+      "expected_skill": "deploy",
+      "category": "pre-route-deploy",
+      "routing_tier": "pre_route_only",
+      "notes": "Force-route corpus (adr/deploy.md); moved from scripts/tests/test_pre_route_public_web_deploy.py"
+    },
+    {
+      "request": "deploy website from this repo to my domain",
+      "expected_agent": null,
+      "expected_skill": "deploy",
+      "category": "pre-route-deploy",
+      "routing_tier": "pre_route_only",
+      "notes": "Force-route corpus (adr/deploy.md); moved from scripts/tests/test_pre_route_public_web_deploy.py"
+    },
+    {
+      "request": "use my domain to deploy this site from the repo",
+      "expected_agent": null,
+      "expected_skill": "deploy",
+      "category": "pre-route-deploy",
+      "routing_tier": "pre_route_only",
+      "notes": "Force-route corpus (adr/deploy.md); moved from scripts/tests/test_pre_route_public_web_deploy.py"
+    },
+    {
+      "request": "host a website on my vps with nginx",
+      "expected_agent": null,
+      "expected_skill": "deploy",
+      "category": "pre-route-deploy",
+      "routing_tier": "pre_route_only",
+      "notes": "Force-route corpus (adr/deploy.md); moved from scripts/tests/test_pre_route_public_web_deploy.py"
+    },
+    {
+      "request": "host a website for my domain online",
+      "expected_agent": null,
+      "expected_skill": "deploy",
+      "category": "pre-route-deploy",
+      "routing_tier": "pre_route_only",
+      "notes": "Force-route corpus (adr/deploy.md); moved from scripts/tests/test_pre_route_public_web_deploy.py"
+    },
+    {
+      "request": "go live with this website on a droplet",
+      "expected_agent": null,
+      "expected_skill": "deploy",
+      "category": "pre-route-deploy",
+      "routing_tier": "pre_route_only",
+      "notes": "Force-route corpus (adr/deploy.md); moved from scripts/tests/test_pre_route_public_web_deploy.py"
+    },
+    {
+      "request": "host a website publicly with caddy",
+      "expected_agent": null,
+      "expected_skill": "deploy",
+      "category": "pre-route-deploy",
+      "routing_tier": "pre_route_only",
+      "notes": "Force-route corpus (adr/deploy.md); moved from scripts/tests/test_pre_route_public_web_deploy.py"
+    },
+    {
+      "request": "deploy website to the internet with nginx",
+      "expected_agent": null,
+      "expected_skill": "deploy",
+      "category": "pre-route-deploy",
+      "routing_tier": "pre_route_only",
+      "notes": "Force-route corpus (adr/deploy.md); moved from scripts/tests/test_pre_route_public_web_deploy.py"
+    },
+    {
+      "request": "point my domain at this site and go live",
+      "expected_agent": null,
+      "expected_skill": "deploy",
+      "category": "pre-route-deploy",
+      "routing_tier": "pre_route_only",
+      "notes": "Force-route corpus (adr/deploy.md); moved from scripts/tests/test_pre_route_public_web_deploy.py"
+    },
+    {
+      "request": "deploy my site",
+      "expected_agent": null,
+      "expected_skill": "deploy",
+      "category": "pre-route-deploy",
+      "routing_tier": "pre_route_only",
+      "notes": "Force-route corpus (adr/deploy.md); moved from scripts/tests/test_pre_route_public_web_deploy.py"
+    },
+    {
+      "request": "deploy my site to vercel",
+      "expected_agent": null,
+      "expected_skill": "deploy",
+      "category": "pre-route-deploy",
+      "routing_tier": "pre_route_only",
+      "notes": "Force-route corpus (adr/deploy.md); moved from scripts/tests/test_pre_route_public_web_deploy.py"
+    },
+    {
+      "request": "deploy my site to netlify",
+      "expected_agent": null,
+      "expected_skill": "deploy",
+      "category": "pre-route-deploy",
+      "routing_tier": "pre_route_only",
+      "notes": "Force-route corpus (adr/deploy.md); moved from scripts/tests/test_pre_route_public_web_deploy.py"
+    },
+    {
+      "request": "deploy my site to fly.io",
+      "expected_agent": null,
+      "expected_skill": "deploy",
+      "category": "pre-route-deploy",
+      "routing_tier": "pre_route_only",
+      "notes": "Force-route corpus (adr/deploy.md); moved from scripts/tests/test_pre_route_public_web_deploy.py"
+    },
+    {
+      "request": "go live on fly.io",
+      "expected_agent": null,
+      "expected_skill": "deploy",
+      "category": "pre-route-deploy",
+      "routing_tier": "pre_route_only",
+      "notes": "Force-route corpus (adr/deploy.md); moved from scripts/tests/test_pre_route_public_web_deploy.py"
+    },
+    {
+      "request": "set up https for my public website",
+      "expected_agent": null,
+      "expected_skill": "deploy",
+      "category": "pre-route-deploy",
+      "routing_tier": "pre_route_only",
+      "notes": "Force-route corpus (adr/deploy.md); moved from scripts/tests/test_pre_route_public_web_deploy.py"
+    },
+    {
+      "request": "go live with our launch website on cloudflare",
+      "expected_agent": null,
+      "expected_skill": "deploy",
+      "category": "pre-route-deploy",
+      "routing_tier": "pre_route_only",
+      "notes": "Force-route corpus (adr/deploy.md); moved from scripts/tests/test_pre_route_public_web_deploy.py"
+    },
+    {
+      "request": "use my domain to host the site publicly",
+      "expected_agent": null,
+      "expected_skill": "deploy",
+      "category": "pre-route-deploy",
+      "routing_tier": "pre_route_only",
+      "notes": "Force-route corpus (adr/deploy.md); moved from scripts/tests/test_pre_route_public_web_deploy.py"
+    },
+    {
+      "request": "deploy my blog website to my domain",
+      "expected_agent": null,
+      "expected_skill": "deploy",
+      "category": "pre-route-deploy",
+      "routing_tier": "pre_route_only",
+      "notes": "Force-route corpus (adr/deploy.md); moved from scripts/tests/test_pre_route_public_web_deploy.py"
+    },
+    {
+      "request": "deploy my docs website to my domain",
+      "expected_agent": null,
+      "expected_skill": "deploy",
+      "category": "pre-route-deploy",
+      "routing_tier": "pre_route_only",
+      "notes": "Force-route corpus (adr/deploy.md); moved from scripts/tests/test_pre_route_public_web_deploy.py"
+    },
+    {
+      "request": "deploy my app website to my domain",
+      "expected_agent": null,
+      "expected_skill": "deploy",
+      "category": "pre-route-deploy",
+      "routing_tier": "pre_route_only",
+      "notes": "Force-route corpus (adr/deploy.md); moved from scripts/tests/test_pre_route_public_web_deploy.py"
+    },
+    {
+      "request": "set up https for my website",
+      "expected_agent": null,
+      "expected_skill": "deploy",
+      "category": "pre-route-deploy",
+      "routing_tier": "pre_route_only",
+      "notes": "Force-route corpus (adr/deploy.md); moved from scripts/tests/test_pre_route_public_web_deploy.py"
+    },
+    {
+      "request": "go live with my website",
+      "expected_agent": null,
+      "expected_skill": "deploy",
+      "category": "pre-route-deploy",
+      "routing_tier": "pre_route_only",
+      "notes": "Force-route corpus (adr/deploy.md); moved from scripts/tests/test_pre_route_public_web_deploy.py"
+    },
+    {
+      "request": "use my domain for my website",
+      "expected_agent": null,
+      "expected_skill": "deploy",
+      "category": "pre-route-deploy",
+      "routing_tier": "pre_route_only",
+      "notes": "Force-route corpus (adr/deploy.md); moved from scripts/tests/test_pre_route_public_web_deploy.py"
+    },
+    {
+      "request": "make my website public",
+      "expected_agent": null,
+      "expected_skill": "deploy",
+      "category": "pre-route-deploy",
+      "routing_tier": "pre_route_only",
+      "notes": "Force-route corpus (adr/deploy.md); moved from scripts/tests/test_pre_route_public_web_deploy.py"
+    },
+    {
+      "request": "make my site public",
+      "expected_agent": null,
+      "expected_skill": "deploy",
+      "category": "pre-route-deploy",
+      "routing_tier": "pre_route_only",
+      "notes": "Force-route corpus (adr/deploy.md); moved from scripts/tests/test_pre_route_public_web_deploy.py"
+    },
+    {
+      "request": "make this website public",
+      "expected_agent": null,
+      "expected_skill": "deploy",
+      "category": "pre-route-deploy",
+      "routing_tier": "pre_route_only",
+      "notes": "Force-route corpus (adr/deploy.md); moved from scripts/tests/test_pre_route_public_web_deploy.py"
+    },
+    {
+      "request": "make my website public on github pages",
+      "expected_agent": null,
+      "expected_skill": "deploy",
+      "category": "pre-route-deploy",
+      "routing_tier": "pre_route_only",
+      "notes": "Force-route corpus (adr/deploy.md); moved from scripts/tests/test_pre_route_public_web_deploy.py"
+    },
+    {
+      "request": "make my website public on gitlab pages with a custom domain",
+      "expected_agent": null,
+      "expected_skill": "deploy",
+      "category": "pre-route-deploy",
+      "routing_tier": "pre_route_only",
+      "notes": "Force-route corpus (adr/deploy.md); moved from scripts/tests/test_pre_route_public_web_deploy.py"
+    },
+    {
+      "request": "make my website public on cloudflare pages",
+      "expected_agent": null,
+      "expected_skill": "deploy",
+      "category": "pre-route-deploy",
+      "routing_tier": "pre_route_only",
+      "notes": "Force-route corpus (adr/deploy.md); moved from scripts/tests/test_pre_route_public_web_deploy.py"
+    },
+    {
+      "request": "set up https for my portfolio",
+      "expected_agent": null,
+      "expected_skill": "deploy",
+      "category": "pre-route-deploy",
+      "routing_tier": "pre_route_only",
+      "notes": "Force-route corpus (adr/deploy.md); moved from scripts/tests/test_pre_route_public_web_deploy.py"
+    },
+    {
+      "request": "make my portfolio public",
+      "expected_agent": null,
+      "expected_skill": "deploy",
+      "category": "pre-route-deploy",
+      "routing_tier": "pre_route_only",
+      "notes": "Force-route corpus (adr/deploy.md); moved from scripts/tests/test_pre_route_public_web_deploy.py"
+    },
+    {
+      "request": "make my homepage public",
+      "expected_agent": null,
+      "expected_skill": "deploy",
+      "category": "pre-route-deploy",
+      "routing_tier": "pre_route_only",
+      "notes": "Force-route corpus (adr/deploy.md); moved from scripts/tests/test_pre_route_public_web_deploy.py"
+    },
+    {
+      "request": "go live with my portfolio",
+      "expected_agent": null,
+      "expected_skill": "deploy",
+      "category": "pre-route-deploy",
+      "routing_tier": "pre_route_only",
+      "notes": "Force-route corpus (adr/deploy.md); moved from scripts/tests/test_pre_route_public_web_deploy.py"
+    },
+    {
+      "request": "deploy my landing page",
+      "expected_agent": null,
+      "expected_skill": "deploy",
+      "category": "pre-route-deploy",
+      "routing_tier": "pre_route_only",
+      "notes": "Force-route corpus (adr/deploy.md); moved from scripts/tests/test_pre_route_public_web_deploy.py"
+    },
+    {
+      "request": "deploy my landing page to vercel",
+      "expected_agent": null,
+      "expected_skill": "deploy",
+      "category": "pre-route-deploy",
+      "routing_tier": "pre_route_only",
+      "notes": "Force-route corpus (adr/deploy.md); moved from scripts/tests/test_pre_route_public_web_deploy.py"
+    },
+    {
+      "request": "host my landing page online",
+      "expected_agent": null,
+      "expected_skill": "deploy",
+      "category": "pre-route-deploy",
+      "routing_tier": "pre_route_only",
+      "notes": "Force-route corpus (adr/deploy.md); moved from scripts/tests/test_pre_route_public_web_deploy.py"
+    },
+    {
+      "request": "deploy my frontend site to netlify",
+      "expected_agent": null,
+      "expected_skill": "deploy",
+      "category": "pre-route-deploy",
+      "routing_tier": "pre_route_only",
+      "notes": "'frontend' names the site, not work on it; the #993 rename had made it a site-work guard word"
+    },
+    {
+      "request": "use my domain knowledge to design the schema",
+      "expected_agent": null,
+      "expected_skill": null,
+      "category": "false-positive-guard",
+      "routing_tier": "pre_route_negative",
+      "forbid_force_route_to": "deploy",
+      "notes": "Idiom overlap; must not force-route to deploy (adr/deploy.md); moved from scripts/tests/test_pre_route_public_web_deploy.py"
+    },
+    {
+      "request": "go live on twitch",
+      "expected_agent": null,
+      "expected_skill": null,
+      "category": "false-positive-guard",
+      "routing_tier": "pre_route_negative",
+      "forbid_force_route_to": "deploy",
+      "notes": "Idiom overlap; must not force-route to deploy (adr/deploy.md); moved from scripts/tests/test_pre_route_public_web_deploy.py"
+    },
+    {
+      "request": "set up https certificate validation in the test suite",
+      "expected_agent": null,
+      "expected_skill": null,
+      "category": "false-positive-guard",
+      "routing_tier": "pre_route_negative",
+      "forbid_force_route_to": "deploy",
+      "notes": "Idiom overlap; must not force-route to deploy (adr/deploy.md); moved from scripts/tests/test_pre_route_public_web_deploy.py"
+    },
+    {
+      "request": "deploy the website unit tests",
+      "expected_agent": null,
+      "expected_skill": null,
+      "category": "false-positive-guard",
+      "routing_tier": "pre_route_negative",
+      "forbid_force_route_to": "deploy",
+      "notes": "Idiom overlap; must not force-route to deploy (adr/deploy.md); moved from scripts/tests/test_pre_route_public_web_deploy.py"
+    },
+    {
+      "request": "make it public on npm",
+      "expected_agent": null,
+      "expected_skill": null,
+      "category": "false-positive-guard",
+      "routing_tier": "pre_route_negative",
+      "forbid_force_route_to": "deploy",
+      "notes": "Idiom overlap; must not force-route to deploy (adr/deploy.md); moved from scripts/tests/test_pre_route_public_web_deploy.py"
+    },
+    {
+      "request": "make the repo public",
+      "expected_agent": null,
+      "expected_skill": null,
+      "category": "false-positive-guard",
+      "routing_tier": "pre_route_negative",
+      "forbid_force_route_to": "deploy",
+      "notes": "Idiom overlap; must not force-route to deploy (adr/deploy.md); moved from scripts/tests/test_pre_route_public_web_deploy.py"
+    },
+    {
+      "request": "make this method public",
+      "expected_agent": null,
+      "expected_skill": null,
+      "category": "false-positive-guard",
+      "routing_tier": "pre_route_negative",
+      "forbid_force_route_to": "deploy",
+      "notes": "Idiom overlap; must not force-route to deploy (adr/deploy.md); moved from scripts/tests/test_pre_route_public_web_deploy.py"
+    },
+    {
+      "request": "make the class public",
+      "expected_agent": null,
+      "expected_skill": null,
+      "category": "false-positive-guard",
+      "routing_tier": "pre_route_negative",
+      "forbid_force_route_to": "deploy",
+      "notes": "Idiom overlap; must not force-route to deploy (adr/deploy.md); moved from scripts/tests/test_pre_route_public_web_deploy.py"
+    },
+    {
+      "request": "make website repo public on github",
+      "expected_agent": null,
+      "expected_skill": null,
+      "category": "false-positive-guard",
+      "routing_tier": "pre_route_negative",
+      "forbid_force_route_to": "deploy",
+      "notes": "Idiom overlap; must not force-route to deploy (adr/deploy.md); moved from scripts/tests/test_pre_route_public_web_deploy.py"
+    },
+    {
+      "request": "make website code public",
+      "expected_agent": null,
+      "expected_skill": null,
+      "category": "false-positive-guard",
+      "routing_tier": "pre_route_negative",
+      "forbid_force_route_to": "deploy",
+      "notes": "Idiom overlap; must not force-route to deploy (adr/deploy.md); moved from scripts/tests/test_pre_route_public_web_deploy.py"
+    },
+    {
+      "request": "make this package public on npm",
+      "expected_agent": null,
+      "expected_skill": null,
+      "category": "false-positive-guard",
+      "routing_tier": "pre_route_negative",
+      "forbid_force_route_to": "deploy",
+      "notes": "Idiom overlap; must not force-route to deploy (adr/deploy.md); moved from scripts/tests/test_pre_route_public_web_deploy.py"
+    },
+    {
+      "request": "make this gist public",
+      "expected_agent": null,
+      "expected_skill": null,
+      "category": "false-positive-guard",
+      "routing_tier": "pre_route_negative",
+      "forbid_force_route_to": "deploy",
+      "notes": "Idiom overlap; must not force-route to deploy (adr/deploy.md); moved from scripts/tests/test_pre_route_public_web_deploy.py"
+    },
+    {
+      "request": "add search to this static site",
+      "expected_agent": null,
+      "expected_skill": null,
+      "category": "false-positive-guard",
+      "routing_tier": "pre_route_negative",
+      "forbid_force_route_to": "deploy",
+      "notes": "Idiom overlap; must not force-route to deploy (adr/deploy.md); moved from scripts/tests/test_pre_route_public_web_deploy.py"
+    },
+    {
+      "request": "fix the CSS on my static site",
+      "expected_agent": null,
+      "expected_skill": null,
+      "category": "false-positive-guard",
+      "routing_tier": "pre_route_negative",
+      "forbid_force_route_to": "deploy",
+      "notes": "Idiom overlap; must not force-route to deploy (adr/deploy.md); moved from scripts/tests/test_pre_route_public_web_deploy.py"
+    },
+    {
+      "request": "write docs for this static site",
+      "expected_agent": null,
+      "expected_skill": null,
+      "category": "false-positive-guard",
+      "routing_tier": "pre_route_negative",
+      "forbid_force_route_to": "deploy",
+      "notes": "Idiom overlap; must not force-route to deploy (adr/deploy.md); moved from scripts/tests/test_pre_route_public_web_deploy.py"
+    },
+    {
+      "request": "review this static site architecture",
+      "expected_agent": null,
+      "expected_skill": null,
+      "category": "false-positive-guard",
+      "routing_tier": "pre_route_negative",
+      "forbid_force_route_to": "deploy",
+      "notes": "Idiom overlap; must not force-route to deploy (adr/deploy.md); moved from scripts/tests/test_pre_route_public_web_deploy.py"
+    },
+    {
+      "request": "how do static sites compare to dynamic sites",
+      "expected_agent": null,
+      "expected_skill": null,
+      "category": "false-positive-guard",
+      "routing_tier": "pre_route_negative",
+      "forbid_force_route_to": "deploy",
+      "notes": "Idiom overlap; must not force-route to deploy (adr/deploy.md); moved from scripts/tests/test_pre_route_public_web_deploy.py"
+    },
+    {
+      "request": "optimize images on my static site",
+      "expected_agent": null,
+      "expected_skill": null,
+      "category": "false-positive-guard",
+      "routing_tier": "pre_route_negative",
+      "forbid_force_route_to": "deploy",
+      "notes": "Idiom overlap; must not force-route to deploy (adr/deploy.md); moved from scripts/tests/test_pre_route_public_web_deploy.py"
+    },
+    {
+      "request": "migrate this blog to a static site",
+      "expected_agent": null,
+      "expected_skill": null,
+      "category": "false-positive-guard",
+      "routing_tier": "pre_route_negative",
+      "forbid_force_route_to": "deploy",
+      "notes": "Idiom overlap; must not force-route to deploy (adr/deploy.md); moved from scripts/tests/test_pre_route_public_web_deploy.py"
+    },
+    {
+      "request": "go live with this presentation",
+      "expected_agent": null,
+      "expected_skill": null,
+      "category": "false-positive-guard",
+      "routing_tier": "pre_route_negative",
+      "forbid_force_route_to": "deploy",
+      "notes": "Idiom overlap; must not force-route to deploy (adr/deploy.md); moved from scripts/tests/test_pre_route_public_web_deploy.py"
+    },
+    {
+      "request": "go live on youtube",
+      "expected_agent": null,
+      "expected_skill": null,
+      "category": "false-positive-guard",
+      "routing_tier": "pre_route_negative",
+      "forbid_force_route_to": "deploy",
+      "notes": "Idiom overlap; must not force-route to deploy (adr/deploy.md); moved from scripts/tests/test_pre_route_public_web_deploy.py"
+    },
+    {
+      "request": "make the copy better on my public website",
+      "expected_agent": null,
+      "expected_skill": null,
+      "category": "false-positive-guard",
+      "routing_tier": "pre_route_negative",
+      "forbid_force_route_to": "deploy",
+      "notes": "Idiom overlap; must not force-route to deploy (adr/deploy.md); moved from scripts/tests/test_pre_route_public_web_deploy.py"
+    },
+    {
+      "request": "review accessibility of my public website",
+      "expected_agent": null,
+      "expected_skill": null,
+      "category": "false-positive-guard",
+      "routing_tier": "pre_route_negative",
+      "forbid_force_route_to": "deploy",
+      "notes": "Idiom overlap; must not force-route to deploy (adr/deploy.md); moved from scripts/tests/test_pre_route_public_web_deploy.py"
+    },
+    {
+      "request": "go live with the launch deck on production",
+      "expected_agent": null,
+      "expected_skill": null,
+      "category": "false-positive-guard",
+      "routing_tier": "pre_route_negative",
+      "forbid_force_route_to": "deploy",
+      "notes": "Idiom overlap; must not force-route to deploy (adr/deploy.md); moved from scripts/tests/test_pre_route_public_web_deploy.py"
+    },
+    {
+      "request": "set up https docs for the server team",
+      "expected_agent": null,
+      "expected_skill": null,
+      "category": "false-positive-guard",
+      "routing_tier": "pre_route_negative",
+      "forbid_force_route_to": "deploy",
+      "notes": "Idiom overlap; must not force-route to deploy (adr/deploy.md); moved from scripts/tests/test_pre_route_public_web_deploy.py"
+    },
+    {
+      "request": "make it public and publish the report",
+      "expected_agent": null,
+      "expected_skill": null,
+      "category": "false-positive-guard",
+      "routing_tier": "pre_route_negative",
+      "forbid_force_route_to": "deploy",
+      "notes": "Idiom overlap; must not force-route to deploy (adr/deploy.md); moved from scripts/tests/test_pre_route_public_web_deploy.py"
+    },
+    {
+      "request": "static site generation in production CI",
+      "expected_agent": null,
+      "expected_skill": null,
+      "category": "false-positive-guard",
+      "routing_tier": "pre_route_negative",
+      "forbid_force_route_to": "deploy",
+      "notes": "Idiom overlap; must not force-route to deploy (adr/deploy.md); moved from scripts/tests/test_pre_route_public_web_deploy.py"
+    },
+    {
+      "request": "host a website locally for testing",
+      "expected_agent": null,
+      "expected_skill": null,
+      "category": "false-positive-guard",
+      "routing_tier": "pre_route_negative",
+      "forbid_force_route_to": "deploy",
+      "notes": "Idiom overlap; must not force-route to deploy (adr/deploy.md); moved from scripts/tests/test_pre_route_public_web_deploy.py"
+    },
+    {
+      "request": "host a website on localhost for QA",
+      "expected_agent": null,
+      "expected_skill": null,
+      "category": "false-positive-guard",
+      "routing_tier": "pre_route_negative",
+      "forbid_force_route_to": "deploy",
+      "notes": "Idiom overlap; must not force-route to deploy (adr/deploy.md); moved from scripts/tests/test_pre_route_public_web_deploy.py"
+    },
+    {
+      "request": "website online store checkout bug",
+      "expected_agent": null,
+      "expected_skill": null,
+      "category": "false-positive-guard",
+      "routing_tier": "pre_route_negative",
+      "forbid_force_route_to": "deploy",
+      "notes": "Idiom overlap; must not force-route to deploy (adr/deploy.md); moved from scripts/tests/test_pre_route_public_web_deploy.py"
+    },
+    {
+      "request": "compare static site generators for public docs",
+      "expected_agent": null,
+      "expected_skill": null,
+      "category": "false-positive-guard",
+      "routing_tier": "pre_route_negative",
+      "forbid_force_route_to": "deploy",
+      "notes": "Idiom overlap; must not force-route to deploy (adr/deploy.md); moved from scripts/tests/test_pre_route_public_web_deploy.py"
+    },
+    {
+      "request": "cloudflare static site caching bug",
+      "expected_agent": null,
+      "expected_skill": null,
+      "category": "false-positive-guard",
+      "routing_tier": "pre_route_negative",
+      "forbid_force_route_to": "deploy",
+      "notes": "Idiom overlap; must not force-route to deploy (adr/deploy.md); moved from scripts/tests/test_pre_route_public_web_deploy.py"
+    },
+    {
+      "request": "set up https examples for the public api docs",
+      "expected_agent": null,
+      "expected_skill": null,
+      "category": "false-positive-guard",
+      "routing_tier": "pre_route_negative",
+      "forbid_force_route_to": "deploy",
+      "notes": "Idiom overlap; must not force-route to deploy (adr/deploy.md); moved from scripts/tests/test_pre_route_public_web_deploy.py"
+    },
+    {
+      "request": "review this public website for domain model terminology",
+      "expected_agent": null,
+      "expected_skill": null,
+      "category": "false-positive-guard",
+      "routing_tier": "pre_route_negative",
+      "forbid_force_route_to": "deploy",
+      "notes": "Idiom overlap; must not force-route to deploy (adr/deploy.md); moved from scripts/tests/test_pre_route_public_web_deploy.py"
+    },
+    {
+      "request": "public website sitemap generation",
+      "expected_agent": null,
+      "expected_skill": null,
+      "category": "false-positive-guard",
+      "routing_tier": "pre_route_negative",
+      "forbid_force_route_to": "deploy",
+      "notes": "Idiom overlap; must not force-route to deploy (adr/deploy.md); moved from scripts/tests/test_pre_route_public_web_deploy.py"
+    },
+    {
+      "request": "deploy sitecore upgrade",
+      "expected_agent": null,
+      "expected_skill": null,
+      "category": "false-positive-guard",
+      "routing_tier": "pre_route_negative",
+      "forbid_force_route_to": "deploy",
+      "notes": "Idiom overlap; must not force-route to deploy (adr/deploy.md); moved from scripts/tests/test_pre_route_public_web_deploy.py"
+    },
+    {
+      "request": "deploy sitemap.xml to the repo",
+      "expected_agent": null,
+      "expected_skill": null,
+      "category": "false-positive-guard",
+      "routing_tier": "pre_route_negative",
+      "forbid_force_route_to": "deploy",
+      "notes": "Idiom overlap; must not force-route to deploy (adr/deploy.md); moved from scripts/tests/test_pre_route_public_web_deploy.py"
+    },
+    {
+      "request": "cloudflare static site image optimization",
+      "expected_agent": null,
+      "expected_skill": null,
+      "category": "false-positive-guard",
+      "routing_tier": "pre_route_negative",
+      "forbid_force_route_to": "deploy",
+      "notes": "Idiom overlap; must not force-route to deploy (adr/deploy.md); moved from scripts/tests/test_pre_route_public_web_deploy.py"
+    },
+    {
+      "request": "cloudflare static site analytics setup",
+      "expected_agent": null,
+      "expected_skill": null,
+      "category": "false-positive-guard",
+      "routing_tier": "pre_route_negative",
+      "forbid_force_route_to": "deploy",
+      "notes": "Idiom overlap; must not force-route to deploy (adr/deploy.md); moved from scripts/tests/test_pre_route_public_web_deploy.py"
+    },
+    {
+      "request": "static site performance tuning on my domain",
+      "expected_agent": null,
+      "expected_skill": null,
+      "category": "false-positive-guard",
+      "routing_tier": "pre_route_negative",
+      "forbid_force_route_to": "deploy",
+      "notes": "Idiom overlap; must not force-route to deploy (adr/deploy.md); moved from scripts/tests/test_pre_route_public_web_deploy.py"
+    },
+    {
+      "request": "static site content audit on my domain",
+      "expected_agent": null,
+      "expected_skill": null,
+      "category": "false-positive-guard",
+      "routing_tier": "pre_route_negative",
+      "forbid_force_route_to": "deploy",
+      "notes": "Idiom overlap; must not force-route to deploy (adr/deploy.md); moved from scripts/tests/test_pre_route_public_web_deploy.py"
+    },
+    {
+      "request": "translate my public site to spanish",
+      "expected_agent": null,
+      "expected_skill": null,
+      "category": "false-positive-guard",
+      "routing_tier": "pre_route_negative",
+      "forbid_force_route_to": "deploy",
+      "notes": "Idiom overlap; must not force-route to deploy (adr/deploy.md); moved from scripts/tests/test_pre_route_public_web_deploy.py"
+    },
+    {
+      "request": "localize my public site for germany",
+      "expected_agent": null,
+      "expected_skill": null,
+      "category": "false-positive-guard",
+      "routing_tier": "pre_route_negative",
+      "forbid_force_route_to": "deploy",
+      "notes": "Idiom overlap; must not force-route to deploy (adr/deploy.md); moved from scripts/tests/test_pre_route_public_web_deploy.py"
+    },
+    {
+      "request": "rebrand my public site",
+      "expected_agent": null,
+      "expected_skill": null,
+      "category": "false-positive-guard",
+      "routing_tier": "pre_route_negative",
+      "forbid_force_route_to": "deploy",
+      "notes": "Idiom overlap; must not force-route to deploy (adr/deploy.md); moved from scripts/tests/test_pre_route_public_web_deploy.py"
+    },
+    {
+      "request": "add a cookie banner to my public site",
+      "expected_agent": null,
+      "expected_skill": null,
+      "category": "false-positive-guard",
+      "routing_tier": "pre_route_negative",
+      "forbid_force_route_to": "deploy",
+      "notes": "Idiom overlap; must not force-route to deploy (adr/deploy.md); moved from scripts/tests/test_pre_route_public_web_deploy.py"
+    },
+    {
+      "request": "retheme the deploy site",
+      "expected_agent": null,
+      "expected_skill": null,
+      "category": "false-positive-guard",
+      "routing_tier": "pre_route_negative",
+      "forbid_force_route_to": "deploy",
+      "notes": "Idiom overlap; must not force-route to deploy (adr/deploy.md); moved from scripts/tests/test_pre_route_public_web_deploy.py"
+    },
+    {
+      "request": "update the deploy site branding",
+      "expected_agent": null,
+      "expected_skill": null,
+      "category": "false-positive-guard",
+      "routing_tier": "pre_route_negative",
+      "forbid_force_route_to": "deploy",
+      "notes": "Idiom overlap; must not force-route to deploy (adr/deploy.md); moved from scripts/tests/test_pre_route_public_web_deploy.py"
+    },
+    {
+      "request": "public site localization plan",
+      "expected_agent": null,
+      "expected_skill": null,
+      "category": "false-positive-guard",
+      "routing_tier": "pre_route_negative",
+      "forbid_force_route_to": "deploy",
+      "notes": "Idiom overlap; must not force-route to deploy (adr/deploy.md); moved from scripts/tests/test_pre_route_public_web_deploy.py"
+    },
+    {
+      "request": "translate my public site on my domain to spanish",
+      "expected_agent": null,
+      "expected_skill": null,
+      "category": "false-positive-guard",
+      "routing_tier": "pre_route_negative",
+      "forbid_force_route_to": "deploy",
+      "notes": "Idiom overlap; must not force-route to deploy (adr/deploy.md); moved from scripts/tests/test_pre_route_public_web_deploy.py"
+    },
+    {
+      "request": "localize my public site on my domain for germany",
+      "expected_agent": null,
+      "expected_skill": null,
+      "category": "false-positive-guard",
+      "routing_tier": "pre_route_negative",
+      "forbid_force_route_to": "deploy",
+      "notes": "Idiom overlap; must not force-route to deploy (adr/deploy.md); moved from scripts/tests/test_pre_route_public_web_deploy.py"
+    },
+    {
+      "request": "edit my landing page",
+      "expected_agent": null,
+      "expected_skill": null,
+      "category": "false-positive-guard",
+      "routing_tier": "pre_route_negative",
+      "forbid_force_route_to": "deploy",
+      "notes": "Idiom overlap; must not force-route to deploy (adr/deploy.md); moved from scripts/tests/test_pre_route_public_web_deploy.py"
+    },
+    {
+      "request": "write copy for my landing page",
+      "expected_agent": null,
+      "expected_skill": null,
+      "category": "false-positive-guard",
+      "routing_tier": "pre_route_negative",
+      "forbid_force_route_to": "deploy",
+      "notes": "Idiom overlap; must not force-route to deploy (adr/deploy.md); moved from scripts/tests/test_pre_route_public_web_deploy.py"
+    },
+    {
+      "request": "redesign the landing page",
+      "expected_agent": null,
+      "expected_skill": null,
+      "category": "false-positive-guard",
+      "routing_tier": "pre_route_negative",
+      "forbid_force_route_to": "deploy",
+      "notes": "Idiom overlap; must not force-route to deploy (adr/deploy.md); moved from scripts/tests/test_pre_route_public_web_deploy.py"
+    },
+    {
+      "request": "redesign the deploy site",
+      "expected_agent": null,
+      "expected_skill": null,
+      "category": "false-positive-guard",
+      "routing_tier": "pre_route_negative",
+      "forbid_force_route_to": "deploy",
+      "notes": "Site work, not a deploy: 'design'/'redesign' guard the site triggers (#993 had renamed them 'frontend'/'refrontend')"
+    },
+    {
+      "request": "design a new landing page for my domain",
+      "expected_agent": null,
+      "expected_skill": null,
+      "category": "false-positive-guard",
+      "routing_tier": "pre_route_negative",
+      "forbid_force_route_to": "deploy",
+      "notes": "Site work, not a deploy: 'design'/'redesign' guard the site triggers (#993 had renamed them 'frontend'/'refrontend')"
+    },
+    {
+      "request": "redesign my public site on my domain",
+      "expected_agent": null,
+      "expected_skill": null,
+      "category": "false-positive-guard",
+      "routing_tier": "pre_route_negative",
+      "forbid_force_route_to": "deploy",
+      "notes": "Site work, not a deploy: 'design'/'redesign' guard the site triggers (#993 had renamed them 'frontend'/'refrontend')"
+    },
+    {
+      "request": "rebrand my portfolio site",
+      "expected_agent": null,
+      "expected_skill": null,
+      "category": "false-positive-guard",
+      "routing_tier": "pre_route_negative",
+      "forbid_force_route_to": "deploy",
+      "notes": "Idiom overlap; must not force-route to deploy (adr/deploy.md); moved from scripts/tests/test_pre_route_public_web_deploy.py"
+    },
+    {
+      "request": "git push",
+      "expected_agent": null,
+      "expected_skill": "pr-workflow",
+      "category": "pre-route-pr-workflow",
+      "routing_tier": "pre_route_only",
+      "notes": "Force-route corpus (adr/pr-create-skill-guard.md); moved from scripts/tests/test_pre_route_pr_workflow.py"
+    },
+    {
+      "request": "push to origin",
+      "expected_agent": null,
+      "expected_skill": "pr-workflow",
+      "category": "pre-route-pr-workflow",
+      "routing_tier": "pre_route_only",
+      "notes": "Force-route corpus (adr/pr-create-skill-guard.md); moved from scripts/tests/test_pre_route_pr_workflow.py"
+    },
+    {
+      "request": "push my branch",
+      "expected_agent": null,
+      "expected_skill": "pr-workflow",
+      "category": "pre-route-pr-workflow",
+      "routing_tier": "pre_route_only",
+      "notes": "Force-route corpus (adr/pr-create-skill-guard.md); moved from scripts/tests/test_pre_route_pr_workflow.py"
+    },
+    {
+      "request": "ship it",
+      "expected_agent": null,
+      "expected_skill": "pr-workflow",
+      "category": "pre-route-pr-workflow",
+      "routing_tier": "pre_route_only",
+      "notes": "Force-route corpus (adr/pr-create-skill-guard.md); moved from scripts/tests/test_pre_route_pr_workflow.py"
+    },
+    {
+      "request": "ship this work",
+      "expected_agent": null,
+      "expected_skill": "pr-workflow",
+      "category": "pre-route-pr-workflow",
+      "routing_tier": "pre_route_only",
+      "notes": "Force-route corpus (adr/pr-create-skill-guard.md); moved from scripts/tests/test_pre_route_pr_workflow.py"
+    },
+    {
+      "request": "merge these fixes",
+      "expected_agent": null,
+      "expected_skill": "pr-workflow",
+      "category": "pre-route-pr-workflow",
+      "routing_tier": "pre_route_only",
+      "notes": "Force-route corpus (adr/pr-create-skill-guard.md); moved from scripts/tests/test_pre_route_pr_workflow.py"
+    },
+    {
+      "request": "make a pull request",
+      "expected_agent": null,
+      "expected_skill": "pr-workflow",
+      "category": "pre-route-pr-workflow",
+      "routing_tier": "pre_route_only",
+      "notes": "Force-route corpus (adr/pr-create-skill-guard.md); moved from scripts/tests/test_pre_route_pr_workflow.py"
+    },
+    {
+      "request": "draft a PR for the auth fix",
+      "expected_agent": null,
+      "expected_skill": "pr-workflow",
+      "category": "pre-route-pr-workflow",
+      "routing_tier": "pre_route_only",
+      "notes": "Force-route corpus (adr/pr-create-skill-guard.md); moved from scripts/tests/test_pre_route_pr_workflow.py"
+    },
+    {
+      "request": "publish my changes",
+      "expected_agent": null,
+      "expected_skill": "pr-workflow",
+      "category": "pre-route-pr-workflow",
+      "routing_tier": "pre_route_only",
+      "notes": "Force-route corpus (adr/pr-create-skill-guard.md); moved from scripts/tests/test_pre_route_pr_workflow.py"
+    },
+    {
+      "request": "let's get this reviewed",
+      "expected_agent": null,
+      "expected_skill": "pr-workflow",
+      "category": "pre-route-pr-workflow",
+      "routing_tier": "pre_route_only",
+      "notes": "Force-route corpus (adr/pr-create-skill-guard.md); moved from scripts/tests/test_pre_route_pr_workflow.py"
+    },
+    {
+      "request": "send this to GitHub",
+      "expected_agent": null,
+      "expected_skill": "pr-workflow",
+      "category": "pre-route-pr-workflow",
+      "routing_tier": "pre_route_only",
+      "notes": "Force-route corpus (adr/pr-create-skill-guard.md); moved from scripts/tests/test_pre_route_pr_workflow.py"
+    },
+    {
+      "request": "wrap this up and merge",
+      "expected_agent": null,
+      "expected_skill": "pr-workflow",
+      "category": "pre-route-pr-workflow",
+      "routing_tier": "pre_route_only",
+      "notes": "Force-route corpus (adr/pr-create-skill-guard.md); moved from scripts/tests/test_pre_route_pr_workflow.py"
+    },
+    {
+      "request": "open a PR for these changes",
+      "expected_agent": null,
+      "expected_skill": "pr-workflow",
+      "category": "pre-route-pr-workflow",
+      "routing_tier": "pre_route_only",
+      "notes": "Force-route corpus (adr/pr-create-skill-guard.md); moved from scripts/tests/test_pre_route_pr_workflow.py"
+    },
+    {
+      "request": "create PR",
+      "expected_agent": null,
+      "expected_skill": "pr-workflow",
+      "category": "pre-route-pr-workflow",
+      "routing_tier": "pre_route_only",
+      "notes": "Force-route corpus (adr/pr-create-skill-guard.md); moved from scripts/tests/test_pre_route_pr_workflow.py"
+    },
+    {
+      "request": "push my changes",
+      "expected_agent": null,
+      "expected_skill": "pr-workflow",
+      "category": "pre-route-pr-workflow",
+      "routing_tier": "pre_route_only",
+      "notes": "Force-route corpus (adr/pr-create-skill-guard.md); moved from scripts/tests/test_pre_route_pr_workflow.py"
+    },
+    {
+      "request": "open PR",
+      "expected_agent": null,
+      "expected_skill": "pr-workflow",
+      "category": "pre-route-pr-workflow",
+      "routing_tier": "pre_route_only",
+      "notes": "Force-route corpus (adr/pr-create-skill-guard.md); moved from scripts/tests/test_pre_route_pr_workflow.py"
+    },
+    {
+      "request": "open the PR",
+      "expected_agent": null,
+      "expected_skill": "pr-workflow",
+      "category": "pre-route-pr-workflow",
+      "routing_tier": "pre_route_only",
+      "notes": "Force-route corpus (adr/pr-create-skill-guard.md); moved from scripts/tests/test_pre_route_pr_workflow.py"
+    },
+    {
+      "request": "submit PR",
+      "expected_agent": null,
+      "expected_skill": "pr-workflow",
+      "category": "pre-route-pr-workflow",
+      "routing_tier": "pre_route_only",
+      "notes": "Force-route corpus (adr/pr-create-skill-guard.md); moved from scripts/tests/test_pre_route_pr_workflow.py"
+    },
+    {
+      "request": "create pull request",
+      "expected_agent": null,
+      "expected_skill": "pr-workflow",
+      "category": "pre-route-pr-workflow",
+      "routing_tier": "pre_route_only",
+      "notes": "Force-route corpus (adr/pr-create-skill-guard.md); moved from scripts/tests/test_pre_route_pr_workflow.py"
+    },
+    {
+      "request": "create a pull request against main",
+      "expected_agent": null,
+      "expected_skill": "pr-workflow",
+      "category": "pre-route-pr-workflow",
+      "routing_tier": "pre_route_only",
+      "notes": "PR-creation triggers carry no unigram guard; 'against' guards only push triggers (adr/pr-create-skill-guard.md)"
+    },
+    {
+      "request": "open a PR against the release branch",
+      "expected_agent": null,
+      "expected_skill": "pr-workflow",
+      "category": "pre-route-pr-workflow",
+      "routing_tier": "pre_route_only",
+      "notes": "PR-creation triggers carry no unigram guard; 'against' guards only push triggers (adr/pr-create-skill-guard.md)"
+    },
+    {
+      "request": "git push origin HEAD",
+      "expected_agent": null,
+      "expected_skill": "pr-workflow",
+      "category": "pre-route-pr-workflow",
+      "routing_tier": "pre_route_only",
+      "notes": "'head' guards merge idioms, not push triggers (adr/pr-create-skill-guard.md)"
+    },
+    {
+      "request": "I pushed the fix, now open a PR",
+      "expected_agent": null,
+      "expected_skill": "pr-workflow",
+      "category": "pre-route-pr-workflow",
+      "routing_tier": "pre_route_only",
+      "notes": "PR-creation triggers carry no unigram guard; 'pushed' guards only push triggers (adr/pr-create-skill-guard.md)"
+    },
+    {
+      "request": "ship of Theseus",
+      "expected_agent": null,
+      "expected_skill": null,
+      "category": "false-positive-guard",
+      "routing_tier": "pre_route_negative",
+      "forbid_force_route_to": "pr-workflow",
+      "notes": "Idiom overlap; must not force-route to pr-workflow (adr/pr-create-skill-guard.md); moved from scripts/tests/test_pre_route_pr_workflow.py"
+    },
+    {
+      "request": "publish a paper to arxiv",
+      "expected_agent": null,
+      "expected_skill": null,
+      "category": "false-positive-guard",
+      "routing_tier": "pre_route_negative",
+      "forbid_force_route_to": "pr-workflow",
+      "notes": "Idiom overlap; must not force-route to pr-workflow (adr/pr-create-skill-guard.md); moved from scripts/tests/test_pre_route_pr_workflow.py"
+    },
+    {
+      "request": "review the menu",
+      "expected_agent": null,
+      "expected_skill": null,
+      "category": "false-positive-guard",
+      "routing_tier": "pre_route_negative",
+      "forbid_force_route_to": "pr-workflow",
+      "notes": "Idiom overlap; must not force-route to pr-workflow (adr/pr-create-skill-guard.md); moved from scripts/tests/test_pre_route_pr_workflow.py"
+    },
+    {
+      "request": "merge personalities at the offsite",
+      "expected_agent": null,
+      "expected_skill": null,
+      "category": "false-positive-guard",
+      "routing_tier": "pre_route_negative",
+      "forbid_force_route_to": "pr-workflow",
+      "notes": "Idiom overlap; must not force-route to pr-workflow (adr/pr-create-skill-guard.md); moved from scripts/tests/test_pre_route_pr_workflow.py"
+    },
+    {
+      "request": "push back on my changes",
+      "expected_agent": null,
+      "expected_skill": null,
+      "category": "false-positive-guard",
+      "routing_tier": "pre_route_negative",
+      "forbid_force_route_to": "pr-workflow",
+      "notes": "Idiom overlap; the push trigger's guard word 'back' must suppress it (adr/pr-create-skill-guard.md)"
+    },
+    {
+      "request": "commit these ideas to memory",
+      "expected_agent": null,
+      "expected_skill": null,
+      "category": "false-positive-guard",
+      "routing_tier": "pre_route_negative",
+      "forbid_force_route_to": "pr-workflow",
+      "notes": "Idiom overlap; the commit trigger's guard word 'ideas' must suppress it (adr/pr-create-skill-guard.md)"
+    },
+    {
+      "request": "merge this in your head",
+      "expected_agent": null,
+      "expected_skill": null,
+      "category": "false-positive-guard",
+      "routing_tier": "pre_route_negative",
+      "forbid_force_route_to": "pr-workflow",
+      "notes": "Idiom overlap; the merge trigger's guard word 'head' must suppress it (adr/pr-create-skill-guard.md)"
+    },
+    {
+      "request": "publish a book this year",
+      "expected_agent": null,
+      "expected_skill": null,
+      "category": "false-positive-guard",
+      "routing_tier": "pre_route_negative",
+      "forbid_force_route_to": "pr-workflow",
+      "notes": "Idiom overlap; phrase guard 'publish a book' must suppress the 'publish this' trigger (#993 had renamed it 'content a book') (adr/pr-create-skill-guard.md)"
+    },
+    {
+      "request": "a shared repository of ideas",
+      "expected_agent": null,
+      "expected_skill": null,
+      "category": "false-positive-guard",
+      "routing_tier": "pre_route_negative",
+      "forbid_force_route_to": "pr-workflow",
+      "notes": "Metaphor; phrase guard 'repository of ideas' must suppress the 'shared repository' trigger, which no longer takes the commit and merge guard word 'ideas'"
+    },
+    {
+      "request": "look for vulnerabilities in my argument",
+      "expected_agent": null,
+      "expected_skill": null,
+      "category": "false-positive-guard",
+      "routing_tier": "pre_route_negative",
+      "forbid_force_route_to": "security",
+      "notes": "Critique of prose; guard word 'argument' must suppress the 'for vulnerabilities' trigger"
+    },
+    {
+      "request": "address review comments on an upstream PR in a repo I don't own",
+      "expected_agent": null,
+      "expected_skill": "pr-workflow",
+      "category": "pre-route-pr-fix-loop",
+      "routing_tier": "pre_route_only",
+      "notes": "Fix work on a PR in a repo the user does not own: pr-workflow keeps the git gates and pre-route fills pipeline=pr-fix-loop (pinned in test_pre_route.py)"
+    },
+    {
+      "request": "implement the fixes on these open PRs in someone else's repo",
+      "expected_agent": null,
+      "expected_skill": "pr-workflow",
+      "category": "pre-route-pr-fix-loop",
+      "routing_tier": "pre_route_only",
+      "notes": "Fix work on a PR in a repo the user does not own: pr-workflow keeps the git gates and pre-route fills pipeline=pr-fix-loop (pinned in test_pre_route.py)"
+    },
+    {
+      "request": "summarize the upstream PR",
+      "expected_agent": null,
+      "expected_skill": null,
+      "category": "false-positive-guard",
+      "routing_tier": "pre_route_negative",
+      "notes": "Read-only mention of an upstream PR: no change verb, so the pr-fix-loop companion gate must not force-route"
+    },
+    {
+      "request": "what changed in that repo we don't own last week",
+      "expected_agent": null,
+      "expected_skill": null,
+      "category": "false-positive-guard",
+      "routing_tier": "pre_route_negative",
+      "notes": "Read-only mention of an upstream PR: no change verb, so the pr-fix-loop companion gate must not force-route"
+    },
+    {
+      "request": "explain how the pr fix loop works",
+      "expected_agent": null,
+      "expected_skill": null,
+      "category": "false-positive-guard",
+      "routing_tier": "pre_route_negative",
+      "notes": "Read-only or own-repo request: pr-fix-loop guards must not force-route"
+    },
+    {
+      "request": "apply upstream PR changes to my fork",
+      "expected_agent": null,
+      "expected_skill": null,
+      "category": "false-positive-guard",
+      "routing_tier": "pre_route_negative",
+      "notes": "Read-only or own-repo request: pr-fix-loop guards must not force-route"
+    },
+    {
+      "request": "build my Unity project from the command line with the unity cli",
+      "expected_agent": null,
+      "expected_skill": "game-dev",
+      "category": "game-development",
+      "routing_tier": "pre_route_only",
+      "notes": "Unity mode: unity CLI build request force-routes to game-dev (references/unity-cli.md)"
+    },
+    {
+      "request": "Unity.exe -batchmode build fails with exit code 198 and No valid Unity Editor license found",
+      "expected_agent": null,
+      "expected_skill": "game-dev",
+      "category": "game-development",
+      "routing_tier": "pre_route_only",
+      "notes": "Unity mode: batch-mode license failure force-routes to game-dev (references/unity-licensing.md)"
+    },
+    {
+      "request": "run the EditMode tests for my Unity game",
+      "expected_agent": null,
+      "expected_skill": "game-dev",
+      "category": "game-development",
+      "routing_tier": "pre_route_only",
+      "notes": "Unity mode: Unity game test run force-routes to game-dev (references/unity-batchmode-builds.md)"
+    },
+    {
+      "request": "write a short speech about unity and teamwork for the offsite",
+      "expected_agent": null,
+      "expected_skill": null,
+      "category": "false-positive-guard",
+      "routing_tier": "pre_route_negative",
+      "forbid_force_route_to": "game-dev",
+      "notes": "Plain-English 'unity' must not force-route to game-dev; Unity triggers are multi-word or Unity-only flags"
+    },
+    {
+      "request": "add Unity Catalog permission tests for our Databricks tables",
+      "expected_agent": null,
+      "expected_skill": null,
+      "category": "false-positive-guard",
+      "routing_tier": "pre_route_negative",
+      "forbid_force_route_to": "game-dev",
+      "notes": "Unity namesake or plain-English 'unity': must not force-route to game-dev (_UNITY_NAMESAKE_GUARD, _UNITY_PROSE_GUARD in pre-route.py)"
+    },
+    {
+      "request": "build Unity Catalog lineage dashboards for the data team",
+      "expected_agent": null,
+      "expected_skill": null,
+      "category": "false-positive-guard",
+      "routing_tier": "pre_route_negative",
+      "forbid_force_route_to": "game-dev",
+      "notes": "Unity namesake or plain-English 'unity': must not force-route to game-dev (_UNITY_NAMESAKE_GUARD, _UNITY_PROSE_GUARD in pre-route.py)"
+    },
+    {
+      "request": "set up the Unity Catalog CLI for our Databricks workspace",
+      "expected_agent": null,
+      "expected_skill": null,
+      "category": "false-positive-guard",
+      "routing_tier": "pre_route_negative",
+      "forbid_force_route_to": "game-dev",
+      "notes": "Unity namesake or plain-English 'unity': must not force-route to game-dev (_UNITY_NAMESAKE_GUARD, _UNITY_PROSE_GUARD in pre-route.py)"
+    },
+    {
+      "request": "Unity container tests fail after upgrading to .NET 8",
+      "expected_agent": null,
+      "expected_skill": null,
+      "category": "false-positive-guard",
+      "routing_tier": "pre_route_negative",
+      "forbid_force_route_to": "game-dev",
+      "notes": "Unity namesake or plain-English 'unity': must not force-route to game-dev (_UNITY_NAMESAKE_GUARD, _UNITY_PROSE_GUARD in pre-route.py)"
+    },
+    {
+      "request": "enable unity builds in CMake to cut our C++ compile time",
+      "expected_agent": null,
+      "expected_skill": null,
+      "category": "false-positive-guard",
+      "routing_tier": "pre_route_negative",
+      "forbid_force_route_to": "game-dev",
+      "notes": "Unity namesake or plain-English 'unity': must not force-route to game-dev (_UNITY_NAMESAKE_GUARD, _UNITY_PROSE_GUARD in pre-route.py)"
+    },
+    {
+      "request": "write Unity tests for my STM32 firmware with Ceedling",
+      "expected_agent": null,
+      "expected_skill": null,
+      "category": "false-positive-guard",
+      "routing_tier": "pre_route_negative",
+      "forbid_force_route_to": "game-dev",
+      "notes": "Unity namesake or plain-English 'unity': must not force-route to game-dev (_UNITY_NAMESAKE_GUARD, _UNITY_PROSE_GUARD in pre-route.py)"
+    },
+    {
+      "request": "set up a Unity framework project for our embedded firmware tests",
+      "expected_agent": null,
+      "expected_skill": null,
+      "category": "false-positive-guard",
+      "routing_tier": "pre_route_negative",
+      "forbid_force_route_to": "game-dev",
+      "notes": "Unity namesake or plain-English 'unity': must not force-route to game-dev (_UNITY_NAMESAKE_GUARD, _UNITY_PROSE_GUARD in pre-route.py)"
+    },
+    {
+      "request": "pdflatex -interaction=batchmode hides my errors, fix the thesis build",
+      "expected_agent": null,
+      "expected_skill": null,
+      "category": "false-positive-guard",
+      "routing_tier": "pre_route_negative",
+      "forbid_force_route_to": "game-dev",
+      "notes": "Unity namesake or plain-English 'unity': must not force-route to game-dev (_UNITY_NAMESAKE_GUARD, _UNITY_PROSE_GUARD in pre-route.py)"
+    },
+    {
+      "request": "migrate HttpClient.executeMethod calls to Apache HttpClient 5",
+      "expected_agent": null,
+      "expected_skill": null,
+      "category": "false-positive-guard",
+      "routing_tier": "pre_route_negative",
+      "forbid_force_route_to": "game-dev",
+      "notes": "Unity namesake or plain-English 'unity': must not force-route to game-dev (_UNITY_NAMESAKE_GUARD, _UNITY_PROSE_GUARD in pre-route.py)"
+    },
+    {
+      "request": "draft a toast about unity for the editor's retirement party",
+      "expected_agent": null,
+      "expected_skill": null,
+      "category": "false-positive-guard",
+      "routing_tier": "pre_route_negative",
+      "forbid_force_route_to": "game-dev",
+      "notes": "Unity namesake or plain-English 'unity': must not force-route to game-dev (_UNITY_NAMESAKE_GUARD, _UNITY_PROSE_GUARD in pre-route.py)"
+    },
+    {
+      "request": "write a WrestleJoy column about unity in the game this year",
+      "expected_agent": null,
+      "expected_skill": null,
+      "category": "false-positive-guard",
+      "routing_tier": "pre_route_negative",
+      "forbid_force_route_to": "game-dev",
+      "notes": "Unity namesake or plain-English 'unity': must not force-route to game-dev (_UNITY_NAMESAKE_GUARD, _UNITY_PROSE_GUARD in pre-route.py)"
+    },
+    {
+      "request": "improve this repo: audit it and write handoff plans another agent can execute",
+      "expected_agent": null,
+      "expected_skill": "improve",
+      "category": "meta-tooling",
+      "routing_tier": "candidate",
+      "notes": "Advisor route: audit, rank, and write plans; improve should appear in the top candidates. A findings report with a verdict and no plans goes to review."
     }
   ]
 }

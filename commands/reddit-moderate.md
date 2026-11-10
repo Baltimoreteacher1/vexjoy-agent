@@ -1,7 +1,7 @@
 ---
 description: "Reddit moderation: fetch modqueue, classify content, take mod actions"
 argument-hint: "[--auto] [--dry-run]"
-allowed-tools: ["Read", "Bash"]
+allowed-tools: ["Read", "Bash", "Skill"]
 ---
 
 # /reddit-moderate
@@ -23,9 +23,9 @@ subreddit rules, and recommends actions for your approval.
 /loop 10m /reddit-moderate --auto
 ```
 
-When invoked, load and follow the skill at `skills/reddit-moderate/SKILL.md`.
+Call the Skill tool with `content`. Run its Social-Reddit mode.
 
 Parse the argument:
-- No argument → run interactive mode (Phase 1-5)
+- No argument → run interactive mode (fetch, classify, present, confirm, act)
 - "--auto" → run auto mode
 - "--dry-run" → run dry-run mode

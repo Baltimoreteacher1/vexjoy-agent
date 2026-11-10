@@ -1,0 +1,31 @@
+{
+    "schema_version": 1,
+    "description": "Indexed skills intentionally outside the deterministic routing benchmark. Add a corpus case when an exclusion gains a stable, testable routing contract.",
+    "exclusions": {
+        "architecture-deepening": "Architecture judgment route; no stable deterministic trigger contract.",
+        "auto-dream": "Scheduled lifecycle component, not a direct user-intent route.",
+        "building-with-jev": "Build-procedure skill loaded when writing a Jev program; no stable deterministic trigger contract.",
+        "business-ops": "Broad umbrella skill; benchmark it through its narrower business skills rather than one trigger.",
+        "cli-design": "Semantic design route; no stable deterministic trigger contract.",
+        "comment-quality": "Semantic code-quality route; no stable deterministic trigger contract.",
+        "condense": "Editorial judgment route; no stable deterministic trigger contract.",
+        "d": "Meta-router that classifies via Jev API, not a routing target.",
+        "do": "The router itself, not a routing target. /do is the entry point that selects agents and skills; it is never the result of a routing decision.",
+        "image-gen": "Image-generation route depends on visual task context and available provider.",
+        "integration-checker": "Integration-review route requires changed-component scope.",
+        "jev-design": "Design-planning companion selected by frontend workflow state, not a standalone deterministic route.",
+        "joy-check": "Editorial judgment companion selected by content workflow state.",
+        "kubernetes": "Infrastructure route requires cluster and deployment context.",
+        "markdown-converter": "Conversion route depends on supplied input format and tooling context.",
+        "plant-seed": "Lifecycle companion selected by deferred-work context, not direct user intent.",
+        "video-editing": "Media route requires source assets and desired output context.",
+        "workflow-help": "Help component is selected by workflow-discovery state, not a stable trigger.",
+        "assessment": "Umbrella evaluation skill; routing depends on project and artifact context.",
+        "data": "Umbrella data-analysis skill; routing depends on dataset and analysis context.",
+        "debugging": "Umbrella debugging skill; routing depends on error and investigation context.",
+        "domain": "Umbrella domain skill; routing depends on domain-specific context.",
+        "github": "Umbrella GitHub integration skill; routing depends on repository and notification context.",
+        "grill-jev": "Artifact interrogation is invoked explicitly or after a structured plan; it has no stable single-query routing benchmark contract.",
+        "accounts": "Multi-account management skill invoked by explicit setup intent; trigger phrases are too broad for a stable single-query benchmark contract."
+    }
+}

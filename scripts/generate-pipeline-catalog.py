@@ -27,6 +27,17 @@ from pathlib import Path
 
 import yaml
 
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from scripts.lib.frontmatter import extract_frontmatter_block
+
+# auto-pipeline consumes this catalog in its Phase 0 DEDUP CHECK to decide
+# whether an existing pipeline already covers the request. Its own doc lives in
+# the scanned directory, so a plain glob lists it as a candidate match for
+# itself: a request that reaches auto-pipeline matches auto-pipeline, and the
+# HARD BLOCK routes it straight back. Exclude it at the source.
+SELF_EXCLUDED = frozenset({"auto-pipeline"})
+
 
 def extract_frontmatter(content: str) -> dict | None:
     """Extract YAML frontmatter from markdown content.
@@ -40,11 +51,9 @@ def extract_frontmatter(content: str) -> dict | None:
     Returns:
         Parsed frontmatter dict, or None if no frontmatter found.
     """
-    match = re.match(r"^---\n(.*?)\n---", content, re.DOTALL)
-    if not match:
+    yaml_content = extract_frontmatter_block(content)
+    if yaml_content is None:
         return None
-
-    yaml_content = match.group(1)
 
     try:
         result = yaml.safe_load(yaml_content)
@@ -273,6 +282,9 @@ def scan_pipelines(references_dir: Path) -> tuple[list[dict], list[str]]:
             continue
 
         name = frontmatter.get("name", skill_file.stem)
+        if name in SELF_EXCLUDED:
+            continue
+
         description = frontmatter.get("description", "")
         description_line = extract_description_first_line(description)
 
@@ -368,7 +380,7 @@ def main(argv: list[str] | None = None) -> int:
 
     script_dir = Path(__file__).parent
     repo_root = script_dir.parent
-    references_dir = repo_root / "skills" / "workflow" / "references"
+    references_dir = repo_root / "skills" / "process" / "workflow" / "references"
 
     if not references_dir.exists():
         print(f"Error: workflow references directory not found at {references_dir}", file=sys.stderr)

@@ -22,7 +22,7 @@ Group components by creator, dispatch one sub-agent per type in parallel.
 
 ```
 Orchestrator
-  ├── skill-creator (all new agents + skills)    ← parallel
+  ├── toolkit (all new agents + skills)    ← parallel
   ├── hook-development-engineer (all hooks)       ← parallel
   └── Direct (Python scripts)                     ← parallel
 
@@ -51,11 +51,11 @@ Agent(
   {relationships}
 
   ### Template Reference
-  Follow skills/meta/skill-creator/references/agent-template.md for agents. Standard frontmatter + operator context for skills.
+  Follow skills/meta/toolkit/references/skill-creator/agent-template.md for agents. Standard frontmatter + operator context for skills.
 
   ### Architecture Rules
-  See skills/workflow/references/architecture-rules.md.
-  Critical: Rule 12 (parallel research), Rule 18 (ADR hash), ADR-063 (tool restrictions).
+  See skills/process/workflow/references/pipeline-scaffolder/references/architecture-rules.md.
+  Critical: Rule 12 (parallel research), Rule 18 (ADR hash), role-matched allowed-tools (advisory; Claude Code ignores it for agents).
   """
 )
 ```
@@ -88,7 +88,7 @@ done
 
 ```bash
 adr_context=$(python3 ~/.claude/scripts/adr-query.py context \
-  --adr adr/{pipeline-name}.md --role skill-creator)
+  --adr adr/{pipeline-name}.md --role toolkit)
 ```
 
 Manual injection only needed when sub-agent needs full role-targeted ADR context beyond session-level auto-injection.
@@ -130,9 +130,9 @@ Single skill/agent with one clear purpose?
 |-------|------------|-----|
 | `Agent tool: unknown subagent_type` | New agent not available until session restart | Restart Claude Code |
 | Hook import fails | Syntax error or wrong path | `python3 -m py_compile hooks/X.py` |
-| `routing-table-updater: no triggers` | Missing `routing.triggers` in frontmatter | Add triggers to frontmatter |
+| `toolkit: no triggers` | Missing `routing.triggers` in frontmatter | Add triggers to frontmatter |
 | Orphaned component | Wrong output path | Check actual vs expected path; rename |
-| `validate-chain: unknown step type` | Step not in step-menu.md | `python3 scripts/artifact-utils.py list-steps` |
+| `validate-chain: unknown step type` | Step not in step-menu.md | Pick a step from `skills/process/workflow/references/pipeline-scaffolder/references/step-menu.md` |
 
 ---
 
@@ -140,7 +140,7 @@ Single skill/agent with one clear purpose?
 
 ```bash
 # Verify components created after Phase 3
-for f in agents/{name}.md skills/{name}/SKILL.md hooks/{name}*.py; do
+for f in agents/{name}.md skills/*/{name}/SKILL.md hooks/{name}*.py; do
   [[ -f "$f" ]] && echo "OK: $f" || echo "MISSING: $f"
 done
 
@@ -158,7 +158,7 @@ ls -la .adr-session.json 2>/dev/null || echo "ADR session not registered"
 ## Phase 4 — Integration Verification Checklist
 
 - All agents in `agents/INDEX.json`
-- Routing entries match triggers in `skills/meta/do/SKILL.md` and `skills/meta/do/references/routing-tables.md`
+- Each new component's frontmatter triggers appear in the regenerated `skills/INDEX.json` or `agents/INDEX.json` (`python3 scripts/check-routing-drift.py` checks skills)
 - All hooks syntactically valid Python
 - All skills follow frontmatter + operator context pattern
 - No orphaned components
@@ -169,7 +169,7 @@ ls -la .adr-session.json 2>/dev/null || echo "ADR session not registered"
 
 | Creator | Components | Template |
 |---------|-----------|----------|
-| `skill-creator` | Agent manifests + skill SKILL.md + references | `skills/meta/skill-creator/references/agent-template.md` / standard skill format |
+| `toolkit` | Agent manifests + skill SKILL.md + references | `skills/meta/toolkit/references/skill-creator/agent-template.md` / standard skill format |
 | `hook-development-engineer` | Python hooks | `hooks/lib/hook_utils.py` conventions |
 | Direct (orchestrator) | Python scripts | `scripts/` conventions |
 
@@ -208,7 +208,7 @@ PROPOSED | ACCEPTED | IMPLEMENTED | DEPRECATED
 
 ## Capabilities Summary
 
-**CAN Do**: Orchestrate complete pipelines; plan component graphs; fan out to skill-creator and hook-development-engineer in parallel; detect/reuse existing components; integrate into /do routing; research domains for subdomains; compose valid chains; validate chain compatibility.
+**CAN Do**: Orchestrate complete pipelines; plan component graphs; fan out to toolkit and hook-development-engineer in parallel; detect/reuse existing components; integrate into /do routing; research domains for subdomains; compose valid chains; validate chain compatibility.
 
 **CANNOT Do**: Write domain business logic; modify existing pipelines directly; create pipelines without routing integration; compose chains without validation; create monolithic single-skill for multi-subdomain domains.
 
@@ -239,6 +239,6 @@ The agent will be available immediately after restart.
 ## See Also
 
 - `preferred-patterns.md` — pipeline creation mistakes
-- `skills/workflow/references/step-menu.md` — valid steps and type signatures
-- `skills/workflow/references/architecture-rules.md` — architecture rules
+- `skills/process/workflow/references/pipeline-scaffolder/references/step-menu.md` — valid steps and type signatures
+- `skills/process/workflow/references/pipeline-scaffolder/references/architecture-rules.md` — architecture rules
 - `scripts/artifact-utils.py` — discovery, chain validation

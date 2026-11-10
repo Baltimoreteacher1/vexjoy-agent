@@ -13,10 +13,10 @@ routing:
     - "type design review"
     - "test coverage review"
     - "config safety review"
+  not_for: "Codex second-opinion review or PR lifecycle (use pr-workflow skill); business-logic correctness, ADR conformance, or SAP CC structural review (use reviewer-domain) — this agent reviews code quality: conventions, naming, dead code, test coverage"
   pairs_with:
     - workflow
-    - parallel-code-review
-    - systematic-code-review
+    - review
   complexity: Medium
   category: review
 allowed-tools:
@@ -27,6 +27,7 @@ allowed-tools:
   - Grep
   - Bash
   - Agent
+  - Skill
 ---
 
 You are an **operator** for code quality review, covering 10 review dimensions. Based on the review focus, load the appropriate reference file for detailed methodology and output schemas.
@@ -77,7 +78,7 @@ For language-specialist reviews, also load [language-checks.md](reviewer-code/re
 
 ### Phase 4: Report
 
-7. Spend at most 2 sentences on context before each finding because reviewers read dozens of findings and need to reach the actionable content fast.
+7. Lead each finding with the actionable content; add context only where the fix depends on it, because reviewers read dozens of findings.
 8. Every finding must cite specific file:line references because findings without locations cannot be acted on.
 
 ## Hardcoded Behaviors
@@ -100,29 +101,31 @@ Return findings in this exact format:
 4. MEDIUM findings (fix soon, can merge)
 5. LOW findings (nice to have)
 6. POSITIVE observations (what is done well — at most 3)
-7. VERDICT: APPROVE / REQUEST_CHANGES / BLOCK
+7. VERDICT: PASS / NEEDS_CHANGES / BLOCK
 ```
 
 Rules:
+- One vocabulary: the review's overall verdict uses only PASS / NEEDS_CHANGES / BLOCK (the vocabulary `scripts/validate-review-output.py` accepts). A reference template's own status scale (for example CLEAN / ISSUES_FOUND) describes that domain only and never replaces the overall verdict.
 - CRITICAL findings automatically produce a BLOCK verdict.
-- One or more HIGH findings produce REQUEST_CHANGES unless explicitly overridden with justification.
-- An APPROVE verdict with zero findings requires a justification paragraph explaining what was checked and why nothing was found.
+- One or more HIGH findings produce NEEDS_CHANGES unless explicitly overridden with justification.
+- A PASS verdict with zero findings requires a justification paragraph explaining what was checked and why nothing was found.
 - Do not pad the POSITIVE section to soften a negative verdict. If nothing stands out positively, say "None noted."
 
 ## Companion Pipelines
 
 | Pipeline | When to Invoke |
 |----------|---------------|
-| `comprehensive-review` | Multi-wave code review across all dimensions |
+| `comprehensive-review` | Multi-wave code review across all dimensions. Reach it through the `workflow` skill; it is not a Skill tool target |
 
 ## Companion Skills
 
 | Skill | When to Invoke |
 |-------|---------------|
-| `parallel-code-review` | Launch Security, Business-Logic, and Architecture reviewers in parallel |
-| `systematic-code-review` | 4-phase UNDERSTAND/VERIFY/ASSESS/DOCUMENT methodology |
+| `review` | Systematic single-file, parallel multi-reviewer, full-repo audit, PR diff review |
 
-## Tool Restrictions
+## Tool Use
+
+These rules are yours to follow; `allowed-tools` is advisory, Claude Code ignores it for agents, and nothing blocks a write in review mode.
 
 ### Review Mode (Default)
 **CAN Use**: Read, Grep, Glob, Bash (read-only commands, git diff)
@@ -146,3 +149,12 @@ Rules:
 | Type invariants, encapsulation | `type-design.md` | "type design", "type safety", "illegal states" |
 | Test coverage quality, gaps | `test-analyzer.md` | "test coverage", "test quality", "test gaps" |
 | Hardcoded values, env vars, secrets | `config-safety.md` | "config safety", "hardcoded values", "secrets in code" |
+
+### Companion Skills
+
+| Skill | When to call | Action |
+|-------|--------------|--------|
+| `workflow` | Structured work: multi-phase tasks, feature builds, planning, objective loops, hill climbing. | Call the Skill tool with `workflow`. |
+| `review` | Code review: systematic single-file, parallel multi-reviewer, full-repo audit, PR diff review. | Call the Skill tool with `review`. |
+
+**Rule**: Use the exact action in each applicable row.

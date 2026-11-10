@@ -3,7 +3,8 @@
 The aggregate routing rows in learning.db are keyed `(topic, key)` — they carry
 no per-dispatch history, so faithful offline replay of "request → route →
 outcome" is impossible from them alone. This module adds that history: one JSONL
-line per event, append-only, at `<CLAUDE_LEARNING_DIR>/route-events.jsonl`.
+line per event, append-only, at `<CLAUDE_LEARNING_DIR>/route-events.jsonl`,
+created owner-only (0600) because request snippets come from user prompts.
 
 Two producers:
   - routing-decision-recorder.py (PostToolUse:Agent) appends a DECISION event
@@ -24,9 +25,12 @@ read-modify-write, so there is no lost-update race to serialize.
 
 import json
 import os
+import sys
 import time
 from pathlib import Path
 from typing import Any
+
+from hook_utils import ensure_owner_only_dir, open_owner_only_append
 
 _DEFAULT_DIR = Path.home() / ".claude" / "learning"
 _EVENTS_FILENAME = "route-events.jsonl"
@@ -43,16 +47,22 @@ def _events_path() -> Path:
     return base / _EVENTS_FILENAME
 
 
+def events_path() -> Path:
+    """Public accessor for the route-events.jsonl path (e.g. CLI backfill)."""
+    return _events_path()
+
+
 def _append(event: dict[str, Any]) -> None:
     """Append one JSON line. Best-effort: swallow every error (never break a hook)."""
     try:
         path = _events_path()
-        path.parent.mkdir(parents=True, exist_ok=True)
+        ensure_owner_only_dir(path.parent)
         line = json.dumps(event, separators=(",", ":"), ensure_ascii=False)
-        with open(path, "a", encoding="utf-8") as f:
+        with open_owner_only_append(path) as f:
             f.write(line + "\n")
-    except Exception:
-        pass
+    except Exception as e:
+        if os.environ.get("CLAUDE_HOOKS_DEBUG"):
+            print(f"[route-events] append failed: {type(e).__name__}: {e}", file=sys.stderr)
 
 
 def record_decision_event(
@@ -62,6 +72,10 @@ def record_decision_event(
     agent: str,
     skill: str,
     complexity: str = "",
+    complexity_invalid: str = "",
+    stack: list[str] | None = None,
+    pipeline: str | None = None,
+    model: str | None = None,
     health_at_decision: float | None = None,
     n: int | None = None,
     failure: int | None = None,
@@ -85,24 +99,38 @@ def record_decision_event(
     marker carried no `health=` token (state c, legacy/missing wiring). This
     distinguishes "no-row, but instrumented" from "never instrumented" — null
     health_at_decision alone cannot. Additive field; old readers ignore it.
+
+    complexity is the NORMALIZED enum value (trivial/simple/medium/complex) or
+    "". complexity_invalid carries a raw marker value that failed validation
+    (e.g. "Low") — written only when non-empty, so the bad value is kept for
+    audit instead of dropped. stack is the parsed ` stack={s1,s2}` marker token;
+    written only when present, so stack-free markers write unchanged events.
+    pipeline is the parsed ` pipeline=<name>` token, written on the same terms.
     """
-    _append(
-        {
-            "type": "decision",
-            "ts": time.time(),
-            "session": session or "",
-            "request_snippet": (request_snippet or "")[:200],
-            "agent": agent or "",
-            "skill": skill or "",
-            "complexity": complexity or "",
-            "health_at_decision": health_at_decision,
-            "n": n,
-            "failure": failure,
-            "action": action,
-            "alternates": alternates,
-            "gate_inputs_present": gate_inputs_present,
-        }
-    )
+    event: dict[str, Any] = {
+        "type": "decision",
+        "ts": time.time(),
+        "session": session or "",
+        "request_snippet": (request_snippet or "")[:200],
+        "agent": agent or "",
+        "skill": skill or "",
+        "complexity": complexity or "",
+        "health_at_decision": health_at_decision,
+        "n": n,
+        "failure": failure,
+        "action": action,
+        "alternates": alternates,
+        "gate_inputs_present": gate_inputs_present,
+    }
+    if complexity_invalid:
+        event["complexity_invalid"] = complexity_invalid
+    if stack is not None:
+        event["stack"] = stack
+    if pipeline is not None:
+        event["pipeline"] = pipeline
+    if model is not None:
+        event["model"] = model
+    _append(event)
 
 
 def record_outcome_event(
@@ -113,7 +141,8 @@ def record_outcome_event(
     reason: str | None = None,
     routing_relevant: bool | None = None,
 ) -> None:
-    """Append a per-dispatch OUTCOME event (outcome in {success, failure, neutral}).
+    """Append a per-dispatch OUTCOME event (outcome in {success, failure,
+    neutral, weak_success}).
 
     ``reason`` is the short cause for the outcome (e.g. tool-errors, rejection,
     acceptance, neutral-new-topic). Free of prompt text/secrets. Included only

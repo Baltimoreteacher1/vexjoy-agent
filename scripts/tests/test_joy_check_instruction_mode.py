@@ -4,10 +4,9 @@ Two scopes:
 1. Golden fixture tests -- small .md snippets that exercise each of the 7
    primary patterns from skills/code-quality/joy-check/references/
    instruction-rubric.md, plus contextual exceptions that must pass.
-2. Fleet scan -- parametrized test across all agents/*.md and
-   skills/**/SKILL.md.  Known violations in voice-corpus files are covered
-   by the allowlist in validate_positive_instruction_docs.py; any new
-   violation in the fleet causes an explicit failure.
+2. Fleet gate -- the fleet scan over agents/*.md and skills/**/SKILL.md
+   lives in `validate_positive_instruction_docs.py --fleet` (a CI step);
+   these tests prove that mode fails on a bad fixture.
 
 Run with:
     python3 -m pytest scripts/tests/test_joy_check_instruction_mode.py -v
@@ -38,7 +37,6 @@ sys.modules["validate_positive_instruction_docs"] = _mod
 _spec.loader.exec_module(_mod)  # type: ignore[attr-defined]
 
 scan_file = _mod.scan_file
-should_skip = _mod.should_skip
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -49,8 +47,6 @@ def _write(tmp_path: Path, content: str, name: str = "sample.md") -> Path:
     """Write content to a temp file and return its path."""
     p = tmp_path / name
     p.write_text(content, encoding="utf-8")
-    # Override REPO_ROOT so relative-path logic works from tmp_path
-    _mod.REPO_ROOT = tmp_path
     return p
 
 
@@ -66,8 +62,8 @@ class TestPrimaryPatterns:
         """Heading containing 'Anti-Pattern' is flagged."""
         p = _write(tmp_path, "## Anti-Patterns\n\nSome description.\n")
         violations = scan_file(p)
-        assert any(v.pattern == "Anti-Pattern" for v in violations), (
-            f"Expected Anti-Pattern violation, got: {violations}"
+        assert [v.pattern for v in violations] == ["Anti-Pattern"], (
+            f"Expected exactly one Anti-Pattern violation, got: {violations}"
         )
 
     def test_forbidden_caps_fails(self, tmp_path: Path) -> None:
@@ -184,63 +180,30 @@ class TestContextualExceptions:
 
 
 # ---------------------------------------------------------------------------
-# Positive rewrite examples -- positive framing must not be flagged
+# Fleet gate -- the CI step runs `validate_positive_instruction_docs.py --fleet`
 # ---------------------------------------------------------------------------
 
 
-class TestPositiveRewrites:
-    """Positive rewrites from the rubric must produce zero violations."""
+class TestFleetGate:
+    """--fleet scans agents/*.md and skills/**/SKILL.md and fails on any violation."""
 
-    def test_route_to_agents_positive(self, tmp_path: Path) -> None:
-        p = _write(tmp_path, "Route all code modifications to domain agents.\n")
-        assert scan_file(p) == []
+    @staticmethod
+    def _fleet(tmp_path: Path, skill_body: str) -> Path:
+        (tmp_path / "agents").mkdir()
+        (tmp_path / "agents" / "demo.md").write_text("# Demo\n\nRoute work to agents.\n", encoding="utf-8")
+        skill = tmp_path / "skills" / "cat" / "demo" / "SKILL.md"
+        skill.parent.mkdir(parents=True)
+        skill.write_text(skill_body, encoding="utf-8")
+        # Reference docs are outside the fleet; a violation there must not fail --fleet.
+        (skill.parent / "references").mkdir()
+        (skill.parent / "references" / "notes.md").write_text("NEVER do this.\n", encoding="utf-8")
+        return tmp_path
 
-    def test_feature_branch_positive(self, tmp_path: Path) -> None:
-        p = _write(tmp_path, "Create feature branches for all commits.\n")
-        assert scan_file(p) == []
+    def test_fleet_catches_bad_skill(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+        root = self._fleet(tmp_path, "# Demo\n\nDo NOT skip tests.\n")
+        assert _mod.main(["--fleet", "--root", str(root)]) == 1
+        assert "skills/cat/demo/SKILL.md:3 [do NOT]" in capsys.readouterr().out
 
-    def test_preferred_heading_positive(self, tmp_path: Path) -> None:
-        p = _write(tmp_path, "## Preferred Patterns\n\nUse this approach.\n")
-        assert scan_file(p) == []
-
-    def test_hard_gate_heading_positive(self, tmp_path: Path) -> None:
-        p = _write(tmp_path, "### Hard Gate Patterns\n\nEnforced by hooks.\n")
-        assert scan_file(p) == []
-
-
-# ---------------------------------------------------------------------------
-# Fleet scan -- parametrized across agents/*.md and skills/**/SKILL.md
-# ---------------------------------------------------------------------------
-
-_AGENT_FILES = sorted(_REPO_ROOT.glob("agents/*.md"))
-_SKILL_FILES = sorted(_REPO_ROOT.glob("skills/**/SKILL.md"))
-_FLEET = _AGENT_FILES + _SKILL_FILES
-
-# Build fleet parameter list, skipping allowlisted files.
-# Use a sentinel so pytest reports "skipped (allowlisted)" rather than collecting 0 params.
-_fleet_params = []
-for _f in _FLEET:
-    _rel = str(_f.relative_to(_REPO_ROOT))
-    if should_skip(_f):
-        _fleet_params.append(pytest.param(_f, marks=pytest.mark.skip(reason=f"allowlisted: {_rel}")))
-    else:
-        _fleet_params.append(pytest.param(_f, id=_rel))
-
-
-@pytest.mark.parametrize("md_file", _fleet_params)
-def test_fleet_joy_check(md_file: Path) -> None:
-    """Every non-allowlisted agent and skill must pass instruction-mode joy check.
-
-    Failure means the file contains a primary negative-framing pattern that
-    should be rewritten to positive framing per instruction-rubric.md.
-    Run `python3 scripts/validate_positive_instruction_docs.py` for the full
-    violation list with line numbers.
-    """
-    _mod.REPO_ROOT = _REPO_ROOT
-    violations = scan_file(md_file)
-    rel = str(md_file.relative_to(_REPO_ROOT))
-    assert violations == [], (
-        f"Joy-check failure in {rel}: {len(violations)} violation(s).\n"
-        + "\n".join(f"  L{v.line} [{v.pattern}] {v.text}" for v in violations[:10])
-        + ("\n  ..." if len(violations) > 10 else "")
-    )
+    def test_fleet_passes_clean_fleet(self, tmp_path: Path) -> None:
+        root = self._fleet(tmp_path, "# Demo\n\nRun the tests.\n")
+        assert _mod.main(["--fleet", "--root", str(root)]) == 0

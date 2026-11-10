@@ -23,8 +23,8 @@ routing:
     - update routing      # secondary trigger phrase
     - ADR management      # domain-specific trigger
   pairs_with:
-    - adr-consultation    # agents commonly invoked together
-    - routing-table-updater
+    - assessment    # agents commonly invoked together
+    - toolkit
   complexity: Medium
   category: meta
 ```
@@ -69,10 +69,10 @@ ls agents/toolkit-governance-engineer.md
 ls agents/toolkit-governance-engineer/
 
 # Verify skill exists
-ls skills/meta/routing-table-updater/SKILL.md
+ls skills/meta/toolkit/SKILL.md
 
 # Verify all pairs_with entries exist
-for name in adr-consultation routing-table-updater docs-sync-checker; do
+for name in assessment toolkit docs-sync-checker; do
   ls agents/${name}.md 2>/dev/null || ls skills/${name}/SKILL.md 2>/dev/null || echo "MISSING: ${name}"
 done
 ```
@@ -135,7 +135,7 @@ for f in glob.glob('agents/*.md'):
         fm = yaml.safe_load(txt.split('---')[1])
         pairs = fm.get('routing', {}).get('pairs_with', [])
         for p in pairs:
-            if not os.path.exists(f'agents/{p}.md') and not os.path.exists(f'skills/{p}/SKILL.md'):
+            if not os.path.exists(f'agents/{p}.md') and not glob.glob(f'skills/*/{p}/SKILL.md'):
                 print(f'PHANTOM: {f} -> pairs_with: {p}')
     except: pass
 "
@@ -156,7 +156,7 @@ routing:
 
 **Preferred action:**
 
-Before committing a routing change, run `ls agents/{name}.md 2>/dev/null || ls skills/{name}/SKILL.md 2>/dev/null || echo "MISSING"` for every component in `pairs_with`. Update stale names to their current filenames, or remove entries for components that no longer exist.
+Before committing a routing change, run `ls agents/{name}.md 2>/dev/null || ls skills/*/{name}/SKILL.md 2>/dev/null || echo "MISSING"` for every component in `pairs_with`. Update stale names to their current filenames, or remove entries for components that no longer exist.
 
 **Preferred action**: Run the detection script above. For each phantom entry, either update to the current component name or remove the entry.
 
@@ -187,7 +187,7 @@ for t, files in triggers.items():
 
 **Signal**:
 ```
-CONFLICT: "update routing" claimed by: agents/toolkit-governance-engineer.md, agents/routing-table-updater.md
+CONFLICT: "update routing" claimed by: agents/toolkit-governance-engineer.md, agents/toolkit.md
 ```
 
 **Why this matters**: The router cannot deterministically select between two agents claiming the same trigger. Resolution depends on ordering or scoring, which is non-obvious and changes silently when the index regenerates.
@@ -205,7 +205,7 @@ Run the duplicate trigger detection script before adding any new trigger phrase.
 **Detection**:
 ```bash
 # Count registered agents vs filesystem agents
-registered=$(python3 -c "import json; d=json.load(open('agents/INDEX.json')); print(len(d.get('agents', [])))" 2>/dev/null)
+registered=$(python3 -c "import json; d=json.load(open('agents/INDEX.json')); print(len(d.get('agents', {})))" 2>/dev/null)
 on_disk=$(ls agents/*.md | grep -v README | wc -l)
 echo "Registered: $registered, On disk: $on_disk"
 
@@ -213,7 +213,7 @@ echo "Registered: $registered, On disk: $on_disk"
 python3 -c "
 import json, glob, os
 idx = json.load(open('agents/INDEX.json'))
-registered = {a['name'] for a in idx.get('agents', [])}
+registered = set(idx.get('agents', {}))  # 'agents' is a dict keyed by agent name
 for f in glob.glob('agents/*.md'):
     name = os.path.basename(f).replace('.md','')
     if name not in registered and name != 'README':
@@ -285,7 +285,7 @@ for f in glob.glob('agents/*.md'):
     try:
         fm = yaml.safe_load(txt.split('---')[1])
         for p in fm.get('routing', {}).get('pairs_with', []):
-            if not os.path.exists(f'agents/{p}.md') and not os.path.exists(f'skills/{p}/SKILL.md'):
+            if not os.path.exists(f'agents/{p}.md') and not glob.glob(f'skills/*/{p}/SKILL.md'):
                 print(f'PHANTOM: {f} -> {p}')
     except: pass
 "
@@ -311,7 +311,7 @@ for t, files in triggers.items():
 python3 -c "
 import json, glob, os
 idx = json.load(open('agents/INDEX.json'))
-registered = {a['name'] for a in idx.get('agents', [])}
+registered = set(idx.get('agents', {}))  # 'agents' is a dict keyed by agent name
 for f in glob.glob('agents/*.md'):
     name = os.path.basename(f).replace('.md','')
     if name not in registered and name != 'README': print(f'UNREGISTERED: {name}')
@@ -322,6 +322,6 @@ for f in glob.glob('agents/*.md'):
 
 ## See Also
 
-- `frontmatter-compliance.md` — required fields, tool restrictions, YAML parse error fixes
+- `frontmatter-compliance.md` — required fields, advisory tool lists, YAML parse error fixes
 - `agents/INDEX.json` — coverage index; source of truth for registered components
 - `docs/PHILOSOPHY.md` — specialist selection and deterministic execution principles

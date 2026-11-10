@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
-# hook-version: 1.0.0
+# hook-version: 1.1.0
 """
 PostToolUse Hook: Post-Rename Reference Sweep
 
 After a `git mv` command, scans .py/.json/.md/.yaml files for stale
-references to the old filename stem and prints a warning listing them.
+references to the old filename stem and warns with a list of them. The
+warning goes out as hookSpecificOutput.additionalContext: plain PostToolUse
+stdout only shows in the transcript view (ctrl+o), so the model never saw it.
 
 Design Principles:
 - SILENT by default (only speaks when stale references are found)
@@ -14,6 +16,25 @@ Design Principles:
 ADR: adr/129-post-rename-reference-sweep.md
 """
 
+import sys  # vexjoy-pyguard
+
+if sys.version_info < (3, 10):  # vexjoy-pyguard advisory
+    import os
+
+    if not os.environ.get("VEXJOY_PYGUARD_REEXEC"):
+        os.environ["VEXJOY_PYGUARD_REEXEC"] = "1"
+        for _d in [*os.environ.get("PATH", "").split(os.pathsep), "/opt/homebrew/bin", "/usr/local/bin", "/usr/bin"]:
+            for _v in ("14", "13", "12", "11", "10"):
+                _p = os.path.join(_d, "python3." + _v)
+                if _d and "/shims" not in _d and os.access(_p, os.X_OK):
+                    os.execv(_p, [_p, *sys.argv])
+    sys.stderr.write(
+        "[vexjoy] hook %s needs Python 3.10+, got %s (%s); run ./install.sh in vexjoy-agent from a terminal"
+        " outside Claude Code (gated tool calls stay blocked until then)\n"
+        % (__file__.rsplit("/", 1)[-1], sys.version.split()[0], sys.executable)
+    )
+    sys.exit(0)
+
 import json
 import os
 import re
@@ -22,7 +43,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent / "lib"))
-from hook_utils import get_tool_result, is_tool_error
+from hook_utils import context_output, get_tool_input, get_tool_result, hook_error, is_tool_error
 from stdin_timeout import read_stdin
 
 
@@ -87,7 +108,15 @@ def grep_for_stem(stem: str, search_root: str) -> list:
         return []
 
 
+_BYPASS_ENV = "POSTTOOL_RENAME_SWEEP_BYPASS"
+
+
 def main():
+    if os.environ.get(_BYPASS_ENV) == "1":
+        if os.environ.get("CLAUDE_HOOKS_DEBUG"):
+            print("[posttool-rename-sweep] Bypassed via POSTTOOL_RENAME_SWEEP_BYPASS=1", file=sys.stderr)
+        sys.exit(0)
+
     try:
         raw = read_stdin(timeout=5)
         if not raw:
@@ -107,7 +136,7 @@ def main():
         if is_tool_error(tool_result):
             return
 
-        tool_input = data.get("tool_input", {})
+        tool_input = get_tool_input(data)
         command = tool_input.get("command", "")
 
         if "git mv" not in command:
@@ -147,25 +176,22 @@ def main():
             return
 
         max_shown = 20
-        print(f'[rename-sweep] Stale references to "{stem}" found after git mv:')
+        lines = [f'[rename-sweep] Stale references to "{stem}" found after git mv:']
         for line in filtered[:max_shown]:
             # Make path relative to search_root for readability
             try:
                 rel = os.path.relpath(line.split(":")[0], search_root)
                 rest = ":".join(line.split(":")[1:])
-                print(f"  {rel}:{rest}")
+                lines.append(f"  {rel}:{rest}")
             except Exception:
-                print(f"  {line}")
+                lines.append(f"  {line}")
         if len(filtered) > max_shown:
-            print(f"  ... and {len(filtered) - max_shown} more")
-        print("Consider updating these references before committing.")
+            lines.append(f"  ... and {len(filtered) - max_shown} more")
+        lines.append("Consider updating these references before committing.")
+        context_output("PostToolUse", "\n".join(lines)).print_and_exit()
 
     except Exception as e:
-        if os.environ.get("CLAUDE_HOOKS_DEBUG"):
-            import traceback
-
-            print(f"[rename-sweep] HOOK-ERROR: {type(e).__name__}: {e}", file=sys.stderr)
-            traceback.print_exc(file=sys.stderr)
+        hook_error("posttool-rename-sweep", e)
     finally:
         sys.exit(0)
 

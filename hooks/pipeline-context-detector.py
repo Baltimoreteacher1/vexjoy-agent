@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# hook-version: 1.0.0
+# hook-version: 1.0.3
 """
 UserPromptSubmit Hook: Pipeline Creator Context Detection
 
@@ -17,7 +17,8 @@ Detection Logic:
 
 Output Format:
 - [pipeline-creator] Detected pipeline creation request
-- [auto-skill] pipeline-scaffolder
+- [auto-skill] workflow
+- Call the Skill tool with `workflow`.
 - JSON environmental state as additional context
 
 Design Principles:
@@ -25,6 +26,25 @@ Design Principles:
 - Non-blocking (always exits 0)
 - Fast execution (<50ms target)
 """
+
+import sys  # vexjoy-pyguard
+
+if sys.version_info < (3, 10):  # vexjoy-pyguard advisory
+    import os
+
+    if not os.environ.get("VEXJOY_PYGUARD_REEXEC"):
+        os.environ["VEXJOY_PYGUARD_REEXEC"] = "1"
+        for _d in [*os.environ.get("PATH", "").split(os.pathsep), "/opt/homebrew/bin", "/usr/local/bin", "/usr/bin"]:
+            for _v in ("14", "13", "12", "11", "10"):
+                _p = os.path.join(_d, "python3." + _v)
+                if _d and "/shims" not in _d and os.access(_p, os.X_OK):
+                    os.execv(_p, [_p, *sys.argv])
+    sys.stderr.write(
+        "[vexjoy] hook %s needs Python 3.10+, got %s (%s); run ./install.sh in vexjoy-agent from a terminal"
+        " outside Claude Code (gated tool calls stay blocked until then)\n"
+        % (__file__.rsplit("/", 1)[-1], sys.version.split()[0], sys.executable)
+    )
+    sys.exit(0)
 
 import json
 import os
@@ -36,7 +56,7 @@ from pathlib import Path
 # Add lib directory to path for imports
 sys.path.insert(0, str(Path(__file__).parent / "lib"))
 
-from hook_utils import context_output, empty_output, parse_frontmatter
+from hook_utils import context_output, empty_output, hook_error, parse_frontmatter
 from stdin_timeout import read_stdin
 
 EVENT_NAME = "UserPromptSubmit"
@@ -139,7 +159,7 @@ def scan_agents(base_dir: Path) -> list[dict]:
 
 def _skills_from_index(index_path: Path) -> list[dict] | None:
     """
-    Parse a skills/INDEX.json or pipeline-index.json file.
+    Parse a skills/INDEX.json file.
 
     Returns a list of {name, user_invocable, agent} dicts on success,
     or None if the file is missing or unparseable.
@@ -148,9 +168,7 @@ def _skills_from_index(index_path: Path) -> list[dict] | None:
         return None
     try:
         data = json.loads(index_path.read_text(encoding="utf-8"))
-        # Both skills/INDEX.json and pipeline-index.json store entries under
-        # a dict keyed by component name ("skills" or "pipelines" top-level key).
-        entries: dict = data.get("skills") or data.get("pipelines") or {}
+        entries: dict = data.get("skills") or {}
         if not isinstance(entries, dict):
             return None
         return [
@@ -169,8 +187,8 @@ def scan_skills(base_dir: Path) -> list[dict]:
     """
     Scan skills/ directory for existing skill definitions.
 
-    Reads skills/INDEX.json and pipeline-index.json when available (single
-    JSON parse per directory replaces ~145 + ~30 SKILL.md reads + YAML parses).
+    Reads skills/INDEX.json when available (one JSON parse replaces the
+    per-skill SKILL.md reads and YAML parses).
     Falls back to filesystem walk per directory only when INDEX.json is
     missing or unparseable.
 
@@ -182,13 +200,6 @@ def scan_skills(base_dir: Path) -> list[dict]:
     skills_dir = base_dir / "skills"
     if skills_dir.is_dir():
         index_entries = _skills_from_index(skills_dir / "INDEX.json")
-        if index_entries is not None:
-            skills.extend(index_entries)
-
-    # Pipeline INDEX (relocated into workflow skill)
-    pipeline_index = base_dir / "skills" / "workflow" / "references" / "pipeline-index.json"
-    if pipeline_index.is_file():
-        index_entries = _skills_from_index(pipeline_index)
         if index_entries is not None:
             skills.extend(index_entries)
 
@@ -339,8 +350,16 @@ def build_environmental_state(prompt: str, base_dir: Path) -> dict:
     }
 
 
+_BYPASS_ENV = "PIPELINE_CONTEXT_DETECTOR_BYPASS"
+
+
 def main():
     """Main entry point for the hook."""
+    if os.environ.get(_BYPASS_ENV) == "1":
+        if os.environ.get("CLAUDE_HOOKS_DEBUG"):
+            print("[pipeline-context-detector] Bypassed via PIPELINE_CONTEXT_DETECTOR_BYPASS=1", file=sys.stderr)
+        sys.exit(0)
+
     debug = os.environ.get("CLAUDE_HOOKS_DEBUG")
 
     try:
@@ -370,7 +389,8 @@ def main():
         related_skills = ", ".join(state["related_skills"]) or "none"
         injection = (
             f"[pipeline-creator] Detected pipeline creation request\n"
-            f"[auto-skill] pipeline-scaffolder\n"
+            "[auto-skill] workflow\n"
+            "Call the Skill tool with `workflow`.\n"
             f"[pipeline-creator] Inventory: {state['agent_count']} agents, "
             f"{state['skill_count']} skills, {state['hook_count']} hooks\n"
             f"[pipeline-creator] Related agents: {related_agents}\n"
@@ -380,14 +400,7 @@ def main():
         context_output(EVENT_NAME, injection).print_and_exit()
 
     except Exception as e:
-        if debug:
-            print(f"[pipeline-creator] Error: {e}", file=sys.stderr)
-            traceback.print_exc(file=sys.stderr)
-        else:
-            print(
-                f"[pipeline-creator] Error: {type(e).__name__}: {e}",
-                file=sys.stderr,
-            )
+        hook_error("pipeline-context-detector", e)
         empty_output(EVENT_NAME).print_and_exit()
 
 

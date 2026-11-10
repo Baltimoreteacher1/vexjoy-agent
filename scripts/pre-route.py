@@ -1,23 +1,28 @@
 #!/usr/bin/env python3
-"""Deterministic safety-net + offline drift/benchmark tool for /do routing.
+"""Deterministic force-route guard for /do routing.
 
-Pattern-matches user requests against trigger keywords from INDEX.json files.
-In the /do flow this runs AFTER the semantic routing decision (the
-orchestrator's in-session self-route), not before it: semantic intent routing
-is primary, and this module is the deterministic safety-net. It enforces
-safety-critical force-routes (a high-confidence force_route for pr-workflow or
-a security skill overrides a disagreeing semantic pick so git/security work
-always hits quality gates) and its phrase/unigram guards continue to suppress
-false matches. It no longer short-circuits or skips the semantic route on the
-long tail.
+Matches user requests against the triggers of force_route entries ONLY
+(skills/INDEX.json `force_route: true`, plus SUPPLEMENTAL_TRIGGERS). A match
+that survives the semantic guards reports `match_type: force_route`,
+`confidence: high`; everything else falls through — semantic intent routing
+(the orchestrator's in-session self-route) decides the long tail. The guard
+exists so genuine git/security/codex requests always hit their quality gates:
+a high-confidence force match for pr-workflow, pr-pipeline, or security
+overrides a disagreeing semantic pick (/do Phase 2 Step 1(a)).
 
-Offline, the same matching logic powers check-routing-drift.py and
-routing-benchmark.py. The CLI, output shape, confidence levels, and guards are
-a stable contract those tools depend on.
+Non-force keyword routing was retired 2026-07: replaying 49 real /do requests
+it fell through 43/49, and both non-force keyword matches it did produce were
+wrong. The guard/companion tables stay — they are the precision layer of the
+force-route guarantee, pinned by the ADR corpus tests
+(test_pre_route_pr_workflow/planning/public_web_deploy).
+
+Output contract (stable): matched, agent, skill, confidence, match_type,
+reasoning. Consumers: skills/meta/do/SKILL.md Phase 2, routing-ab-test.py,
+router-self-audit.py (load_entries).
 
 Usage:
-    python3 scripts/pre-route.py --request "run go tests"
     python3 scripts/pre-route.py --request "create a PR" --json-compact
+    python3 scripts/pre-route.py --request-file /tmp/req.txt --json-compact
 
 Exit codes:
     0 -- always (output is JSON to stdout)
@@ -26,6 +31,7 @@ Exit codes:
 from __future__ import annotations
 
 import argparse
+import functools
 import json
 import re
 import subprocess
@@ -35,11 +41,28 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
+GO_SOURCE_OPERAND_RE = re.compile(r"\.go(?=(?::\d+|#L\d+)?(?:$|[\s`'\",;!?()\[\]{}]|\.(?=$|\s)))")
+PROTECTED_GO_COMPOSITE_SKILLS = {"pr-workflow", "pr-pipeline", "security"}
+PR_CREATE_INTENT_RE = re.compile(
+    r"\b(?:create|open|make|draft|submit|raise|file)\b"
+    r"(?:\s+\S+){0,5}?\s+(?:a\s+)?(?:pr|pull\s+request)\b",
+    re.IGNORECASE,
+)
+
 # Shared tracked+local INDEX merge — single source in routing_index_merge.py.
 _SCRIPTS_DIR = Path(__file__).resolve().parent
 if str(_SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(_SCRIPTS_DIR))
+from routing_index_merge import detect_target as _detect_target
+from routing_index_merge import gate_private_entries as _gate_private_entries
 from routing_index_merge import load_index_items as _load_index_items
+from routing_index_merge import load_items_for as _load_items_for
+from routing_index_merge import private_names_for as _private_names_for
+from routing_index_merge import resolve_index_with_base as _resolve_index_with_base
+
+# Installed-index resolution (installer spec 7.2): $VEXJOY_INDEX_DIR, then
+# ~/.<runtime>/vexjoy/index/<kind>.json, then the repo index + legacy local.
+_INDEX_TARGET = _detect_target(__file__)
 
 # INDEX.json is a generated artifact (untracked). When the tracked path is
 # missing — fresh checkout, no install.sh run — regenerate it on the fly from
@@ -56,9 +79,18 @@ def _ensure_index(index_type: str, path: Path) -> None:
     Fail-safe: any failure (generator missing, non-zero exit, timeout) is
     swallowed so routing never crashes. A missing index simply means
     load_entries() reads nothing for that type and the request falls through.
+
+    Skipped when the resolver (installer spec 7.2) finds an installed index:
+    readers use that index, so a missing repo index needs no regeneration and
+    the repo is never written.
     """
     if path.exists():
         return
+    try:
+        if _resolve_index_with_base(index_type, _INDEX_TARGET, repo_root=REPO_ROOT)[2]:
+            return
+    except Exception:
+        pass
     generator = _INDEX_GENERATORS.get(index_type)
     if generator is None or not generator.exists():
         return
@@ -77,10 +109,14 @@ def _ensure_index(index_type: str, path: Path) -> None:
 INDEX_PATHS = {
     "skills": (REPO_ROOT / "skills" / "INDEX.json", "INDEX.local.json"),
     "agents": (REPO_ROOT / "agents" / "INDEX.json", "INDEX.local.json"),
+    "pipelines": (
+        REPO_ROOT / "skills" / "process" / "workflow" / "references" / "pipeline-index.json",
+        None,
+    ),
 }
 
 # Verbs/nouns that signal working ON a site (build, edit, debug, discuss) rather
-# than PUBLISHING one. Shared blocklist for public-web-deploy idiom triggers so
+# than PUBLISHING one. Shared blocklist for deploy idiom triggers so
 # overloaded deploy companions ("public", "domain") cannot wave through ordinary
 # dev/content/architecture requests.
 # Only ACTION verbs and unambiguous non-deploy modifiers belong here. Site-TYPE
@@ -108,6 +144,7 @@ _SITE_WORK_GUARD: set[str] = {
     "restyle",
     "design",
     "redesign",
+    "writing",
     "translate",
     "translation",
     "localize",
@@ -167,7 +204,7 @@ _SITE_WORK_GUARD: set[str] = {
 
 # Repo/code/package visibility vocabulary. "make (it) public" most often means
 # flipping a GitHub repo / npm package / code symbol to public, not deploying a
-# web page. These words near the trigger discard the public-web-deploy match.
+# web page. These words near the trigger discard the deploy match.
 # Note: "github"/"gitlab" are intentionally absent — "make my website public on
 # github pages" is a genuine managed-static deploy. The repo-visibility signal
 # is carried by repo/repository/gist/code/source/package, not the host name.
@@ -190,6 +227,114 @@ _VISIBILITY_OP_GUARD: set[str] = {
     "module",
 }
 
+# Products named Unity that are not the game engine: Databricks Unity Catalog,
+# the C unit-test framework (ThrowTheSwitch Unity, Ceedling, CMock), and the
+# .NET Unity IoC container. These words near a Unity trigger discard the
+# game-dev match.
+_UNITY_NAMESAKE_GUARD: set[str] = {
+    "catalog",
+    "databricks",
+    "ceedling",
+    "cmock",
+    "throwtheswitch",
+    "firmware",
+    "embedded",
+    "stm32",
+    "container",
+    "ioc",
+    "prism",
+}
+
+# Writing requests where "unity" is the plain-English word ("a toast to unity
+# for the editor's retirement", "a national unity project").
+_UNITY_PROSE_GUARD: set[str] = {
+    "toast",
+    "retirement",
+    "speech",
+    "column",
+    "essay",
+    "article",
+    "national",
+    "community",
+}
+
+# Safety-net triggers the INDEX files lack. The routing A/B corpus
+# (scripts/routing-ab-corpus.json, buckets paraphrase-git and
+# paraphrase-security) holds genuine git/security requests phrased without any
+# INDEX keyword; these force-route skills MUST catch them so quality gates
+# always run. Merged into the skill's INDEX triggers at load time, so each
+# match keeps the entry's force_route flag and passes the same guard checks.
+# Keep every pattern narrow: multi-word, intent-specific, and guarded below
+# when it could collide with ordinary English.
+SUPPLEMENTAL_TRIGGERS: dict[str, tuple[str, ...]] = {
+    "pr-workflow": (
+        "send commits",  # "send my commits to the server"
+        "shared repository",  # "save my work to the shared repository"
+        "submit changes",  # "I'd like to submit my changes for review"
+        "into version control",  # "record what I changed into version control"
+        "to version control",
+        "under version control",
+        "upload my work",  # "upload my finished work so the team can see it"
+        "went green",  # "check if the tests on my submitted change went green"
+    ),
+    "security": (
+        "code safe",
+        "code safety",  # "look over my code for safety problems"
+        "is unsafe",  # "check whether anything here is unsafe"
+        "break into",  # "someone could break into this" — companion-gated below
+        "passwords keys",  # "did I leave any passwords or keys in the code"
+        # Vulnerability names with no idiom reading. "sql injection", not
+        # "injection": dependency injection is a design pattern.
+        "sql injection",  # "check the signup form for SQL injection"
+        "xss",
+        "cross site scripting",  # also matches "cross-site scripting"
+        "csrf",
+        "leaked secret",  # "scan the repo for leaked secrets"
+        "for vulnerabilities",  # "review the auth flow for vulnerabilities"
+    ),
+}
+
+# pr-workflow idiom guards (ADR pr-create-skill-guard), scoped per trigger
+# through the trigger's own verbs. One flat set applied to every trigger let an
+# idiom word for one verb drop genuine git requests: "against" (push back
+# against) dropped "create a pull request against main", "head" (merge ideas in
+# your head) dropped "git push origin HEAD", and "pushed" dropped "I pushed the
+# fix, now open a PR". A trigger takes the guard words of each verb it holds; a
+# trigger that names a PR or pull request ("create PR", "open PR", "push and
+# PR") takes none, because the noun has no idiom reading. Phrase guards
+# (SEMANTIC_GUARD_PHRASES) still apply to every trigger.
+_PUSH_IDIOMS = {"back", "against", "pressure", "pushback", "pushed", "pushing"}  # push back on, push against
+_SHIP_IDIOMS = {"theseus", "captain"}  # ship of Theseus, the captain will ship this
+_MERGE_IDIOMS = {"ideas", "personalities", "merger", "head", "offsite"}  # merge this in your head
+_COMMIT_IDIOMS = {"ideas"}  # commit these ideas to memory
+_PUBLICATION_IDIOMS = {"manuscript", "paper", "arxiv", "essay"}  # publish this paper, send my manuscript
+_REVIEW_IDIOMS = _PUBLICATION_IDIOMS | {"menu"}  # review the menu, review my essay
+TRIGGER_VERB_GUARDS: dict[str, dict[str, set[str]]] = {
+    "pr-workflow": {
+        "push": _PUSH_IDIOMS,
+        "ship": _SHIP_IDIOMS,
+        "merge": _MERGE_IDIOMS,
+        "commit": _COMMIT_IDIOMS,
+        "publish": _PUBLICATION_IDIOMS,
+        "submit": _PUBLICATION_IDIOMS,
+        "send": _PUBLICATION_IDIOMS,
+        "upload": _PUBLICATION_IDIOMS,
+        "review": _REVIEW_IDIOMS,
+        "reviewed": _REVIEW_IDIOMS,
+        "opinion": _REVIEW_IDIOMS,
+    },
+}
+_PR_NOUN_RE = re.compile(r"\b(?:prs?|pull\s+requests?)\b")
+
+
+def _verb_guards(guard_name: str, trigger: str) -> set[str]:
+    """Guard words *trigger* takes from its verbs (TRIGGER_VERB_GUARDS); none when it names a PR."""
+    families = TRIGGER_VERB_GUARDS.get(guard_name)
+    if not families or _PR_NOUN_RE.search(trigger):
+        return set()
+    return set().union(*(families.get(word, set()) for word in trigger.split()))
+
+
 # Phrases that look like trigger matches but are common English idioms
 # unrelated to the skill. Keyed by skill name -> disqualifying context words.
 #
@@ -200,43 +345,40 @@ _VISIBILITY_OP_GUARD: set[str] = {
 #                           not over-suppress an unrelated trigger of the same
 #                           skill (e.g. "repo" disambiguates "make it public"
 #                           but must not suppress "deploy website").
+#
+# pr-workflow's guards (and pr-pipeline's, through GUARD_POLICY_ALIASES) live in
+# TRIGGER_VERB_GUARDS above instead.
 SEMANTIC_GUARDS: dict[str, set[str] | dict[str, set[str]]] = {
-    "pr-workflow": {
-        "back",
-        "pressure",
-        "pushback",
-        "pushed",
-        "pushing",
-        # Idiom guards for ship/merge/publish/review triggers (ADR pr-create-skill-guard).
-        # These suppress matches when context indicates non-git intent.
-        "theseus",
-        "manuscript",
-        "captain",
-        "ideas",
-        "personalities",
-        "merger",
-        "head",
-        "paper",
-        "arxiv",
-        "menu",
-        "essay",
-        "offsite",
+    # "make a game trailer" is trailer work (game-trailer), not game building.
+    # Unity triggers skip Unity's namesakes (Databricks Unity Catalog, the C
+    # unit-test framework, the .NET IoC container) and plain-English "unity".
+    "game-dev": {
+        "make game": {"trailer"},
+        "unity cli": _UNITY_NAMESAKE_GUARD,
+        "unity editor": _UNITY_NAMESAKE_GUARD | _UNITY_PROSE_GUARD,
+        "unity project": _UNITY_NAMESAKE_GUARD | _UNITY_PROSE_GUARD,
+        "unity hub": _UNITY_NAMESAKE_GUARD | _UNITY_PROSE_GUARD,
+        "unity license": _UNITY_NAMESAKE_GUARD,
+        "unity batch mode": _UNITY_NAMESAKE_GUARD,
+        "unity batchmode": _UNITY_NAMESAKE_GUARD,
     },
-    "fish-shell-config": {"for", "bugs", "compliments", "information", "ideas", "answers"},
-    "zsh-shell-config": {"for", "bugs", "compliments", "information", "ideas", "answers"},
-    "voice-writer": {"remove", "strip", "clean", "detect", "identify", "fix", "scan", "audit"},
-    # ADR public-web-deploy. Low-specificity idiom triggers ("go live",
+    # "deploy" catch-all guards (for, bugs, compliments, information, ideas,
+    # answers) were superseded by the per-trigger dict below.  Removed to fix
+    # duplicate-key lint (F601).  The per-trigger dict covers each idiom's
+    # disqualifiers with higher precision.
+    "writing": {"remove", "strip", "clean", "detect", "identify", "fix", "scan", "audit"},
+    # ADR deploy. Low-specificity idiom triggers ("go live",
     # "make it public", "static site", "use my domain", "set up https",
     # "public website") are handled by the POSITIVE companion-word requirement
     # below (SEMANTIC_REQUIRE_COMPANION), not by enumerating disqualifiers — a
     # blocklist loses the arms race against ordinary phrasing. Only the
     # near-specific "deploy website" keeps a negative guard for its one idiom.
-    # Defense-in-depth for public-web-deploy: a match routes only when it
+    # Defense-in-depth for deploy: a match routes only when it
     # survives BOTH this per-trigger blocklist AND (for idiom triggers) the
     # companion-word requirement below. The blocklist catches build/edit/
     # discuss verbs that overloaded companions ("public", "domain") would
     # otherwise wave through ("compare static site generators for public docs").
-    "public-web-deploy": {
+    "deploy": {
         # build / edit / discuss verbs that mean "work ON a site", not "publish one"
         "static site": _SITE_WORK_GUARD,
         "landing page": _SITE_WORK_GUARD,
@@ -256,6 +398,39 @@ SEMANTIC_GUARDS: dict[str, set[str] | dict[str, set[str]]] = {
         # rescue "make website repo public on github".
         "make public": _VISIBILITY_OP_GUARD,
         "make it public": _VISIBILITY_OP_GUARD,
+    },
+    # Guards for the SUPPLEMENTAL_TRIGGERS above. Per-trigger dict: these
+    # apply only to the listed idiom-prone triggers, never to the skill's
+    # INDEX triggers.
+    "security": {
+        # "make the code thread-safe" / "type safety" = language mechanics,
+        # not a security review.
+        "code safe": {
+            "thread",
+            "threads",
+            "threadsafe",
+            "type",
+            "types",
+            "typesafe",
+            "null",
+            "race",
+            "concurrency",
+            "exception",
+            "exceptions",
+        },
+        # Rust's `unsafe` keyword and pointer talk, not a vulnerability check.
+        "is unsafe": {
+            "rust",
+            "keyword",
+            "block",
+            "blocks",
+            "pointer",
+            "pointers",
+            "transmute",
+            "deref",
+        },
+        # "look for vulnerabilities in my argument" critiques prose, not code.
+        "for vulnerabilities": {"argument", "arguments", "essay", "thesis", "reasoning"},
     },
 }
 
@@ -323,8 +498,20 @@ _DEPLOY_COMPANIONS: set[str] = {
     "vps",
     "droplet",
 }
+_PR_FIX_COMPANIONS: set[str] = {
+    "fix",
+    "fixes",
+    "fixing",
+    "implement",
+    "implementing",
+    "address",
+    "addressing",
+    "patch",
+    "resolve",
+    "rework",
+}
 SEMANTIC_REQUIRE_COMPANION: dict[str, dict[str, set[str]]] = {
-    "public-web-deploy": {
+    "deploy": {
         "go live": _DEPLOY_COMPANIONS,
         "make it public": _DEPLOY_COMPANIONS,
         "make public": _DEPLOY_COMPANIONS,
@@ -343,6 +530,49 @@ SEMANTIC_REQUIRE_COMPANION: dict[str, dict[str, set[str]]] = {
         # "retheme the deploy site" / "deploy website unit tests".
         "public site": _DEPLOY_COMPANIONS,
         "nginx public site": _DEPLOY_COMPANIONS,
+        "host a website": _DEPLOY_COMPANIONS,
+        "website online": _DEPLOY_COMPANIONS,
+        "put online": _DEPLOY_COMPANIONS,
+        # "put this online" is unambiguous — no companion needed.
+        # "put site online" likewise.
+    },
+    # "break into" routes only with an intrusion word nearby ("someone could
+    # break into this"). Refactor phrasing ("break this into smaller
+    # functions") has no such companion and falls through.
+    "security": {
+        "break into": {
+            "someone",
+            "somebody",
+            "anyone",
+            "anybody",
+            "hacker",
+            "hackers",
+            "attacker",
+            "attackers",
+            "intruder",
+            "intruders",
+            "hack",
+            "hacked",
+            "hacking",
+            "malicious",
+            "breach",
+            "steal",
+            "stolen",
+            "burglar",
+            "criminals",
+        },
+    },
+    # pr-fix-loop: every trigger routes only with a change verb nearby. "fix
+    # the comments on my upstream PR" routes; "summarize the upstream PR" and
+    # "explain how the pr fix loop works" fall through. "run"/"start" also
+    # confirm an explicit "run the pr fix loop" invocation.
+    "pr-fix-loop": {
+        "upstream pr": _PR_FIX_COMPANIONS,
+        "upstream pull request": _PR_FIX_COMPANIONS,
+        "repo i don't own": _PR_FIX_COMPANIONS,
+        "repo we don't own": _PR_FIX_COMPANIONS,
+        "someone else's repo": _PR_FIX_COMPANIONS,
+        "pr fix loop": _PR_FIX_COMPANIONS | {"run", "start"},
     },
 }
 
@@ -351,8 +581,7 @@ SEMANTIC_REQUIRE_COMPANION: dict[str, dict[str, set[str]]] = {
 # (e.g. 'out' alone collides with "log out", "check out"; but "fish out"
 # reliably means search/extract, not the Fish shell).
 SEMANTIC_GUARD_PHRASES: dict[str, set[str]] = {
-    "fish-shell-config": {"fish out", "fish for"},
-    "zsh-shell-config": {"zsh out", "zsh for"},
+    "deploy": {"fish out", "fish for", "zsh out", "zsh for"},
     # ADR pr-create-skill-guard: phrase guards for newly-added pr-workflow triggers.
     # The unigram guards above catch most idioms; these phrase guards suppress
     # multi-word collisions that span the trigger window (e.g. 'ship of theseus'
@@ -365,7 +594,51 @@ SEMANTIC_GUARD_PHRASES: dict[str, set[str]] = {
         "publish a book",
         "review the menu",
         "review my essay",
+        # Supplemental-trigger idioms: "upload my work to google drive" is a
+        # file sync, "shared repository of knowledge" is a metaphor.
+        "google drive",
+        "to dropbox",
+        "repository of knowledge",
+        "repository of ideas",
     },
+}
+
+# FORCE pipelines inherit the mature semantic guards of the domain skill that
+# owns the same external action. Otherwise a pipeline synonym can bypass the
+# skill guard while selecting the same workflow.
+GUARD_POLICY_ALIASES = {"pr-pipeline": "pr-workflow"}
+
+# pr-fix-loop keeps every pr-workflow guard word, on every one of its
+# triggers, and adds its own: read-only or meta phrasing ("explain", "what
+# does", "docs for") and porting upstream changes into the user's own repo
+# ("into my fork", "in our repo") are not fixing a PR the user does not own.
+# "notque" is the toolkit owner's own GitHub account, so a PR there is never
+# a foreign repo. A regex cannot tell own from foreign repos in general;
+# Phase 0 of the pipeline checks that.
+_PR_WORKFLOW_GUARDS = set().union(*TRIGGER_VERB_GUARDS["pr-workflow"].values())
+SEMANTIC_GUARDS["pr-fix-loop"] = _PR_WORKFLOW_GUARDS | {
+    "explain",
+    "explains",
+    "describe",
+    "summarize",
+    "summary",
+    "notque",
+}
+SEMANTIC_GUARD_PHRASES["pr-fix-loop"] = SEMANTIC_GUARD_PHRASES["pr-workflow"] | {
+    "what does",
+    "what is",
+    "how does",
+    "how do",
+    "docs for",
+    "docs about",
+    "documentation for",
+    "into my fork",
+    "to my fork",
+    "into our repo",
+    "in our repo",
+    "to our repo",
+    "into my repo",
+    "in my repo",
 }
 
 
@@ -395,67 +668,136 @@ class ScoredMatch:
 
 
 def load_entries() -> list[dict]:
-    """Load all INDEX entries into a flat list."""
+    """Load all INDEX entries into a flat list.
+
+    Skills, agents, and FORCE pipelines are loaded. Non-force pipeline entries
+    are skipped: build_match_table filters on force_route anyway, and loading
+    24 non-force pipelines only to discard them wastes cycles.
+    """
     entries: list[dict] = []
 
     for index_type, (tracked, local_name) in INDEX_PATHS.items():
+        if index_type == "pipelines":
+            items = _load_items_for(index_type, tracked, local_name, _INDEX_TARGET, REPO_ROOT)
+            for name, data in items.items():
+                if not isinstance(data, dict):
+                    continue
+                if not data.get("force_route", False):
+                    continue
+                triggers = list(data.get("triggers", []))
+                triggers.extend(t for t in SUPPLEMENTAL_TRIGGERS.get(name, ()) if t not in triggers)
+                entries.append(
+                    {
+                        "name": name,
+                        "type": "pipeline",
+                        "triggers": triggers,
+                        "agent": data.get("agent"),
+                        "force_route": True,
+                    }
+                )
+            continue
+
         # Auto-regenerate a missing (untracked) tracked index before reading.
         # Fail-safe.
         _ensure_index(index_type, tracked)
-        items = _load_index_items(tracked, local_name, index_type)
+        items = _load_items_for(index_type, tracked, local_name, _INDEX_TARGET, REPO_ROOT)
+        private = _private_names_for(index_type, tracked, local_name, _INDEX_TARGET, REPO_ROOT)
 
         for name, data in items.items():
             if not isinstance(data, dict):
                 continue
-            entries.append(
-                {
-                    "name": name,
-                    "type": "skill" if index_type == "skills" else "agent",
-                    "triggers": data.get("triggers", []),
-                    "agent": data.get("agent"),
-                    "force_route": bool(data.get("force_route", False)),
-                }
-            )
+            triggers = list(data.get("triggers", []))
+            # Safety-net paraphrase triggers the INDEX lacks (see
+            # SUPPLEMENTAL_TRIGGERS). The entry keeps its force_route flag.
+            triggers.extend(t for t in SUPPLEMENTAL_TRIGGERS.get(name, ()) if t not in triggers)
+            entry = {
+                "name": name,
+                "type": "skill" if index_type == "skills" else "agent",
+                "triggers": triggers,
+                "agent": data.get("agent"),
+                "force_route": bool(data.get("force_route", False)),
+                "description": data.get("description") or "",
+            }
+            if name in private:
+                entry["private"] = True
+            entries.append(entry)
 
     return entries
 
 
+# Suffixes the last word of a multi-word trigger may take. Inflections only:
+# an open `\w*` made "write post" match "PostToolUse" and "Postgres".
+TRIGGER_INFLECTION = r"(?:s|es|d|ed|er|ers|ing)?"
+
+# Force-route triggers that only suggest when a clause shows they are not the
+# request's action. "ship it" alone is a PR request and force-routes (ADR
+# corpus, test_pre_route_pr_workflow.py), but in "look over what I changed
+# before I ship it" shipping is a later step and the action is a review
+# (router attachment eval, case ood-go-04). A match whose surviving triggers
+# are all listed, in a request the context pattern matches, reports as a
+# suggestion (matched false, confidence low, skill set). Any other trigger of
+# the same skill keeps the force route.
+SUGGEST_ONLY_TRIGGERS: dict[str, tuple[frozenset[str], re.Pattern[str]]] = {
+    "pr-workflow": (
+        frozenset({"ship it", "ship this", "ship this work"}),
+        re.compile(
+            r"\b(?:before|after|once|when|until|so)\s+(?:i|we|you)\s+(?:can\s+|could\s+)?ship\b"
+            r"|\bbefore\s+shipping\b",
+            re.IGNORECASE,
+        ),
+    ),
+}
+
+
+@functools.cache
 def _build_pattern(trigger_lower: str) -> re.Pattern[str]:
-    """Build a regex pattern for a trigger phrase.
+    """Build a regex pattern for a trigger phrase, compiled once per trigger.
+
+    Cached because route() rebuilds the match table on every call and the
+    force-route trigger set (500+) is larger than re's own 512-entry cache, so
+    without it every route call recompiled every trigger regex.
 
     Single-word triggers: exact word-boundary match.
     Multi-word triggers: each word must appear in order with up to 2
     intervening words allowed (handles "create a PR" matching trigger
     "create PR", or "run the go tests" matching "go test").
+
+    The last word also takes a plain inflection (TRIGGER_INFLECTION: "test"
+    matches "tests", "review" matches "reviewers"), never an arbitrary suffix:
+    "write post" must not match "write a PostToolUse hook" or "write a
+    Postgres migration".
     """
     words = trigger_lower.split()
     if len(words) == 1:
         escaped = re.escape(words[0])
         return re.compile(rf"\b{escaped}\b", re.IGNORECASE)
 
-    # Multi-word: allow up to 2 words between each trigger word.
-    # Also allow the last trigger word to be a prefix (e.g. "test" matches "tests").
+    # Multi-word: allow up to 2 words between each trigger word. A hyphen or
+    # underscore counts as a space between trigger words ("pr-review" and
+    # "pr_review" match "pr review"), so interior edges use an alphanumeric
+    # lookaround instead of \b (\b does not break at "_").
     parts = []
     for i, word in enumerate(words):
         escaped = re.escape(word)
+        start = r"\b" if i == 0 else r"(?<![^\W_])"
         if i == len(words) - 1:
-            # Last word: allow plural/suffix (word boundary after stem)
-            parts.append(rf"\b{escaped}\w*\b")
+            parts.append(rf"{start}{escaped}{TRIGGER_INFLECTION}\b")
         else:
-            parts.append(rf"\b{escaped}\b")
+            parts.append(rf"{start}{escaped}(?![^\W_])")
 
     # Join with "up to 2 intervening words" gap
-    gap = r"(?:\s+\S+){0,2}\s+"
+    gap = r"(?:[\s_-]+\S+){0,2}[\s_-]+"
     full_pattern = gap.join(parts)
     return re.compile(full_pattern, re.IGNORECASE)
 
 
 def build_match_table(entries: list[dict]) -> list[MatchEntry]:
-    """Compile trigger keywords into regex patterns.
+    """Compile force_route entries' trigger keywords into regex patterns.
 
-    Single-word triggers use exact word-boundary match.
-    Multi-word triggers allow up to 2 intervening words between
-    trigger words (e.g. "create PR" matches "create a PR").
+    Non-force entries are skipped: pre-route matches only force-routes; the
+    semantic router owns the long tail. Single-word triggers use exact
+    word-boundary match. Multi-word triggers allow up to 2 intervening words
+    between trigger words (e.g. "create PR" matches "create a PR").
     """
     table: list[MatchEntry] = []
 
@@ -464,8 +806,12 @@ def build_match_table(entries: list[dict]) -> list[MatchEntry]:
         entry_type = entry["type"]
         agent = entry.get("agent")
         force_route = entry.get("force_route", False)
+        if not force_route:
+            continue
 
         for trigger in entry.get("triggers", []):
+            if not isinstance(trigger, str):
+                continue
             trigger_lower = trigger.lower()
             pattern = _build_pattern(trigger_lower)
 
@@ -491,8 +837,9 @@ def _is_semantically_guarded(
     Three layers of suppression:
     1. SEMANTIC_GUARD_PHRASES (multi-word substring match anywhere in request) —
        used when a single guard word would over-suppress (e.g. "fish out").
-    2. SEMANTIC_GUARDS (unigram blocklist in 60-char context window around the
-       trigger) — discard when a disqualifying word is near the trigger.
+    2. SEMANTIC_GUARDS and TRIGGER_VERB_GUARDS (unigram blocklist in 60-char
+       context window around the trigger) — discard when a disqualifying word
+       is near the trigger.
     3. SEMANTIC_REQUIRE_COMPANION (unigram allowlist in the same window) —
        discard UNLESS a required companion word is near the trigger. Used for
        low-specificity idiom triggers where deploy intent is only confirmed by
@@ -507,7 +854,8 @@ def _is_semantically_guarded(
     # Phrase-level guard: if any disqualifying phrase appears as a whole-word
     # match anywhere in the request, this is not a domain match. Word-boundary
     # match prevents "fish for" suppressing "selfish forum" etc.
-    phrase_guards = SEMANTIC_GUARD_PHRASES.get(skill_name)
+    guard_name = GUARD_POLICY_ALIASES.get(skill_name, skill_name)
+    phrase_guards = SEMANTIC_GUARD_PHRASES.get(guard_name)
     if phrase_guards:
         for phrase in phrase_guards:
             if re.search(rf"\b{re.escape(phrase)}\b", request_lower):
@@ -518,14 +866,18 @@ def _is_semantically_guarded(
     #   - dict[str, set[str]] : per-trigger; pick the set for the matched idiom
     #                           so a guard scoped to one trigger does not
     #                           over-suppress an unrelated trigger.
-    guard_spec = SEMANTIC_GUARDS.get(skill_name)
+    # TRIGGER_VERB_GUARDS adds the words the matched trigger's verbs carry.
+    guard_spec = SEMANTIC_GUARDS.get(guard_name)
     guards: set[str] | None = None
     if isinstance(guard_spec, dict):
         guards = guard_spec.get(matched_trigger)
     elif guard_spec:
         guards = guard_spec
+    verb_guards = _verb_guards(guard_name, matched_trigger)
+    if verb_guards:
+        guards = (guards or set()) | verb_guards
 
-    companion_spec = SEMANTIC_REQUIRE_COMPANION.get(skill_name, {})
+    companion_spec = SEMANTIC_REQUIRE_COMPANION.get(guard_name, {})
     required_companions = companion_spec.get(matched_trigger)
 
     if not guards and not required_companions:
@@ -563,11 +915,10 @@ def _is_semantically_guarded(
 
 
 def score_matches(table: list[MatchEntry], request: str) -> dict[str, ScoredMatch]:
-    """Score each entry by matching triggers against the request.
+    """Collect force_route entries whose triggers match, ranked for tie-breaks.
 
-    Scoring:
+    Ranking (only used when multiple force entries match):
     - Each matched trigger adds 1.0 to score
-    - Force-route entries get a 2.0 bonus
     - Longer triggers get a specificity bonus (len/100)
     """
     request_lower = request.lower()
@@ -598,29 +949,35 @@ def score_matches(table: list[MatchEntry], request: str) -> dict[str, ScoredMatc
     for match in candidates.values():
         trigger_count = len(match.matched_triggers)
         specificity_bonus = match.total_chars / 100.0
-        force_bonus = 2.0 if match.force_route else 0.0
-        match.score = trigger_count + specificity_bonus + force_bonus
+        match.score = trigger_count + specificity_bonus
 
     return candidates
 
 
-def determine_confidence(match: ScoredMatch) -> str:
-    """Determine confidence level based on match characteristics.
+def _is_suggestion(match: ScoredMatch, request: str) -> bool:
+    """True when every surviving trigger is suggest-only in this request's context."""
+    spec = SUGGEST_ONLY_TRIGGERS.get(match.name)
+    if spec is None or not request or not match.matched_triggers:
+        return False
+    triggers, context = spec
+    return bool(context.search(request)) and all(t in triggers for t in match.matched_triggers)
 
-    Thresholds:
-    - force_route + 2+ trigger matches -> "high"
-    - force_route + 1 trigger match -> "medium"
-    - non-force + 3+ trigger matches -> "medium"
-    - anything less -> "low" (fall through)
+
+def determine_confidence(match: ScoredMatch, request: str = "") -> str:
+    """Force match with 1+ surviving trigger -> "high"; anything else -> "low".
+
+    A suggest-only match (SUGGEST_ONLY_TRIGGERS in its context) is "low":
+    route() reports it as a suggestion, not a force route.
+
+    A force_route match that reaches scoring already passed every semantic
+    guard (score_matches discards guarded matches), so one surviving trigger
+    is a deterministic signal. /do Phase 2 Step 1(a)'s safety override acts
+    only on "high".
     """
-    trigger_count = len(match.matched_triggers)
-
-    if match.force_route and trigger_count >= 2:
+    if _is_suggestion(match, request):
+        return "low"
+    if match.force_route and len(match.matched_triggers) >= 1:
         return "high"
-    if match.force_route and trigger_count >= 1:
-        return "medium"
-    if not match.force_route and trigger_count >= 3:
-        return "medium"
     return "low"
 
 
@@ -637,54 +994,129 @@ def route(request: str, entries: list[dict] | None = None) -> dict:
     """
     if entries is None:
         entries = load_entries()
+    # Private (overlay) entries match only when the request names their domain.
+    entries = _gate_private_entries(entries, request)
 
     table = build_match_table(entries)
     candidates = score_matches(table, request)
+
+    go_operand = GO_SOURCE_OPERAND_RE.search(request) is not None
+
+    # A bare "push <file.go>" is still a git/PR operation even though the
+    # pr-workflow trigger list intentionally avoids the overloaded bare verb.
+    # The push idioms ("push back on foo.go") disqualify it.
+    request_words = set(re.findall(r"\b\w+\b", request.lower()))
+    genuine_push = bool(re.search(r"\bpush\b", request, re.IGNORECASE)) and not (request_words & _PUSH_IDIOMS)
+    protected_pr_intent = PR_CREATE_INTENT_RE.search(request) is not None or genuine_push
+    if go_operand and protected_pr_intent and "skill:pr-workflow" not in candidates:
+        pr_entry = next((entry for entry in table if entry.name == "pr-workflow"), None)
+        if pr_entry is not None:
+            candidates["skill:pr-workflow"] = ScoredMatch(
+                name="pr-workflow",
+                entry_type="skill",
+                agent=pr_entry.agent,
+                force_route=True,
+                matched_triggers=["protected PR intent with <go-source>"],
+                total_chars=len("protected PR intent with <go-source>"),
+                score=100,
+            )
+
+    if go_operand and re.search(r"\bsecurity\s+audit\b", request, re.IGNORECASE):
+        security_entry = next((entry for entry in table if entry.name == "security"), None)
+        if security_entry is not None:
+            candidates["skill:security"] = ScoredMatch(
+                name="security",
+                entry_type="skill",
+                agent=security_entry.agent,
+                force_route=True,
+                matched_triggers=["security audit"],
+                total_chars=len("security audit"),
+                score=100,
+            )
 
     if not candidates:
         return {
             "matched": False,
             "agent": None,
             "skill": None,
+            "pipeline": None,
             "confidence": "low",
             "match_type": "fallthrough",
             "reasoning": "no trigger keywords matched",
+            "stack": [],
         }
 
     # Sort by score descending, then by name ascending for deterministic tie-breaking
-    ranked = sorted(candidates.values(), key=lambda m: (-m.score, m.name))
-    top = ranked[0]
-    confidence = determine_confidence(top)
+    # A Go source-file extension is stronger domain evidence than a generic
+    # process phrase such as "fix typo". Ensure every .go edit loads the Go
+    # skill's mandatory style baseline while leaving non-Go typo work on quick.
+    protected = [
+        candidate
+        for candidate in candidates.values()
+        if candidate.name in PROTECTED_GO_COMPOSITE_SKILLS and determine_confidence(candidate, request) == "high"
+    ]
+    if go_operand and not protected and "skill:programming" in candidates:
+        candidates["skill:programming"].score += 100
+
+    # Skill/agent and pipeline are orthogonal slots (COMBINATION DOCTRINE):
+    # pick the best non-pipeline match for skill/agent and the best pipeline
+    # match for pipeline independently. A suggest-only match ranks below
+    # every force match, so it never hides one.
+    def _rank(m: ScoredMatch) -> tuple[bool, float, str]:
+        return (determine_confidence(m, request) != "high", -m.score, m.name)
+
+    non_pipeline = sorted((c for c in candidates.values() if c.entry_type != "pipeline"), key=_rank)
+    pipeline_candidates = sorted((c for c in candidates.values() if c.entry_type == "pipeline"), key=_rank)
+
+    # The "top" drives matched/confidence; prefer skill/agent over pipeline
+    # when both exist, since skill matches are the established contract.
+    top = non_pipeline[0] if non_pipeline else (pipeline_candidates[0] if pipeline_candidates else None)
+    if top is None:
+        # Defensive: candidates was non-empty above, so unreachable.
+        top = next(iter(sorted(candidates.values(), key=lambda m: (-m.score, m.name))))
+
+    confidence = determine_confidence(top, request)
 
     if confidence == "low":
+        best_pipe = pipeline_candidates[0] if pipeline_candidates else None
         return {
             "matched": False,
             "agent": top.agent,
             "skill": top.name if top.entry_type == "skill" else None,
+            "pipeline": best_pipe.name if best_pipe and determine_confidence(best_pipe, request) != "low" else None,
             "confidence": "low",
             "match_type": "fallthrough",
-            "reasoning": f"weak match on {top.matched_triggers!r} for {top.name} (score={top.score:.2f})",
+            "reasoning": f"suggest-only match on {top.matched_triggers!r} for {top.name} (score={top.score:.2f})",
+            "stack": [],
         }
 
-    # Determine agent and skill from the match
+    # Determine agent and skill from the top non-pipeline match
     agent = top.agent
     skill = top.name if top.entry_type == "skill" else None
 
-    # If matched entry is an agent (not skill), set agent from name
     if top.entry_type == "agent":
         agent = top.name
         skill = None
 
-    match_type = "force_route" if top.force_route else "trigger_keyword"
+    # Pipeline slot: best pipeline candidate, if it also passes confidence
+    pipeline: str | None = None
+    if pipeline_candidates:
+        best_pipe = pipeline_candidates[0]
+        if determine_confidence(best_pipe, request) != "low":
+            pipeline = best_pipe.name
+
+    match_type = "force_route"  # only force entries reach the match table
     triggers_str = ", ".join(f"'{t}'" for t in top.matched_triggers)
 
     return {
         "matched": True,
         "agent": agent,
         "skill": skill,
+        "pipeline": pipeline,
         "confidence": confidence,
         "match_type": match_type,
         "reasoning": f"matched triggers [{triggers_str}] for {top.name}",
+        "stack": ["programming"] if go_operand and top.name in PROTECTED_GO_COMPOSITE_SKILLS else [],
     }
 
 
@@ -693,10 +1125,14 @@ def main() -> int:
     parser = argparse.ArgumentParser(
         description="Deterministic pre-router for /do dispatch.",
     )
-    parser.add_argument(
+    req_group = parser.add_mutually_exclusive_group(required=True)
+    req_group.add_argument(
         "--request",
-        required=True,
         help="The user request string to route.",
+    )
+    req_group.add_argument(
+        "--request-file",
+        help="Path to a file containing the request string (avoids shell-splicing).",
     )
     parser.add_argument(
         "--json-compact",
@@ -705,7 +1141,25 @@ def main() -> int:
     )
     args = parser.parse_args()
 
-    result = route(args.request)
+    try:
+        if args.request_file:
+            request_text = Path(args.request_file).read_text(encoding="utf-8")
+        else:
+            request_text = args.request
+
+        result = route(request_text)
+    except Exception as exc:
+        import traceback
+
+        traceback.print_exc(file=sys.stderr)
+        result = {
+            "matched": False,
+            "agent": None,
+            "skill": None,
+            "confidence": "low",
+            "match_type": "fallthrough",
+            "reasoning": f"pre-route error: {type(exc).__name__}: {exc}",
+        }
 
     indent = None if args.json_compact else 2
     print(json.dumps(result, indent=indent))

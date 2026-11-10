@@ -33,7 +33,7 @@ Key principles:
 **Step 1: Verify token**
 
 ```bash
-python3 ~/.claude/scripts/miner.py --check-auth
+python3 ~/.claude/skills/pr-workflow/scripts/miner.py --check-auth
 ```
 
 Confirm output shows valid authentication with `repo` scope.
@@ -70,8 +70,8 @@ Ensure sufficient API calls remain for the planned mining scope (estimate 3-5 ca
 **Step 1: Determine scope**
 
 Choose mining parameters based on the task:
-- **Single repo**: `python3 ~/.claude/scripts/miner.py org/repo output.json --limit 50`
-- **Multi-repo**: `python3 ~/.claude/scripts/miner.py org/repo-a,org/repo-b output.json --limit 50`
+- **Single repo**: `python3 ~/.claude/skills/pr-workflow/scripts/miner.py org/repo output.json --limit 50`
+- **Multi-repo**: `python3 ~/.claude/skills/pr-workflow/scripts/miner.py org/repo-a,org/repo-b output.json --limit 50`
 - **Filtered**: Add `--reviewer name`, `--since date`, or `--all-comments`
 
 Start with 50 PRs. Expand only after validating output quality. Large limits (1000+) burn rate limits, return outdated standards, and produce unwieldy files.
@@ -79,7 +79,7 @@ Start with 50 PRs. Expand only after validating output quality. Large limits (10
 **Step 2: Execute mining**
 
 ```bash
-python3 ~/.claude/scripts/miner.py <repos> mined_data/<output>.json --limit <N>
+python3 ~/.claude/skills/pr-workflow/scripts/miner.py <repos> mined_data/<output>.json --limit <N>
 ```
 
 Monitor progress output. Watch for:
@@ -106,7 +106,7 @@ If interaction count is below 20, consider expanding scope (`--limit`, `--all-co
 **Step 1: Run validation script**
 
 ```bash
-python3 ~/.claude/scripts/validate.py
+python3 ~/.claude/skills/pr-workflow/scripts/validate.py
 ```
 
 **Step 2: Spot-check data quality**
@@ -120,7 +120,7 @@ Review 3-5 interactions manually:
 **Step 3: Generate summary statistics**
 
 ```bash
-python3 ~/.claude/scripts/miner.py <repos> <output>.json --summary
+python3 ~/.claude/skills/pr-workflow/scripts/miner.py <repos> <output>.json --summary
 ```
 
 Verify:
@@ -267,7 +267,7 @@ This skill coordinates PR mining workflows to extract tribal knowledge and codin
 **Step 1: Check miner script exists**
 
 ```bash
-fish -c "ls ~/.claude/skills/process/pr-workflow/scripts/miner.py"
+fish -c "ls ~/.claude/skills/pr-workflow/scripts/miner.py"
 ```
 
 Expected: File exists at path.
@@ -337,7 +337,7 @@ Run jobs sequentially. Wait for each to complete before starting next. Wait for 
 **Step 1: Check output file exists and has content**
 
 ```bash
-fish -c "cat ~/.claude/skills/process/pr-workflow/mined_data/{output}.json | head -50"
+fish -c "cat ~/.claude/skills/pr-workflow/mined_data/{output}.json | head -50"
 ```
 
 **Step 2: Validate structure**
@@ -425,7 +425,7 @@ Follow this structure for each pattern:
 **Step 4: Save rules**
 
 ```bash
-fish -c "cat > ~/.claude/skills/process/pr-workflow/rules/{repos}_coding_rules.md"
+fish -c "cat > ~/.claude/skills/pr-workflow/rules/{repos}_coding_rules.md"
 ```
 
 **Constraint - Cleanup Behavior**: After saving rules to disk, remove temporary coordination files (PIDs, debug logs, intermediate JSON). Keep ONLY the final mining result JSON (for future reference) and generated rules markdown (for user consumption).
@@ -444,7 +444,7 @@ Provide:
 - List of top 3-5 HIGH confidence patterns with occurrence counts
 - Summary of MEDIUM and LOW confidence pattern distribution
 
-**Constraint - Report Clarity**: Show actual numbers and paths, not generic summaries. Example good report: "Analyzed 150 PRs, extracted 42 interactions. HIGH confidence (12 patterns): Error handling (5), Testing (4), Naming (3). MEDIUM confidence: 18 patterns. LOW confidence: 12 patterns. Rules: ~/.claude/skills/process/pr-workflow/rules/myrepo_coding_rules.md"
+**Constraint - Report Clarity**: Show actual numbers and paths, not generic summaries. Example good report: "Analyzed 150 PRs, extracted 42 interactions. HIGH confidence (12 patterns): Error handling (5), Testing (4), Naming (3). MEDIUM confidence: 18 patterns. LOW confidence: 12 patterns. Rules: ~/.claude/skills/pr-workflow/rules/myrepo_coding_rules.md"
 
 **Constraint - Communication Style**: Report facts without self-congratulation. Show what happened and where the output is. Report facts directly: "Mined 42 interactions from 150 PRs" — keep the tone factual.
 

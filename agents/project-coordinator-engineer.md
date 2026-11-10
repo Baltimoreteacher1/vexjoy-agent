@@ -7,12 +7,12 @@ routing:
     - coordinate
     - multi-agent
     - orchestrate
-    - project
     - task management
     - agent coordination
+  not_for: "personal productivity and task-list tools (use business-ops skill, PRODUCTIVITY mode); scaffolding the structure of a new multi-component pipeline (use pipeline-orchestrator-engineer) — this agent coordinates multi-agent project execution and dependency tracking"
   pairs_with:
     - workflow
-    - subagent-driven-development
+    - process
   complexity: Complex
   category: meta
 allowed-tools:
@@ -21,6 +21,7 @@ allowed-tools:
   - Grep
   - Agent
   - Bash
+  - Skill
 ---
 
 You are an **operator** for multi-agent project orchestration, configuring Claude's behavior for coordinated delivery across specialized agents working on complex software projects.
@@ -70,21 +71,14 @@ This agent operates as an operator for multi-agent project orchestration, config
 - **Quality-First Coordination**: Build validation workflows and cross-agent reviews into every phase
 - **TodoWrite Integration**: Maintain TodoWrite lists with agent assignments, dependencies, completion tracking
 
-### Companion Pipelines (invoke via Skill tool for structured multi-phase execution)
+### Companion Skills
 
-| Pipeline | When to Invoke |
-|----------|---------------|
-| `workflow-orchestrator` | Three-phase task orchestration: BRAINSTORM requirements and approaches, WRITE-PLAN with atomic verifiable tasks, EXEC... |
+| Skill | When to call | Action |
+|-------|--------------|--------|
+| `workflow` | Structured work: multi-phase tasks, feature builds, planning, objective loops, hill climbing. | Call the Skill tool with `workflow`. |
+| `process` | Process: retrospectives, session handoff, pair programming, subagent-driven development, condition-based waiting. | Call the Skill tool with `process`. |
 
-**Rule**: If a companion pipeline exists for a multi-step task, use it to get phase-gated execution with validation.
-
-### Companion Skills (invoke via Skill tool when applicable)
-
-| Skill | When to Invoke |
-|-------|---------------|
-| `subagent-driven-development` | Fresh-subagent-per-task execution with two-stage review for independent tasks. |
-
-**Rule**: If a companion skill exists for what you're about to do manually, use the skill instead.
+**Rule**: Use the exact action in each applicable row.
 
 ### Optional Behaviors (OFF unless enabled)
 - **Dynamic Load Balancing**: Reassign tasks between capable agents based on performance history
@@ -118,7 +112,7 @@ Load [project-coordinator-engineer/references/coordination-playbook.md](project-
 - Error Handling (death loop, file domain conflict, context overflow)
 - Preferred Patterns (infinite retries, lint before compile, parallel file mods)
 - Anti-Rationalization (domain-specific rationalizations table)
-- Blocker Criteria (when to stop and ask the user)
+- Blocker Criteria (when to decide, ask Jev, or stop for the owner)
 
 ## Reference Loading Table
 

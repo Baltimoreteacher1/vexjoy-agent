@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# hook-version: 1.0.0
+# hook-version: 1.0.3
 """
 UserPromptSubmit hook — inject voice output gate for external text actions.
 
@@ -21,9 +21,16 @@ from pathlib import Path
 # not the resolved symlink target (which lives in private-skills)
 HOOKS_DIR = Path.home() / ".claude" / "hooks"
 sys.path.insert(0, str(HOOKS_DIR / "lib"))
+# The tracked copy runs from this repository before deployment. A private
+# symlink target has no sibling lib, so the installed path remains its fallback.
+LOCAL_LIB = Path(__file__).resolve().parent / "lib"
+if LOCAL_LIB.is_dir():
+    sys.path.insert(0, str(LOCAL_LIB))
 
 try:
-    from hook_utils import HookOutput, empty_output
+    from hook_utils import HookOutput, empty_output, hook_error
+    from skill_directives import skill_call_directive
+    from stdin_timeout import read_stdin
 except ImportError:
     # Graceful degradation if hook_utils not available
     def _noop():
@@ -51,12 +58,12 @@ EXTERNAL_TEXT_PATTERNS = [
     r"\bupdate\s+(the\s+)?(readme|doc)\b",
 ]
 
-# Voice-specific patterns (adds voice profile validation on top)
+# Voice-specific patterns (adds voice profile validation on top).
+# Profile-name triggers live in the private-skills copy of this hook;
+# the tracked copy keeps generic triggers only.
 VOICE_PATTERNS = [
     r"\bvoice\b",
-    r"\bandy\s*nemm",
     r"\bvexjoy\b",
-    r"\bfeynman\b",
     r"\bjoy\s*check\b",
     r"\banti[\s-]?ai\b",
 ]
@@ -77,7 +84,19 @@ def detect_voice_mode(prompt: str) -> bool:
     return any(re.search(p, prompt_lower) for p in VOICE_PATTERNS)
 
 
-def build_gate_instruction(voice_mode: bool) -> str:
+def requested_voice_skill(prompt: str) -> str | None:
+    """Return the first indexed voice skill named in untrusted prompt text.
+
+    Matches ``voice-*`` prefixed names and the consolidated ``writing`` skill.
+    """
+    for match in re.finditer(r"\b(?:voice-[a-z0-9][a-z0-9-]*|writing)\b", prompt.lower()):
+        name = match.group(0)
+        if skill_call_directive(name):
+            return name
+    return None
+
+
+def build_gate_instruction(voice_mode: bool, prompt: str = "") -> str:
     """Build the validation gate instruction block."""
     lines = [
         "[voice-output-gate: active]",
@@ -90,7 +109,7 @@ def build_gate_instruction(voice_mode: bool) -> str:
         "   - corporate verbs: use plain verbs (use, help, improve)",
         "   - throat-clearing: delete, start with the point",
         "   - abstract nouns: name the specific thing",
-        "4. Confirm joy-check: positive framing, no grievance patterns",
+        "4. Call the Skill tool with `joy-check`.",
         "5. Post the cleaned version only after step 2 returns zero errors",
         "",
         "This gate is mandatory. Do not skip it. Do not self-assess as clean.",
@@ -98,22 +117,34 @@ def build_gate_instruction(voice_mode: bool) -> str:
     ]
 
     if voice_mode:
+        voice_skill = requested_voice_skill(prompt)
         lines.extend(
             [
                 "",
-                "Voice mode active: also load the requested voice skill and validate",
-                "the draft matches the voice profile before posting.",
+                "Voice mode active: validate the draft against the requested profile before posting.",
             ]
         )
+        if voice_skill and voice_skill != "voice-validator":
+            lines.append(f"Call the Skill tool with `{voice_skill}`.")
+        lines.append("Call the Skill tool with `writing`.")
 
     lines.append("[/voice-output-gate]")
     return "\n".join(lines)
 
 
+_BYPASS_ENV = "VOICE_OUTPUT_GATE_BYPASS"
+
+
 def main():
-    # Read the user prompt from stdin (Claude Code passes it as JSON)
+    if os.environ.get(_BYPASS_ENV) == "1":
+        if os.environ.get("CLAUDE_HOOKS_DEBUG"):
+            print("[voice-output-gate] Bypassed via VOICE_OUTPUT_GATE_BYPASS=1", file=sys.stderr)
+        sys.exit(0)
+
+    # Read the user prompt from stdin (Claude Code passes it as JSON). The read is
+    # bounded: a pipe that never closes yields "" and the empty result below.
     try:
-        input_data = json.loads(sys.stdin.read())
+        input_data = json.loads(read_stdin(timeout=2))
         prompt = input_data.get("prompt", "") or input_data.get("message", "")
     except (json.JSONDecodeError, KeyError):
         empty_output("UserPromptSubmit").print_and_exit()
@@ -131,7 +162,7 @@ def main():
         return
 
     # Build and inject the gate
-    gate_text = build_gate_instruction(voice_mode=is_voice)
+    gate_text = build_gate_instruction(voice_mode=is_voice, prompt=prompt)
 
     output = HookOutput(
         event_name="UserPromptSubmit",
@@ -144,10 +175,6 @@ if __name__ == "__main__":
     try:
         main()
     except Exception as e:
-        if os.environ.get("CLAUDE_HOOKS_DEBUG"):
-            import traceback
-
-            print(f"[voice-output-gate] HOOK-ERROR: {type(e).__name__}: {e}", file=sys.stderr)
-            traceback.print_exc(file=sys.stderr)
+        hook_error("voice-output-gate", e)
     finally:
         sys.exit(0)

@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-# hook-version: 1.0.0
+# hook-version: 1.0.1
 """
 PreToolUse:Write Hook: Voice Pipeline Publish Gate
 
 Blocks publishing VexJoy blog posts (draft: false) unless all 13 phases
-of the voice-writer pipeline have been completed.
+of the writing skill's voice pipeline have been completed.
 
 Detection logic:
 - Tool is Write (enforced by matcher in settings.json)
@@ -29,6 +29,7 @@ import traceback
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent / "lib"))
+from hook_utils import deny_tool_use, hook_error
 from stdin_timeout import read_stdin
 
 _BYPASS_ENV = "VOICE_GATE_BYPASS"
@@ -137,17 +138,7 @@ def main() -> None:
     )
 
     print(f"[voice-publish-gate] BLOCKED: {reason}", file=sys.stderr)
-    print(
-        json.dumps(
-            {
-                "hookSpecificOutput": {
-                    "hookEventName": "PreToolUse",
-                    "permissionDecision": "deny",
-                    "permissionDecisionReason": reason,
-                }
-            }
-        )
-    )
+    deny_tool_use("PreToolUse", reason)
     sys.exit(0)
 
 
@@ -157,9 +148,6 @@ if __name__ == "__main__":
     except SystemExit:
         raise
     except Exception as e:
-        if os.environ.get("CLAUDE_HOOKS_DEBUG"):
-            traceback.print_exc(file=sys.stderr)
-        else:
-            print(f"[voice-publish-gate] Error: {type(e).__name__}: {e}", file=sys.stderr)
+        hook_error("pretool-voice-publish-gate", e)
     finally:
         sys.exit(0)

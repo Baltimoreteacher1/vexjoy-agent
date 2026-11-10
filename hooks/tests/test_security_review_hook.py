@@ -281,11 +281,6 @@ class TestStopAsyncRewake:
         assert "working-tree diff" in err
         assert "os.system(cmd)" in err
 
-    def test_stop_instruction_states_no_sdk_no_api_key(self):
-        code, out, err = _run(_stop_event(cwd="/repo"), diff=_src_diff("payload"))
-        assert "no API key" in err
-        assert "no SDK" in err
-
     def test_stop_no_diff_no_rewake(self):
         code, out, err = _run(_stop_event(cwd="/repo"), diff="")
         assert code == 0
@@ -448,7 +443,7 @@ class TestStopAsyncRewake:
             state_file.write_text(
                 json.dumps(
                     {
-                        "hash": mod._diff_signature("/repo", diff),
+                        "hash": mod._dedup().signature("/repo", diff),
                         "ts": 0,
                         "ts_iso": "1970-01-01T00:00:00+00:00",
                         "cwd": "/repo",
@@ -470,7 +465,7 @@ class TestStopAsyncRewake:
             state_file.write_text(
                 json.dumps(
                     {
-                        "hash": mod._diff_signature("/repo", diff),
+                        "hash": mod._dedup().signature("/repo", diff),
                         "ts": stale_ts,
                         "ts_iso": "2020-01-01T00:00:00+00:00",
                         "cwd": "/repo",

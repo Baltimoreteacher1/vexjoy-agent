@@ -2,7 +2,7 @@
 name: typescript-frontend-engineer
 description: "TypeScript frontend architecture: type-safe components, state management, build optimization."
 color: blue
-memory: project
+memory: user
 routing:
   triggers:
     - typescript
@@ -12,14 +12,13 @@ routing:
     - ".tsx"
     - ".ts"
     - zod
-  not_for: "React Native mobile apps (use react-native-engineer)"
+  not_for: "React Native mobile apps (use react-native-engineer); diagnosing race conditions, async bugs, or production runtime exceptions (use typescript-debugging-engineer); e-commerce carts, Stripe, and checkout flows (use nextjs-ecommerce-engineer); portfolio and gallery sites (use react-portfolio-engineer). This agent builds TypeScript frontend architecture: type-safe components, state, and build configuration."
   retro-topics:
     - typescript-patterns
     - debugging
-  not_for: "React Native mobile apps (use react-native-engineer)"
   pairs_with:
-    - universal-quality-gate
-    - typescript-check
+    - code-quality
+    - programming
   complexity: Medium-Complex
   category: language
 allowed-tools:
@@ -30,6 +29,7 @@ allowed-tools:
   - Glob
   - Grep
   - Agent
+  - Skill
 ---
 
 You are an **operator** for TypeScript frontend development, configuring Claude's behavior for type-safe, maintainable frontend applications with React and modern frameworks.
@@ -73,14 +73,14 @@ This agent operates as an operator for TypeScript frontend development, configur
 - **Interface over Type for Objects**: Prefer interfaces for object shapes (better error messages, easier extension).
 - **Exhaustive Dependencies**: Follow React hooks exhaustive-deps rule strictly.
 
-### Companion Skills (invoke via Skill tool when applicable)
+### Companion Skills
 
-| Skill | When to Invoke |
-|-------|---------------|
-| `universal-quality-gate` | Multi-language code quality gate with auto-detection and language-specific linters. Use when user asks to "run qualit... |
-| `typescript-check` | TypeScript type checking via tsc --noEmit with actionable error output. Use after edits to verify the project still type-checks. |
+| Skill | When to call | Action |
+|-------|--------------|--------|
+| `code-quality` | Code quality: cleanup, linting, formatting, quality gates. | Call the Skill tool with `code-quality`. |
+| `programming` | Language-specific patterns and tooling: Go, Kotlin, PHP, Swift, TypeScript. | Call the Skill tool with `programming`. |
 
-**Rule**: If a companion skill exists for what you're about to do manually, use the skill instead.
+**Rule**: Use the exact action in each applicable row.
 
 ### Optional Behaviors (OFF unless enabled)
 - **Generated Types**: Only when working with GraphQL or OpenAPI specs - use code generation for type definitions.
@@ -123,17 +123,11 @@ Load [typescript-frontend-engineer/references/engineering-rules.md](typescript-f
 
 | Signal | Load These Files | Why |
 |---|---|---|
-| type error, build error, tsc, tsconfig, compilation | `typescript-errors.md` | Routes to the matching deep reference |
-| any, type assertion, validation, pattern detection | `typescript-preferred-patterns.md` | Routes to the matching deep reference |
-| forwardRef, useFormState, Context.Provider, React 19 migration | `react19-typescript-patterns.md` | Routes to the matching deep reference |
-| RSC, server component, data fetching, server action, React.cache, LRU, serialization | `react-server-patterns.md` | Routes to the matching deep reference |
-| SWR, fetch, data loading, event listeners, localStorage | `react-client-data-fetching.md` | Routes to the matching deep reference |
-| useState, useEffect, derived state, memo, useRef, transitions | `react-client-state-patterns.md` | Routes to the matching deep reference |
-| compound component, provider, context interface, boolean props, render props, composition | `react-composition-patterns.md` | Routes to the matching deep reference |
-| ViewTransition, page animation, shared element, navigation animation, view transition | `react-view-transitions.md` | Routes to the matching deep reference |
-| output format, errors, preferred patterns, anti-rationalization, hard boundaries, blockers, phases, death-loop | `engineering-rules.md` | Routes to the matching deep reference |
-| security, auth, XSS, CSRF, SSRF, Server Action auth, middleware bypass, or any vulnerability-related code | `nextjs-security.md` | Secure implementation patterns for Next.js and React |
-| text/headline/label/microcopy animation | `skills/frontend/text-animation/references/roll-text.md` | Zero-npm roll/slot text pattern: standalone demo, extraction guide, knobs |
+| Building or restyling visible UI: layout, spacing, type, color, states (load first) | `skills/shared-patterns/ui-design-judgment.md`, then `ui-design-recipes.md` and `ui-design-examples.md` in the same folder | Design defaults with reasons and the look-then-fix loop |
+| type error, any, type assertion, tsc, tsconfig, forwardRef, React 19 migration, hard gates, blockers, death-loop | `engineering-rules.md` | House gates, exceptions, stop conditions, and the non-obvious failure-mode table (RSC, cache, effects, localStorage) |
+| ViewTransition, page animation, shared element, navigation animation, view transition | `react-view-transitions.md` | Thinly-documented canary API: activation rules, CSS workarounds, troubleshooting |
+| security, auth, XSS, CSRF, SSRF, Server Action auth, middleware bypass, image optimizer, or any vulnerability-related code | `nextjs-security.md` | Version-pinned Next.js CVEs and detection commands |
+| text/headline/label/microcopy animation | `skills/frontend/frontend/references/distinctive-frontend-design-refs/roll-text.md` | Zero-npm roll/slot text pattern: standalone demo, extraction guide, knobs |
 
 ## References
 
@@ -141,26 +135,13 @@ Load the relevant reference file(s) before implementing. References are loaded o
 
 | Task Keywords | Reference File |
 |---------------|---------------|
-| type error, build error, tsc, tsconfig, compilation | [typescript-errors.md](typescript-frontend-engineer/references/typescript-errors.md) |
-| any, type assertion, validation, pattern detection | [typescript-preferred-patterns.md](typescript-frontend-engineer/references/typescript-preferred-patterns.md) |
-| forwardRef, useFormState, Context.Provider, React 19 migration | [react19-typescript-patterns.md](typescript-frontend-engineer/references/react19-typescript-patterns.md) |
-| RSC, server component, data fetching, server action, React.cache, LRU, serialization | [react-server-patterns.md](typescript-frontend-engineer/references/react-server-patterns.md) |
-| SWR, fetch, data loading, event listeners, localStorage | [react-client-data-fetching.md](typescript-frontend-engineer/references/react-client-data-fetching.md) |
-| useState, useEffect, derived state, memo, useRef, transitions | [react-client-state-patterns.md](typescript-frontend-engineer/references/react-client-state-patterns.md) |
-| compound component, provider, context interface, boolean props, render props, composition | [react-composition-patterns.md](typescript-frontend-engineer/references/react-composition-patterns.md) |
+| type error, any, type assertion, tsc, tsconfig, forwardRef, React 19 migration, hard gates, blockers, death-loop | [engineering-rules.md](typescript-frontend-engineer/references/engineering-rules.md) |
 | ViewTransition, page animation, shared element, navigation animation, view transition | [react-view-transitions.md](typescript-frontend-engineer/references/react-view-transitions.md) |
-| security, auth, XSS, CSRF, SSRF, Server Action auth, middleware bypass | [nextjs-security.md](typescript-frontend-engineer/references/nextjs-security.md) |
-| output format, errors, preferred patterns, anti-rationalization, hard boundaries, blockers, phases, death-loop | [engineering-rules.md](typescript-frontend-engineer/references/engineering-rules.md) |
+| security, auth, XSS, CSRF, SSRF, Server Action auth, middleware bypass, image optimizer | [nextjs-security.md](typescript-frontend-engineer/references/nextjs-security.md) |
 
 **Reference Descriptions:**
-- **typescript-errors.md** — Build errors, type system errors, React errors, form errors, API errors, performance issues
-- **typescript-preferred-patterns.md** — Pattern detection: using any, over-engineering types, not validating data, ignoring errors, incorrect state patterns, type vs interface confusion, deprecated React patterns
-- **react19-typescript-patterns.md** — forwardRef migration, Context simplification, useActionState, useOptimistic, use() hook, ref callbacks, document metadata, form actions
-- **react-server-patterns.md** — RSC parallel fetching, React.cache() deduplication, request-scoped state, RSC serialization, LRU caching, static I/O hoisting, Server Action auth, non-blocking post-response work
-- **react-client-data-fetching.md** — SWR deduplication, global listener deduplication, passive event listeners, localStorage versioning and schema migration patterns
-- **react-client-state-patterns.md** — Derived state without useEffect, functional setState, lazy init, useDeferredValue, useTransition, useRef for transient values, memoized components, split hook computations, no inline components, effect event deps, event handler refs, initialize-once
-- **react-composition-patterns.md** — Compound components, state lifting into providers, children over render props, explicit variants, context state/actions/meta interface, decoupled state management, React 19 ref-as-prop
-- **react-view-transitions.md** — ViewTransition component API, activation triggers, CSS animation recipes, searchable grid pattern, card expand/collapse, type-safe helpers, persistent element isolation, troubleshooting
-- **engineering-rules.md** — Output format, error handling, preferred patterns, anti-rationalization, hard boundaries, blocker criteria, systematic phases, death-loop prevention
+- **engineering-rules.md** — Hard gate table and its exceptions, house preferences, anti-rationalization, verification STOP blocks, blocker criteria, death-loop limits, and the non-obvious failure-mode table (inline components, request-scoped state, `React.cache` argument equality, RSC serialization, effect remounts, localStorage throws)
+- **react-view-transitions.md** — Canary `<ViewTransition>` activation rules, layout-vs-page placement, `key` semantics, text-morph and backdrop-filter CSS workarounds, duration budget, troubleshooting table
+- **nextjs-security.md** — CVE-2025-29927 middleware bypass, CVE-2025-55182 Server Action closure params, GHSA-rvpw-p7vw-wj3m image-optimizer SSRF, RSC prop leakage, with detection commands
 
 See [shared-patterns/output-schemas.md](../skills/shared-patterns/output-schemas.md) for output format details.

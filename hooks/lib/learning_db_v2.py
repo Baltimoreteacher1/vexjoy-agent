@@ -17,18 +17,22 @@ Design Principles:
 """
 
 import hashlib
+import json
 import os
 import re
 import sqlite3
+import sys
 from contextlib import contextmanager
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
+
+from hook_utils import append_hook_debug_log, ensure_owner_only_file
 
 # ─── Configuration ─────────────────────────────────────────────
 
 _DEFAULT_DB_DIR = Path.home() / ".claude" / "learning"
 
-_CURRENT_SCHEMA_VERSION = 6
+_CURRENT_SCHEMA_VERSION = 16
 
 CATEGORY_DEFAULTS = {
     "error": 0.55,
@@ -43,41 +47,35 @@ CATEGORY_DEFAULTS = {
 
 VALID_CATEGORIES = set(CATEGORY_DEFAULTS.keys())
 
-# Carried over from learning_db.py for backward compatibility
-ERROR_TYPES = {
-    "missing_file": [
-        r"no such file",
-        r"file not found",
-        r"cannot find",
-        r"does not exist",
-    ],
-    "permissions": [r"permission denied", r"access denied", r"not permitted"],
-    "syntax_error": [r"syntax ?error", r"unexpected token", r"parse error"],
-    "type_error": [r"type error", r"cannot convert", r"incompatible type"],
-    "import_error": [r"import error", r"module not found", r"no module named"],
-    "timeout": [r"timeout", r"timed out", r"deadline exceeded"],
-    "connection": [r"connection refused", r"network error", r"unreachable"],
-    "memory": [r"out of memory", r"memory error", r"heap"],
-    "multiple_matches": [r"multiple matches", r"found \d+ matches", r"replace_all"],
-}
-
-DEFAULT_FIX_ACTIONS = {
-    "missing_file": {"fix_type": "auto", "fix_action": "create_file"},
-    "permissions": {"fix_type": "manual", "fix_action": "check_permissions"},
-    "syntax_error": {"fix_type": "skill", "fix_action": "systematic-debugging"},
-    "type_error": {"fix_type": "skill", "fix_action": "systematic-debugging"},
-    "import_error": {"fix_type": "auto", "fix_action": "install_module"},
-    "timeout": {"fix_type": "auto", "fix_action": "retry_with_timeout"},
-    "connection": {"fix_type": "auto", "fix_action": "retry"},
-    "memory": {"fix_type": "manual", "fix_action": "reduce_memory"},
-    "multiple_matches": {"fix_type": "auto", "fix_action": "use_replace_all"},
-}
+# Confidence floor for injecting a learning into context. Nothing in this repo
+# reads it now: the learning injectors, the confidence-decay.py Stop hook, and
+# hooks/tests/test_injection_floor.py were retired with the learning-capture
+# loop (97a8fc91). decay_confidence() below still lowers confidence, for
+# routing rows only.
+#
+# INVARIANT if an injector returns: the floor must sit strictly below the
+# lowest birth confidence in CATEGORY_DEFAULTS for any injectable category
+# (error, at 0.55, is the lowest today). Confidence rose only for learnings
+# that got injected, so a floor at or above birth confidence is a one-way
+# ratchet -- a new learning never injects, never gets boosted, never crosses
+# the floor -- while decay keeps pulling it down. A 0.70 floor against a 0.55
+# birth confidence starved the injectable pool to 3 rows.
+#
+# 0.5 also absorbs float drift: decay stores 0.55 - 0.05 as 0.5499999999999999,
+# strictly below a naive 0.55 floor.
+INJECTION_MIN_CONFIDENCE = 0.5
 
 
 # ─── Database Connection ───────────────────────────────────────
 
 
-def _get_db_dir() -> Path:
+def get_db_dir() -> Path:
+    """Return the learning database directory, honoring CLAUDE_LEARNING_DIR.
+
+    Public API for callers that need the directory path (e.g. to locate
+    sibling files like route-events.jsonl). Keeps ADR-122 chmod hardening
+    in get_db_path() which calls this.
+    """
     env_dir = os.environ.get("CLAUDE_LEARNING_DIR")
     if env_dir:
         return Path(env_dir)
@@ -85,7 +83,7 @@ def _get_db_dir() -> Path:
 
 
 def get_db_path() -> Path:
-    db_dir = _get_db_dir()
+    db_dir = get_db_dir()
     db_dir.mkdir(parents=True, exist_ok=True)
     # Harden directory permissions (ADR-122)
     try:
@@ -97,9 +95,14 @@ def get_db_path() -> Path:
 
 @contextmanager
 def get_connection():
-    conn = sqlite3.connect(get_db_path(), timeout=5.0)
+    db_path = get_db_path()
+    # Create the file 0600 before SQLite opens it (SQLite gives -wal/-shm the
+    # database's mode), so it is never briefly group- or world-readable.
+    ensure_owner_only_file(db_path)
+    conn = sqlite3.connect(db_path, timeout=5.0)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA busy_timeout=5000")
     try:
         yield conn
     finally:
@@ -192,6 +195,145 @@ def _run_migrations(conn: sqlite3.Connection) -> None:
             "INSERT OR IGNORE INTO schema_migrations (version, description) "
             "VALUES (6, 'add routing_outcome_basis table for outcome-basis counters')"
         )
+
+    if current < 7:
+        # v6 -> v7: local agent evidence read model for queryable sessions,
+        # hook events, and route decisions. Additive and idempotent.
+        conn.executescript(_EVIDENCE_DDL)
+        conn.execute("PRAGMA user_version = 7")
+        conn.execute(
+            "INSERT OR IGNORE INTO schema_migrations (version, description) "
+            "VALUES (7, 'add agent evidence event and route decision tables')"
+        )
+
+    if current < 8:
+        # v7 -> v8: carry the router's ` pipeline=<name>` marker token. The
+        # column may already exist from an ad-hoc ALTER on a live DB; the
+        # duplicate-column error is the expected no-op there.
+        try:
+            conn.execute("ALTER TABLE evidence_route_decisions ADD COLUMN pipeline TEXT")
+        except sqlite3.OperationalError:
+            pass  # column already present
+        conn.execute("PRAGMA user_version = 8")
+        conn.execute(
+            "INSERT OR IGNORE INTO schema_migrations (version, description) "
+            "VALUES (8, 'add pipeline column to evidence_route_decisions')"
+        )
+
+    if current < 9:
+        # v8 -> v9: record whether the observed dispatch was expected to carry
+        # the directive at all. Historical rows stay NULL — an unknown
+        # population, never folded into either bucket. The column may already
+        # exist from an ad-hoc ALTER on a live DB; the duplicate-column error is
+        # the expected no-op there.
+        try:
+            conn.execute("ALTER TABLE instruction_compliance ADD COLUMN directive_expected BOOLEAN")
+        except sqlite3.OperationalError:
+            pass  # column already present
+        conn.execute("PRAGMA user_version = 9")
+        conn.execute(
+            "INSERT OR IGNORE INTO schema_migrations (version, description) "
+            "VALUES (9, 'add directive_expected column to instruction_compliance')"
+        )
+
+    if current < 10:
+        # v9 -> v10: handoff-completeness telemetry. spec_score counts the
+        # task-spec labels a [do-route] prompt carries (0-7), spec_missing
+        # names the absent ones, prompt_chars is the prompt length. Rows from
+        # non-/do dispatches and rows older than this migration stay NULL
+        # ("before measurement"). Each column may already exist from an ad-hoc
+        # ALTER on a live DB; the duplicate-column error is the expected no-op.
+        for ddl in (
+            "ALTER TABLE evidence_route_decisions ADD COLUMN spec_score INTEGER",
+            "ALTER TABLE evidence_route_decisions ADD COLUMN spec_missing TEXT",
+            "ALTER TABLE evidence_route_decisions ADD COLUMN prompt_chars INTEGER",
+        ):
+            try:
+                conn.execute(ddl)
+            except sqlite3.OperationalError:
+                pass  # column already present
+        conn.execute("PRAGMA user_version = 10")
+        conn.execute(
+            "INSERT OR IGNORE INTO schema_migrations (version, description) "
+            "VALUES (10, 'add spec_score, spec_missing, prompt_chars columns to evidence_route_decisions')"
+        )
+
+    if current < 11:
+        # v10 -> v11: compaction evidence. compaction_events holds one row per
+        # compaction claim or record (plugin, PreCompact hook, or the engine's
+        # own compact_boundary transcript row); session_usage samples the
+        # context window each turn. Same DDL a fresh DB gets from _SCHEMA.
+        conn.executescript(_COMPACTION_DDL)
+        conn.execute("PRAGMA user_version = 11")
+        conn.execute(
+            "INSERT OR IGNORE INTO schema_migrations (version, description) "
+            "VALUES (11, 'add compaction_events and session_usage tables')"
+        )
+
+    if current < 12:
+        # v11 -> v12: jev_calls, one row per Jev API call from jev_router_common.call_jev.
+        conn.executescript(_JEV_CALLS_DDL)
+        conn.execute("PRAGMA user_version = 12")
+        conn.execute(
+            "INSERT OR IGNORE INTO schema_migrations (version, description) "
+            "VALUES (12, 'add jev_calls per-script call telemetry')"
+        )
+
+    if current < 13:
+        # v12 -> v13: harness_runs, one row per Jev harness variant trial.
+        conn.executescript(_HARNESS_RUNS_DDL)
+        conn.execute("PRAGMA user_version = 13")
+        conn.execute(
+            "INSERT OR IGNORE INTO schema_migrations (version, description) "
+            "VALUES (13, 'add harness_runs table for jev improvement loop telemetry')"
+        )
+
+    if current < 14:
+        # v13 -> v14: add payload_hash, answers_json, cached to jev_calls.
+        for ddl in (
+            "ALTER TABLE jev_calls ADD COLUMN payload_hash TEXT",
+            "ALTER TABLE jev_calls ADD COLUMN answers_json TEXT",
+            "ALTER TABLE jev_calls ADD COLUMN cached INTEGER",
+        ):
+            try:
+                conn.execute(ddl)
+            except sqlite3.OperationalError:
+                pass  # column already present
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_jev_calls_payload_hash ON jev_calls(payload_hash)")
+        conn.execute("PRAGMA user_version = 14")
+        conn.execute(
+            "INSERT OR IGNORE INTO schema_migrations (version, description) "
+            "VALUES (14, 'add payload_hash, answers_json, cached columns to jev_calls')"
+        )
+
+    if current < 15:
+        # v14 -> v15: one privacy-bounded receipt per /d intent-alignment
+        # judgment. Request and proposed-intent text are represented by hashes.
+        conn.executescript(_JEV_INTENT_ALIGNMENTS_DDL)
+        conn.execute("PRAGMA user_version = 15")
+        conn.execute(
+            "INSERT OR IGNORE INTO schema_migrations (version, description) "
+            "VALUES (15, 'add Jev intent-alignment telemetry')"
+        )
+
+    if current < 16:
+        conn.execute("PRAGMA user_version = 16")
+        conn.execute(
+            "INSERT OR IGNORE INTO schema_migrations (version, description) "
+            "VALUES (16, 'add executing agent model and effort to intent alignment telemetry')"
+        )
+
+    # Reconcile development-era v15 databases whose table predates the final
+    # receipt shape. CREATE TABLE IF NOT EXISTS cannot add missing columns.
+    intent_columns = {row[1] for row in conn.execute("PRAGMA table_info(jev_intent_alignments)").fetchall()}
+    for column, sql_type in (
+        ("questions_version", "TEXT"),
+        ("agent_model", "TEXT"),
+        ("agent_effort", "TEXT"),
+        ("agent_runtime", "TEXT"),
+    ):
+        if column not in intent_columns:
+            conn.execute(f"ALTER TABLE jev_intent_alignments ADD COLUMN {column} {sql_type}")
 
     conn.commit()
 
@@ -290,6 +432,255 @@ CREATE TABLE IF NOT EXISTS routing_outcome_basis (
 );
 """
 
+
+_EVIDENCE_DDL = """
+CREATE TABLE IF NOT EXISTS evidence_sessions (
+    session_id    TEXT PRIMARY KEY,
+    project_path  TEXT,
+    started_at    TEXT NOT NULL DEFAULT (datetime('now')),
+    last_seen_at  TEXT NOT NULL DEFAULT (datetime('now')),
+    summary       TEXT
+);
+
+CREATE TABLE IF NOT EXISTS evidence_events (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    event_id      TEXT NOT NULL UNIQUE,
+    session_id    TEXT,
+    ts            TEXT NOT NULL DEFAULT (datetime('now')),
+    event_type    TEXT NOT NULL,
+    source        TEXT NOT NULL,
+    agent         TEXT,
+    skill         TEXT,
+    tool_name     TEXT,
+    route_key     TEXT,
+    action        TEXT,
+    target        TEXT,
+    target_hash   TEXT,
+    success       INTEGER,
+    error         TEXT,
+    model         TEXT,
+    tokens        INTEGER,
+    metadata      TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_evidence_events_ts ON evidence_events(ts);
+CREATE INDEX IF NOT EXISTS idx_evidence_events_session ON evidence_events(session_id);
+CREATE INDEX IF NOT EXISTS idx_evidence_events_type ON evidence_events(event_type);
+CREATE INDEX IF NOT EXISTS idx_evidence_events_route ON evidence_events(route_key);
+CREATE INDEX IF NOT EXISTS idx_evidence_events_agent_skill ON evidence_events(agent, skill);
+CREATE INDEX IF NOT EXISTS idx_evidence_events_target_hash ON evidence_events(target_hash);
+CREATE INDEX IF NOT EXISTS idx_evidence_events_success ON evidence_events(success);
+
+CREATE VIRTUAL TABLE IF NOT EXISTS evidence_events_fts USING fts5(
+    event_type,
+    source,
+    agent,
+    skill,
+    tool_name,
+    route_key,
+    action,
+    target,
+    error,
+    metadata,
+    content='evidence_events',
+    content_rowid='id',
+    tokenize='porter unicode61'
+);
+
+CREATE TRIGGER IF NOT EXISTS evidence_events_ai AFTER INSERT ON evidence_events BEGIN
+    INSERT INTO evidence_events_fts(
+        rowid, event_type, source, agent, skill, tool_name, route_key, action, target, error, metadata
+    )
+    VALUES (
+        new.id, new.event_type, new.source, new.agent, new.skill, new.tool_name, new.route_key,
+        new.action, new.target, new.error, new.metadata
+    );
+END;
+
+CREATE TRIGGER IF NOT EXISTS evidence_events_ad AFTER DELETE ON evidence_events BEGIN
+    INSERT INTO evidence_events_fts(
+        evidence_events_fts, rowid, event_type, source, agent, skill, tool_name, route_key,
+        action, target, error, metadata
+    )
+    VALUES (
+        'delete', old.id, old.event_type, old.source, old.agent, old.skill, old.tool_name, old.route_key,
+        old.action, old.target, old.error, old.metadata
+    );
+END;
+
+CREATE TRIGGER IF NOT EXISTS evidence_events_au AFTER UPDATE ON evidence_events BEGIN
+    INSERT INTO evidence_events_fts(
+        evidence_events_fts, rowid, event_type, source, agent, skill, tool_name, route_key,
+        action, target, error, metadata
+    )
+    VALUES (
+        'delete', old.id, old.event_type, old.source, old.agent, old.skill, old.tool_name, old.route_key,
+        old.action, old.target, old.error, old.metadata
+    );
+    INSERT INTO evidence_events_fts(
+        rowid, event_type, source, agent, skill, tool_name, route_key, action, target, error, metadata
+    )
+    VALUES (
+        new.id, new.event_type, new.source, new.agent, new.skill, new.tool_name, new.route_key,
+        new.action, new.target, new.error, new.metadata
+    );
+END;
+
+CREATE TABLE IF NOT EXISTS evidence_route_decisions (
+    id                   INTEGER PRIMARY KEY AUTOINCREMENT,
+    decision_id          TEXT NOT NULL UNIQUE,
+    session_id           TEXT,
+    route_key            TEXT NOT NULL,
+    agent                TEXT NOT NULL,
+    skill                TEXT,
+    complexity           TEXT,
+    model                TEXT,
+    action               TEXT,
+    health               REAL,
+    n                    INTEGER,
+    failure              INTEGER DEFAULT 0,
+    gate_inputs_present  INTEGER DEFAULT 0,
+    outcome              TEXT,
+    outcome_basis        TEXT,
+    request_snippet      TEXT,
+    stack                TEXT,
+    pipeline             TEXT,
+    alternates           TEXT,
+    spec_score           INTEGER,
+    spec_missing         TEXT,
+    prompt_chars         INTEGER,
+    created_at           TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at           TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_evidence_route_key ON evidence_route_decisions(route_key);
+CREATE INDEX IF NOT EXISTS idx_evidence_route_session ON evidence_route_decisions(session_id);
+CREATE INDEX IF NOT EXISTS idx_evidence_route_created ON evidence_route_decisions(created_at);
+CREATE INDEX IF NOT EXISTS idx_evidence_route_outcome ON evidence_route_decisions(outcome);
+"""
+
+
+_JEV_CALLS_DDL = """
+CREATE TABLE IF NOT EXISTS jev_calls (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts TEXT NOT NULL,
+    script TEXT NOT NULL,
+    session_id TEXT,
+    ok INTEGER NOT NULL,
+    latency_ms REAL,
+    input_tokens INTEGER,
+    output_tokens INTEGER,
+    n_questions INTEGER,
+    n_redacted INTEGER,
+    error TEXT,
+    payload_hash TEXT,
+    answers_json TEXT,
+    cached INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_jev_calls_script_ts ON jev_calls(script, ts);
+CREATE INDEX IF NOT EXISTS idx_jev_calls_payload_hash ON jev_calls(payload_hash);
+"""
+
+_JEV_INTENT_ALIGNMENTS_DDL = """
+CREATE TABLE IF NOT EXISTS jev_intent_alignments (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts TEXT NOT NULL,
+    session_id TEXT,
+    phase TEXT NOT NULL,
+    transport TEXT NOT NULL,
+    model TEXT,
+    agent_model TEXT,
+    agent_effort TEXT,
+    agent_runtime TEXT,
+    alignment TEXT NOT NULL,
+    materially_differs INTEGER,
+    route_mismatch INTEGER,
+    clarification_needed INTEGER,
+    questions_version TEXT,
+    issues_json TEXT,
+    scores_json TEXT,
+    request_hash TEXT,
+    proposed_intent_hash TEXT,
+    latency_ms REAL
+);
+CREATE INDEX IF NOT EXISTS idx_jev_intent_alignment_ts ON jev_intent_alignments(ts);
+CREATE INDEX IF NOT EXISTS idx_jev_intent_alignment_model ON jev_intent_alignments(model, transport);
+"""
+
+_HARNESS_RUNS_DDL = """
+CREATE TABLE IF NOT EXISTS harness_runs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id TEXT NOT NULL,
+    program TEXT NOT NULL,
+    round INTEGER NOT NULL,
+    lever TEXT NOT NULL,
+    variant TEXT NOT NULL,
+    metric_accuracy REAL,
+    metric_brier REAL,
+    metric_f1 REAL,
+    kept INTEGER NOT NULL,
+    reason TEXT,
+    answer_distribution TEXT,
+    dev_size INTEGER,
+    test_size INTEGER,
+    baseline_accuracy REAL,
+    baseline_brier REAL,
+    ts TEXT NOT NULL DEFAULT (datetime('now')),
+    session_id TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_harness_runs_run_id ON harness_runs(run_id);
+CREATE INDEX IF NOT EXISTS idx_harness_runs_program ON harness_runs(program);
+CREATE INDEX IF NOT EXISTS idx_harness_runs_ts ON harness_runs(ts);
+"""
+
+_COMPACTION_DDL = """
+CREATE TABLE IF NOT EXISTS compaction_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id TEXT NOT NULL,
+    ts TEXT NOT NULL,
+    source TEXT NOT NULL,
+    trigger TEXT,
+    engine TEXT,
+    agent_id TEXT,
+    messages_before INTEGER,
+    messages_after INTEGER,
+    tokens_before INTEGER,
+    tokens_after INTEGER,
+    reduction_ratio REAL,
+    dropped_calls INTEGER,
+    truncated_results INTEGER,
+    pinned INTEGER,
+    prefiltered INTEGER,
+    jev_judged INTEGER,
+    jev_api_calls INTEGER,
+    latency_ms INTEGER,
+    duration_ms INTEGER,
+    note TEXT,
+    created_at TEXT DEFAULT (datetime('now')),
+    UNIQUE(session_id, ts, source)
+);
+
+CREATE INDEX IF NOT EXISTS idx_compaction_session ON compaction_events(session_id);
+CREATE INDEX IF NOT EXISTS idx_compaction_ts ON compaction_events(ts);
+CREATE INDEX IF NOT EXISTS idx_compaction_source ON compaction_events(source);
+
+CREATE TABLE IF NOT EXISTS session_usage (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id TEXT NOT NULL,
+    ts TEXT NOT NULL,
+    phase TEXT NOT NULL,
+    turn INTEGER,
+    context_tokens INTEGER,
+    context_window INTEGER,
+    context_percent REAL,
+    cost_usd REAL,
+    created_at TEXT DEFAULT (datetime('now')),
+    UNIQUE(session_id, ts, phase)
+);
+
+CREATE INDEX IF NOT EXISTS idx_session_usage_session ON session_usage(session_id);
+CREATE INDEX IF NOT EXISTS idx_session_usage_ts ON session_usage(ts);
+"""
 
 _SCHEMA = (
     """
@@ -420,6 +811,7 @@ CREATE TABLE IF NOT EXISTS instruction_compliance (
     instruction_id TEXT NOT NULL,
     compliant BOOLEAN NOT NULL,
     session_id TEXT,
+    directive_expected BOOLEAN,
     timestamp TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
@@ -434,6 +826,11 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
 """
     + _TELEMETRY_DDL
     + _BASIS_DDL
+    + _EVIDENCE_DDL
+    + _COMPACTION_DDL
+    + _JEV_CALLS_DDL
+    + _JEV_INTENT_ALIGNMENTS_DDL
+    + _HARNESS_RUNS_DDL
 )
 
 
@@ -448,56 +845,15 @@ def sanitize_for_context(text: str) -> str:
     """
     if not text:
         return text
-    # Neutralize role boundary tags
+    # Neutralize role boundary tags (case-insensitive)
     for tag in ("system", "user", "assistant", "human"):
-        text = text.replace(f"<{tag}>", f"[{tag}]")
-        text = text.replace(f"</{tag}>", f"[/{tag}]")
+        text = re.sub(rf"<{tag}>", f"[{tag}]", text, flags=re.IGNORECASE)
+        text = re.sub(rf"</{tag}>", f"[/{tag}]", text, flags=re.IGNORECASE)
     # Strip zero-width Unicode characters
     zero_width = "\u200b\u200d\u200e\u200f\u202a\u202b\u202c\u202d\u202e\ufeff"
     for ch in zero_width:
         text = text.replace(ch, "")
     return text
-
-
-def sanitize_fts_query(term: str) -> str:
-    """Strip FTS5 operators from a search term to prevent query injection.
-
-    FTS5 operators (NOT, NEAR, AND, OR, *, quotes, parens, minus, colon) are removed
-    to ensure terms are treated as plain text matches.
-    """
-    import re as _re
-
-    # Remove FTS5 special characters
-    term = _re.sub(r'["\(\)\*:\-\^\+]', "", term)
-    # Remove FTS5 keyword operators (case-insensitive, whole word)
-    term = _re.sub(r"\b(NOT|NEAR|AND|OR)\b", "", term, flags=_re.IGNORECASE)
-    return term.strip()
-
-
-# ─── Error Classification (from learning_db.py) ───────────────
-
-
-def classify_error(message: str) -> str:
-    message_lower = message.lower()
-    for error_type, patterns in ERROR_TYPES.items():
-        if any(re.search(p, message_lower) for p in patterns):
-            return error_type
-    return "unknown"
-
-
-def normalize_error(message: str) -> str:
-    normalized = message.lower().strip()
-    normalized = re.sub(r"[/\\][\w./\\-]+[/\\]", "", normalized)
-    normalized = re.sub(r"line \d+", "line N", normalized)
-    normalized = re.sub(r"0x[0-9a-f]+", "0xADDR", normalized)
-    normalized = re.sub(r"\d{4}-\d{2}-\d{2}[Tt ]\d{2}:\d{2}:\d{2}", "TIMESTAMP", normalized)
-    return normalized
-
-
-def generate_signature(error_message: str, error_type: str) -> str:
-    normalized = normalize_error(error_message)
-    content = f"{error_type}:{normalized}"
-    return hashlib.md5(content.encode()).hexdigest()[:16]
 
 
 # ─── Core API ──────────────────────────────────────────────────
@@ -759,6 +1115,980 @@ def record_telemetry_run(
         conn.commit()
 
 
+_COMPACTION_INT_FIELDS = (
+    "messages_before",
+    "messages_after",
+    "tokens_before",
+    "tokens_after",
+    "dropped_calls",
+    "truncated_results",
+    "pinned",
+    "prefiltered",
+    "jev_judged",
+    "jev_api_calls",
+    "latency_ms",
+    "duration_ms",
+)
+
+
+def _opt_int(value: object) -> int | None:
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _opt_float(value: object) -> float | None:
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _now_iso() -> str:
+    from datetime import datetime, timezone
+
+    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+def record_jev_call(
+    *,
+    script: str,
+    ok: bool,
+    latency_ms: float | None = None,
+    input_tokens: int | None = None,
+    output_tokens: int | None = None,
+    n_questions: int | None = None,
+    n_redacted: int | None = None,
+    error: str | None = None,
+    session_id: str | None = None,
+    ts: str | None = None,
+    payload_hash: str | None = None,
+    answers_json: str | None = None,
+    cached: bool | None = None,
+) -> bool:
+    """Record one Jev API call. Called from ``jev_router_common.call_jev``; never raises."""
+    try:
+        init_db()
+        # Cap answers_json at 64 KB; store null if larger.
+        if answers_json is not None and len(answers_json) > 65536:
+            answers_json = None
+        with get_connection() as conn:
+            conn.execute(
+                "INSERT INTO jev_calls (ts, script, session_id, ok, latency_ms, input_tokens, output_tokens, "
+                "n_questions, n_redacted, error, payload_hash, answers_json, cached) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    ts or _now_iso(),
+                    script[:120],
+                    session_id,
+                    1 if ok else 0,
+                    latency_ms,
+                    _opt_int(input_tokens),
+                    _opt_int(output_tokens),
+                    _opt_int(n_questions),
+                    _opt_int(n_redacted),
+                    (error or None) and str(error)[:200],
+                    _bounded_text(payload_hash, 16),
+                    answers_json,
+                    None if cached is None else (1 if cached else 0),
+                ),
+            )
+            conn.commit()
+        return True
+    except Exception:
+        return False
+
+
+def record_jev_intent_alignment(
+    *,
+    phase: str,
+    transport: str,
+    alignment: str,
+    model: str | None = None,
+    agent_model: str | None = None,
+    agent_effort: str | None = None,
+    agent_runtime: str | None = None,
+    materially_differs: bool | None = None,
+    route_mismatch: bool | None = None,
+    clarification_needed: bool | None = None,
+    questions_version: str | None = None,
+    issues: list[str] | None = None,
+    scores: dict[str, float] | None = None,
+    request_hash: str | None = None,
+    proposed_intent_hash: str | None = None,
+    latency_ms: float | None = None,
+    session_id: str | None = None,
+    ts: str | None = None,
+) -> bool:
+    """Record one privacy-bounded /d intent-alignment judgment; never raises."""
+    try:
+        init_db()
+        issues_json = json.dumps(issues or [], separators=(",", ":"))[:4000]
+        scores_json = json.dumps(scores or {}, sort_keys=True, separators=(",", ":"))[:8000]
+        with get_connection() as conn:
+            conn.execute(
+                "INSERT INTO jev_intent_alignments "
+                "(ts, session_id, phase, transport, model, agent_model, agent_effort, agent_runtime, alignment, materially_differs, route_mismatch, "
+                "clarification_needed, questions_version, issues_json, scores_json, request_hash, proposed_intent_hash, latency_ms) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    ts or _now_iso(),
+                    _bounded_text(session_id, 160),
+                    _bounded_text(phase, 20) or "unknown",
+                    _bounded_text(transport, 80) or "unknown",
+                    _bounded_text(model, 160),
+                    _bounded_text(agent_model, 160),
+                    _bounded_text(agent_effort, 40),
+                    _bounded_text(agent_runtime, 40),
+                    _bounded_text(alignment, 40) or "unknown",
+                    None if materially_differs is None else (1 if materially_differs else 0),
+                    None if route_mismatch is None else (1 if route_mismatch else 0),
+                    None if clarification_needed is None else (1 if clarification_needed else 0),
+                    _bounded_text(questions_version, 80),
+                    issues_json,
+                    scores_json,
+                    _bounded_text(request_hash, 64),
+                    _bounded_text(proposed_intent_hash, 64),
+                    _opt_float(latency_ms),
+                ),
+            )
+            conn.commit()
+        return True
+    except Exception:
+        return False
+
+
+def jev_intent_alignment_stats(days: float = 30.0) -> list[dict]:
+    """Aggregate alignment and material-difference rates by model and transport."""
+    init_db()
+    with get_connection() as conn:
+        rows = conn.execute(
+            "SELECT model, agent_model, agent_effort, agent_runtime, transport, phase, COUNT(*) AS judgments, "
+            "SUM(CASE WHEN materially_differs = 1 THEN 1 ELSE 0 END) AS material_differences, "
+            "SUM(CASE WHEN route_mismatch = 1 THEN 1 ELSE 0 END) AS route_mismatches, "
+            "SUM(CASE WHEN clarification_needed = 1 THEN 1 ELSE 0 END) AS clarifications, "
+            "SUM(CASE WHEN alignment = 'review' THEN 1 ELSE 0 END) AS reviews, "
+            "SUM(CASE WHEN alignment IN ('error', 'unavailable') THEN 1 ELSE 0 END) AS unavailable, "
+            "COUNT(materially_differs) AS measured_differences, "
+            "AVG(latency_ms) AS avg_latency_ms "
+            "FROM jev_intent_alignments WHERE phase = 'proposed' AND julianday(ts) >= julianday('now', ?) "
+            "GROUP BY model, agent_model, agent_effort, agent_runtime, transport, phase ORDER BY judgments DESC",
+            (f"-{int(days * 86400)} seconds",),
+        ).fetchall()
+    results = []
+    for row in rows:
+        item = dict(row)
+        measured = item["measured_differences"]
+        item["material_difference_rate"] = item["material_differences"] / measured if measured > 0 else None
+        results.append(item)
+    return results
+
+
+def record_harness_run(
+    *,
+    run_id: str,
+    program: str,
+    round: int,
+    lever: str,
+    variant: str,
+    metric_accuracy: float | None = None,
+    metric_brier: float | None = None,
+    metric_f1: float | None = None,
+    kept: bool,
+    reason: str | None = None,
+    answer_distribution: str | None = None,
+    dev_size: int | None = None,
+    test_size: int | None = None,
+    baseline_accuracy: float | None = None,
+    baseline_brier: float | None = None,
+    session_id: str | None = None,
+) -> bool:
+    """Record one harness variant trial. Never raises."""
+    try:
+        init_db()
+        with get_connection() as conn:
+            conn.execute(
+                "INSERT INTO harness_runs (run_id, program, round, lever, variant, "
+                "metric_accuracy, metric_brier, metric_f1, kept, reason, "
+                "answer_distribution, dev_size, test_size, baseline_accuracy, baseline_brier, "
+                "session_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (
+                    run_id,
+                    _bounded_text(program, 200),
+                    round,
+                    _bounded_text(lever, 100),
+                    _bounded_text(variant, 500),
+                    metric_accuracy,
+                    metric_brier,
+                    metric_f1,
+                    1 if kept else 0,
+                    _bounded_text(reason, 500),
+                    _bounded_text(answer_distribution, 4000),
+                    _opt_int(dev_size),
+                    _opt_int(test_size),
+                    baseline_accuracy,
+                    baseline_brier,
+                    _bounded_text(session_id, 160),
+                ),
+            )
+            conn.commit()
+        return True
+    except Exception:
+        return False
+
+
+def jev_call_stats(days: float = 7.0) -> list[dict]:
+    """Per-script call counts for the last ``days``: calls, failures, avg latency, tokens."""
+    init_db()
+    with get_connection() as conn:
+        rows = conn.execute(
+            "SELECT script, COUNT(*) AS calls, SUM(1 - ok) AS failed, AVG(latency_ms) AS avg_ms, "
+            "SUM(COALESCE(input_tokens, 0)) AS input_tokens, SUM(COALESCE(n_questions, 0)) AS questions "
+            "FROM jev_calls WHERE ts >= datetime('now', ?) GROUP BY script ORDER BY calls DESC",
+            (f"-{int(days * 86400)} seconds",),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def jev_answers_for(payload_hash: str) -> list[dict]:
+    """Return all stored answers for a given payload hash, newest first."""
+    init_db()
+    with get_connection() as conn:
+        rows = conn.execute(
+            "SELECT ts, script, answers_json, ok, cached FROM jev_calls "
+            "WHERE payload_hash = ? AND answers_json IS NOT NULL ORDER BY id DESC",
+            (payload_hash,),
+        ).fetchall()
+    results: list[dict] = []
+    for r in rows:
+        try:
+            answers = json.loads(r["answers_json"]) if r["answers_json"] else None
+        except (json.JSONDecodeError, TypeError):
+            answers = None
+        results.append(
+            {
+                "ts": r["ts"],
+                "script": r["script"],
+                "answers": answers,
+                "ok": bool(r["ok"]),
+                "cached": bool(r["cached"]) if r["cached"] is not None else None,
+            }
+        )
+    return results
+
+
+def jev_calls_with_answers(
+    *,
+    script: str | None = None,
+    since: str | None = None,
+    limit: int = 500,
+) -> list[dict]:
+    """Return jev_calls rows that have stored answers, newest first.
+
+    Args:
+        script: Filter by script name (exact match).
+        since: ISO timestamp lower bound on ``ts``.
+        limit: Maximum rows (capped at 5000).
+    """
+    init_db()
+    clauses = ["answers_json IS NOT NULL"]
+    params: list = []
+    if script:
+        clauses.append("script = ?")
+        params.append(script)
+    if since:
+        clauses.append("ts >= ?")
+        params.append(since)
+    where = " AND ".join(clauses)
+    params.append(max(1, min(int(limit), 5000)))
+    with get_connection() as conn:
+        rows = conn.execute(
+            f"SELECT id, ts, script, payload_hash, answers_json, ok, latency_ms, cached "  # security-review: ignore (fixed clauses; user values bound as ?)
+            f"FROM jev_calls WHERE {where} ORDER BY id DESC LIMIT ?",  # security-review: ignore (where contains fixed clauses; all values use bound parameters)
+            params,
+        ).fetchall()
+    results: list[dict] = []
+    for r in rows:
+        try:
+            answers = json.loads(r["answers_json"]) if r["answers_json"] else None
+        except (json.JSONDecodeError, TypeError):
+            answers = None
+        results.append(
+            {
+                "id": r["id"],
+                "ts": r["ts"],
+                "script": r["script"],
+                "payload_hash": r["payload_hash"],
+                "answers": answers,
+                "ok": bool(r["ok"]),
+                "latency_ms": r["latency_ms"],
+                "cached": bool(r["cached"]) if r["cached"] is not None else None,
+            }
+        )
+    return results
+
+
+def record_compaction_event(
+    *,
+    session_id: str,
+    ts: str,
+    source: str,
+    trigger: str | None = None,
+    engine: str | None = None,
+    agent_id: str | None = None,
+    reduction_ratio: float | None = None,
+    note: str | None = None,
+    **counts: object,
+) -> bool:
+    """Append one compaction row. Returns False when the row already exists.
+
+    `source` names who reports: `plugin` (jev-auto-compact claim),
+    `precompact-hook` (Python PreCompact guidance), or `transcript` (the
+    engine's own compact_boundary record, the ground truth). `engine` says
+    what compacted: `jev`, `builtin`, `skipped`, `guidance`, or `error`.
+    Count fields (see _COMPACTION_INT_FIELDS) stay NULL when absent; any
+    other keyword raises TypeError naming it. A duplicate (session_id, ts,
+    source) is ignored, so ingestion is idempotent.
+    """
+    unknown = sorted(set(counts) - set(_COMPACTION_INT_FIELDS))
+    if unknown:
+        raise TypeError(f"record_compaction_event() got unexpected keyword arguments: {', '.join(unknown)}")
+    init_db()
+    ints = {name: _opt_int(counts.get(name)) for name in _COMPACTION_INT_FIELDS}
+    with get_connection() as conn:
+        cur = conn.execute(
+            "INSERT OR IGNORE INTO compaction_events (session_id, ts, source, trigger, engine, "
+            "agent_id, messages_before, messages_after, tokens_before, tokens_after, "
+            "reduction_ratio, dropped_calls, truncated_results, pinned, prefiltered, "
+            "jev_judged, jev_api_calls, latency_ms, duration_ms, note) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (
+                session_id,
+                ts,
+                source,
+                _bounded_text(trigger, 32),
+                _bounded_text(engine, 32),
+                _bounded_text(agent_id, 128),
+                ints["messages_before"],
+                ints["messages_after"],
+                ints["tokens_before"],
+                ints["tokens_after"],
+                _opt_float(reduction_ratio),
+                ints["dropped_calls"],
+                ints["truncated_results"],
+                ints["pinned"],
+                ints["prefiltered"],
+                ints["jev_judged"],
+                ints["jev_api_calls"],
+                ints["latency_ms"],
+                ints["duration_ms"],
+                _bounded_text(note, 500),
+            ),
+        )
+        conn.commit()
+        return cur.rowcount > 0
+
+
+def record_session_usage(
+    *,
+    session_id: str,
+    ts: str,
+    phase: str,
+    turn: int | None = None,
+    context_tokens: int | None = None,
+    context_window: int | None = None,
+    context_percent: float | None = None,
+    cost_usd: float | None = None,
+) -> bool:
+    """Append one context-window sample. Returns False on a duplicate.
+
+    `phase` says when the sample was taken: `turn_complete` (before the
+    plugin triggers compaction) or `post_compact`. Absent figures stay NULL.
+    """
+    init_db()
+    with get_connection() as conn:
+        cur = conn.execute(
+            "INSERT OR IGNORE INTO session_usage (session_id, ts, phase, turn, context_tokens, "
+            "context_window, context_percent, cost_usd) VALUES (?,?,?,?,?,?,?,?)",
+            (
+                session_id,
+                ts,
+                _bounded_text(phase, 32),
+                _opt_int(turn),
+                _opt_int(context_tokens),
+                _opt_int(context_window),
+                _opt_float(context_percent),
+                _opt_float(cost_usd),
+            ),
+        )
+        conn.commit()
+        return cur.rowcount > 0
+
+
+def _bounded_text(value: object, limit: int = 2000) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    return text[:limit]
+
+
+def _json_text(value: object) -> str | None:
+    if value is None:
+        return None
+    try:
+        return json.dumps(value, sort_keys=True, separators=(",", ":"), default=str)
+    except TypeError:
+        return json.dumps(str(value))
+
+
+def _parse_json_text(value: str | None) -> object:
+    if not value:
+        return None
+    try:
+        return json.loads(value)
+    except json.JSONDecodeError:
+        return value
+
+
+def _target_hash(target: str | None) -> str | None:
+    if not target:
+        return None
+    return hashlib.sha256(target.encode("utf-8", errors="replace")).hexdigest()[:24]
+
+
+def _route_key(agent: str, skill: str | None = None) -> str:
+    clean_agent = (agent or "").strip()
+    clean_skill = (skill or "").strip()
+    return f"{clean_agent}:{clean_skill}" if clean_skill else f"{clean_agent}:"
+
+
+def _event_id(*parts: object) -> str:
+    raw = "|".join("" if part is None else str(part) for part in parts)
+    return hashlib.sha256(raw.encode("utf-8", errors="replace")).hexdigest()
+
+
+def _bool_or_none(value: object) -> bool | None:
+    if value is None:
+        return None
+    return bool(value)
+
+
+def _event_row(row: sqlite3.Row) -> dict:
+    data = dict(row)
+    data["success"] = _bool_or_none(data.get("success"))
+    data["metadata"] = _parse_json_text(data.get("metadata")) or {}
+    return data
+
+
+def _record_evidence_session(conn: sqlite3.Connection, session_id: str | None, project_path: str | None = None) -> None:
+    if not session_id:
+        return
+    conn.execute(
+        """
+        INSERT INTO evidence_sessions (session_id, project_path, started_at, last_seen_at)
+        VALUES (?, ?, datetime('now'), datetime('now'))
+        ON CONFLICT(session_id) DO UPDATE SET
+            project_path = COALESCE(excluded.project_path, evidence_sessions.project_path),
+            last_seen_at = datetime('now')
+        """,
+        (session_id, project_path),
+    )
+
+
+def record_evidence_event(
+    *,
+    event_type: str,
+    source: str,
+    session_id: str | None = None,
+    project_path: str | None = None,
+    agent: str | None = None,
+    skill: str | None = None,
+    tool_name: str | None = None,
+    route_key: str | None = None,
+    action: str | None = None,
+    target: str | None = None,
+    success: bool | None = None,
+    error: str | None = None,
+    model: str | None = None,
+    tokens: int | None = None,
+    metadata: dict | list | str | None = None,
+    event_id: str | None = None,
+    ts: str | None = None,
+) -> dict:
+    """Record a queryable agent evidence event and return the inserted row."""
+    init_db()
+    event_type = _bounded_text(event_type, 120) or "event"
+    source = _bounded_text(source, 160) or "unknown"
+    session_id = _bounded_text(session_id, 160)
+    project_path = _bounded_text(project_path, 1000)
+    agent = _bounded_text(agent, 160)
+    skill = _bounded_text(skill, 160)
+    tool_name = _bounded_text(tool_name, 160)
+    route_key = _bounded_text(route_key, 320)
+    action = _bounded_text(action, 160)
+    target = _bounded_text(target, 1000)
+    error = _bounded_text(error, 2000)
+    model = _bounded_text(model, 160)
+    metadata_text = _bounded_text(_json_text(metadata), 4000)
+    target_hash = _target_hash(target)
+    ts = _bounded_text(ts, 80)
+    event_id = _bounded_text(
+        event_id
+        or _event_id(
+            datetime.now(timezone.utc).isoformat(timespec="microseconds"),
+            event_type,
+            source,
+            session_id,
+            agent,
+            skill,
+            tool_name,
+            route_key,
+            action,
+            target_hash,
+        ),
+        160,
+    )
+
+    with get_connection() as conn:
+        _record_evidence_session(conn, session_id, project_path)
+        conn.execute(
+            """
+            INSERT INTO evidence_events (
+                event_id, session_id, ts, event_type, source, agent, skill, tool_name,
+                route_key, action, target, target_hash, success, error, model, tokens, metadata
+            )
+            VALUES (?, ?, COALESCE(?, datetime('now')), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(event_id) DO UPDATE SET
+                session_id = excluded.session_id,
+                ts = excluded.ts,
+                event_type = excluded.event_type,
+                source = excluded.source,
+                agent = excluded.agent,
+                skill = excluded.skill,
+                tool_name = excluded.tool_name,
+                route_key = excluded.route_key,
+                action = excluded.action,
+                target = excluded.target,
+                target_hash = excluded.target_hash,
+                success = excluded.success,
+                error = excluded.error,
+                model = excluded.model,
+                tokens = excluded.tokens,
+                metadata = excluded.metadata
+            """,
+            (
+                event_id,
+                session_id,
+                ts,
+                event_type,
+                source,
+                agent,
+                skill,
+                tool_name,
+                route_key,
+                action,
+                target,
+                target_hash,
+                None if success is None else int(bool(success)),
+                error,
+                model,
+                tokens,
+                metadata_text,
+            ),
+        )
+        conn.commit()
+        row = conn.execute("SELECT * FROM evidence_events WHERE event_id = ?", (event_id,)).fetchone()
+        return _event_row(row)
+
+
+_ROUTE_DECISION_UPDATE_SET = """
+                session_id = excluded.session_id,
+                route_key = excluded.route_key,
+                agent = excluded.agent,
+                skill = excluded.skill,
+                complexity = excluded.complexity,
+                model = excluded.model,
+                action = excluded.action,
+                health = excluded.health,
+                n = excluded.n,
+                failure = excluded.failure,
+                gate_inputs_present = excluded.gate_inputs_present,
+                outcome = excluded.outcome,
+                outcome_basis = excluded.outcome_basis,
+                request_snippet = excluded.request_snippet,
+                stack = excluded.stack,
+                pipeline = excluded.pipeline,
+                alternates = excluded.alternates,
+"""
+
+# Literal SQL only; both statements are fixed text with `?` placeholders.
+_ROUTE_DECISION_UPSERT_SQL = (
+    """
+            INSERT INTO evidence_route_decisions (
+                decision_id, session_id, route_key, agent, skill, complexity, model, action,
+                health, n, failure, gate_inputs_present, outcome, outcome_basis,
+                request_snippet, stack, pipeline, alternates, spec_score, spec_missing, prompt_chars,
+                created_at, updated_at
+            )
+            VALUES (
+                ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now')
+            )
+            ON CONFLICT(decision_id) DO UPDATE SET"""
+    + _ROUTE_DECISION_UPDATE_SET
+    + """                spec_score = excluded.spec_score,
+                spec_missing = excluded.spec_missing,
+                prompt_chars = excluded.prompt_chars,
+                updated_at = datetime('now')
+            """
+)
+
+# Pre-v10 shape: same row without the three spec columns.
+_ROUTE_DECISION_UPSERT_SQL_LEGACY = (
+    """
+            INSERT INTO evidence_route_decisions (
+                decision_id, session_id, route_key, agent, skill, complexity, model, action,
+                health, n, failure, gate_inputs_present, outcome, outcome_basis,
+                request_snippet, stack, pipeline, alternates, created_at, updated_at
+            )
+            VALUES (
+                ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now')
+            )
+            ON CONFLICT(decision_id) DO UPDATE SET"""
+    + _ROUTE_DECISION_UPDATE_SET
+    + """                updated_at = datetime('now')
+            """
+)
+_DEBUG_LOG_PATH = "/tmp/claude_hook_debug.log"
+
+
+def _debug_line(message: str) -> None:
+    """Append one line to the hook debug log (0600) when CLAUDE_HOOKS_DEBUG is set; never raises."""
+    append_hook_debug_log(Path(_DEBUG_LOG_PATH), f"[learning_db_v2] {message}")
+
+
+def record_evidence_route_decision(
+    *,
+    session_id: str | None,
+    agent: str,
+    skill: str | None = None,
+    complexity: str | None = None,
+    model: str | None = None,
+    request_snippet: str | None = None,
+    stack: list[str] | tuple[str, ...] | str | None = None,
+    pipeline: str | None = None,
+    health: float | None = None,
+    n: int | None = None,
+    failure: bool | None = None,
+    action: str | None = None,
+    alternates: list[str] | tuple[str, ...] | str | None = None,
+    gate_inputs_present: bool = False,
+    decision_id: str | None = None,
+    outcome: str | None = None,
+    outcome_basis: str | None = None,
+    spec_score: int | None = None,
+    spec_missing: str | None = None,
+    prompt_chars: int | None = None,
+) -> dict:
+    """Record a route decision plus a companion evidence event.
+
+    spec_score, spec_missing, and prompt_chars carry handoff completeness for
+    /do dispatches; leave them None for anything else.
+    """
+    init_db()
+    agent = _bounded_text(agent, 160) or "unknown"
+    skill = _bounded_text(skill, 160)
+    route_key = _route_key(agent, skill)
+    session_id = _bounded_text(session_id, 160)
+    decision_id = _bounded_text(
+        decision_id
+        or _event_id(
+            datetime.now(timezone.utc).isoformat(timespec="microseconds"), session_id, route_key, request_snippet
+        ),
+        160,
+    )
+    stack_text = _bounded_text(_json_text(stack), 2000)
+    alternates_text = _bounded_text(_json_text(alternates), 2000)
+    base_params = (
+        decision_id,
+        session_id,
+        route_key,
+        agent,
+        skill,
+        _bounded_text(complexity, 80),
+        _bounded_text(model, 160),
+        _bounded_text(action, 80),
+        health,
+        n,
+        None if failure is None else int(bool(failure)),
+        int(bool(gate_inputs_present)),
+        _bounded_text(outcome, 80),
+        _bounded_text(outcome_basis, 120),
+        _bounded_text(request_snippet, 1000),
+        stack_text,
+        _bounded_text(pipeline, 160),
+        alternates_text,
+    )
+    # spec_missing "" means every label present; keep it distinct from NULL.
+    spec_params = (spec_score, spec_missing, prompt_chars)
+
+    with get_connection() as conn:
+        _record_evidence_session(conn, session_id)
+        try:
+            conn.execute(_ROUTE_DECISION_UPSERT_SQL, base_params + spec_params)
+        except sqlite3.OperationalError as exc:
+            # A DB that has not run the v10 migration lacks the spec columns.
+            # Keep the decision row; drop only the three new fields.
+            if "column" not in str(exc):
+                raise
+            _debug_line(f"evidence_route_decisions lacks spec columns; wrote row without them: {exc}")
+            conn.execute(_ROUTE_DECISION_UPSERT_SQL_LEGACY, base_params)
+        conn.commit()
+        row = conn.execute("SELECT * FROM evidence_route_decisions WHERE decision_id = ?", (decision_id,)).fetchone()
+
+    record_evidence_event(
+        event_type="route_decision",
+        source="hook:routing",
+        session_id=session_id,
+        agent=agent,
+        skill=skill,
+        route_key=route_key,
+        action=action,
+        success=None if failure is None else not bool(failure),
+        model=model,
+        metadata={
+            "complexity": complexity,
+            "health": health,
+            "n": n,
+            "gate_inputs_present": gate_inputs_present,
+            "stack": stack,
+            "outcome": outcome,
+            "outcome_basis": outcome_basis,
+        },
+        event_id=f"route:{decision_id}",
+    )
+    data = dict(row)
+    data["failure"] = _bool_or_none(data.get("failure"))
+    data["gate_inputs_present"] = bool(data.get("gate_inputs_present"))
+    data["stack"] = _parse_json_text(data.get("stack")) or []
+    data["alternates"] = _parse_json_text(data.get("alternates")) or []
+    return data
+
+
+def update_evidence_route_outcome(
+    *,
+    route_key: str,
+    session_id: str | None = None,
+    outcome: str,
+    outcome_basis: str | None = None,
+    decision_id: str | None = None,
+) -> None:
+    """Attach an outcome to one route decision row.
+
+    Row choice, first match wins:
+
+    1. ``decision_id``, when given and present: the exact dispatch.
+    2. With a ``session_id``: the oldest matching row with no outcome yet. N
+       dispatches of one key in one session then fill N rows in dispatch
+       order. Without one, this step is skipped: the oldest open row of the
+       key could belong to any session.
+    3. The newest matching row: a later signal overwrites an earlier one.
+
+    Matching by newest row alone wrote every outcome of a repeated key to the
+    same row and left the others NULL.
+    """
+    init_db()
+    clauses = ["route_key = ?"]
+    params: list = [route_key]
+    if session_id:
+        clauses.append("session_id = ?")
+        params.append(session_id)
+    where = " AND ".join(clauses)
+    with get_connection() as conn:
+        row = None
+        if decision_id:
+            row = conn.execute(
+                "SELECT decision_id FROM evidence_route_decisions WHERE decision_id = ?",
+                (_bounded_text(decision_id, 160),),
+            ).fetchone()
+        if not row and session_id:
+            row = conn.execute(
+                f"SELECT decision_id FROM evidence_route_decisions WHERE {where} AND outcome IS NULL ORDER BY id ASC LIMIT 1",  # security-review: ignore (fixed clauses; user values bound as ?)
+                params,
+            ).fetchone()
+        if not row:
+            row = conn.execute(
+                f"SELECT decision_id FROM evidence_route_decisions WHERE {where} ORDER BY id DESC LIMIT 1",  # security-review: ignore (fixed clauses; user values bound as ?)
+                params,
+            ).fetchone()
+        if not row:
+            return
+        conn.execute(
+            """
+            UPDATE evidence_route_decisions
+            SET outcome = ?, outcome_basis = ?, updated_at = datetime('now')
+            WHERE decision_id = ?
+            """,
+            (_bounded_text(outcome, 80), _bounded_text(outcome_basis, 120), row["decision_id"]),
+        )
+        conn.commit()
+
+
+def list_evidence_events(
+    *,
+    limit: int = 50,
+    session_id: str | None = None,
+    event_type: str | None = None,
+    route_key: str | None = None,
+    agent: str | None = None,
+    skill: str | None = None,
+    target: str | None = None,
+    failures_only: bool = False,
+) -> list[dict]:
+    init_db()
+    clauses: list[str] = []
+    params: list = []
+    if session_id:
+        clauses.append("session_id = ?")
+        params.append(session_id)
+    if event_type:
+        clauses.append("event_type = ?")
+        params.append(event_type)
+    if route_key:
+        clauses.append("route_key = ?")
+        params.append(route_key)
+    if agent:
+        clauses.append("agent = ?")
+        params.append(agent)
+    if skill:
+        clauses.append("skill = ?")
+        params.append(skill)
+    if target:
+        clauses.append("(target_hash = ? OR target LIKE ?)")
+        params.extend([_target_hash(target), f"%{target}%"])
+    if failures_only:
+        clauses.append("success = 0")
+    joined_clauses = " AND ".join(clauses)
+    where = ("WHERE " + joined_clauses) if clauses else ""  # security-review: ignore (fixed clauses; pre-existing)
+    params.append(max(1, min(int(limit), 500)))
+    with get_connection() as conn:
+        rows = conn.execute(
+            f"SELECT * FROM evidence_events {where} ORDER BY id DESC LIMIT ?",  # security-review: ignore (fixed clauses; user values bound as ?)
+            params,
+        ).fetchall()
+    return [_event_row(row) for row in rows]
+
+
+def get_evidence_failures(
+    *,
+    limit: int = 50,
+    route_key: str | None = None,
+    agent: str | None = None,
+    skill: str | None = None,
+) -> list[dict]:
+    return list_evidence_events(
+        limit=limit,
+        route_key=route_key,
+        agent=agent,
+        skill=skill,
+        failures_only=True,
+    )
+
+
+def get_evidence_file_history(target: str, *, limit: int = 50) -> list[dict]:
+    return list_evidence_events(limit=limit, target=target)
+
+
+def _decision_row(row: sqlite3.Row) -> dict:
+    data = dict(row)
+    data["failure"] = _bool_or_none(data.get("failure"))
+    data["gate_inputs_present"] = bool(data.get("gate_inputs_present"))
+    data["stack"] = _parse_json_text(data.get("stack")) or []
+    data["alternates"] = _parse_json_text(data.get("alternates")) or []
+    return data
+
+
+def get_evidence_route_context(route_key: str, *, limit: int = 20) -> dict:
+    init_db()
+    with get_connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT * FROM evidence_route_decisions
+            WHERE route_key = ?
+            ORDER BY id DESC
+            LIMIT ?
+            """,
+            (route_key, max(1, min(int(limit), 200))),
+        ).fetchall()
+        totals = conn.execute(
+            """
+            SELECT
+                COUNT(*) AS decisions,
+                COALESCE(SUM(CASE WHEN failure = 1 OR outcome = 'failure' THEN 1 ELSE 0 END), 0) AS failures,
+                COALESCE(SUM(CASE WHEN outcome IN ('success', 'weak_success') THEN 1 ELSE 0 END), 0) AS successes,
+                MAX(updated_at) AS last_seen
+            FROM evidence_route_decisions
+            WHERE route_key = ?
+            """,
+            (route_key,),
+        ).fetchone()
+    total_data = dict(totals)
+    return {
+        "route_key": route_key,
+        "totals": total_data,
+        "recent": [_decision_row(row) for row in rows],
+        "failures": get_evidence_failures(route_key=route_key, limit=limit),
+    }
+
+
+def get_evidence_decision(route_key: str) -> dict:
+    context = get_evidence_route_context(route_key, limit=10)
+    totals = context["totals"]
+    decisions = int(totals.get("decisions") or 0)
+    failures = int(totals.get("failures") or 0)
+    successes = int(totals.get("successes") or 0)
+    if decisions == 0:
+        return {
+            "route_key": route_key,
+            "recommendation": "no_data",
+            "confidence": "none",
+            "reasons": ["No local evidence has been recorded for this route."],
+            "context": context,
+        }
+
+    failure_rate = failures / decisions
+    reasons = [
+        f"{decisions} recorded decision(s)",
+        f"{failure_rate:.0%} failure rate",
+    ]
+    if successes:
+        reasons.append(f"{successes} successful outcome(s)")
+
+    if failure_rate > 0.65:
+        recommendation = "investigate"
+        confidence = "medium" if decisions >= 3 else "low"
+    elif failure_rate >= 0.25:
+        recommendation = "watch"
+        confidence = "medium" if decisions >= 4 else "low"
+    else:
+        recommendation = "keep"
+        confidence = "medium" if decisions >= 3 else "low"
+
+    return {
+        "route_key": route_key,
+        "recommendation": recommendation,
+        "confidence": confidence,
+        "reasons": reasons,
+        "context": context,
+    }
+
+
 def query_learnings(
     *,
     topic: str | None = None,
@@ -843,187 +2173,11 @@ def query_learnings(
         return [dict(row) for row in rows]
 
 
-def search_learnings(
-    query: str,
-    *,
-    min_confidence: float = 0.0,
-    exclude_graduated: bool = True,
-    limit: int = 50,
-) -> list[dict]:
-    """Full-text search across learnings with BM25 ranking.
-
-    Unlike query_learnings() which matches exact tag substrings,
-    this uses FTS5 with porter stemming for fuzzy, ranked retrieval.
-
-    Args:
-        query: FTS5 query string. Supports OR/AND operators and prefix
-            matching (e.g. "goroutine OR channel", "circuit*").
-        min_confidence: Minimum confidence threshold for results.
-        exclude_graduated: If True, omit entries that have graduated.
-        limit: Maximum number of results to return.
-
-    Returns:
-        List of learning dicts ordered by BM25 relevance (best first),
-        each with an additional 'rank' key containing the BM25 score.
-    """
-    init_db()
-
-    if not query or not query.strip():
-        return []
-
-    # Sanitize FTS query terms before matching
-    query_str = query
-    if query_str:
-        terms = query_str.split(" OR ")
-        terms = [sanitize_fts_query(t.strip()) for t in terms if t.strip()]
-        terms = [t for t in terms if t]  # Remove empty after sanitization
-        if terms:
-            query_str = " OR ".join(terms)
-        else:
-            return []  # All terms were FTS operators — no valid query
-
-    conditions = ["l.confidence >= ?"]
-    params: list = [min_confidence]
-
-    if exclude_graduated:
-        conditions.append("l.graduated_to IS NULL")
-
-    where = " AND ".join(conditions)
-
-    with get_connection() as conn:
-        try:
-            rows = conn.execute(
-                f"""
-                SELECT l.*, bm25(learnings_fts) AS rank
-                FROM learnings_fts fts
-                JOIN learnings l ON l.id = fts.rowid
-                WHERE learnings_fts MATCH ?
-                  AND {where}
-                ORDER BY rank
-                LIMIT ?
-                """,
-                (query_str, *params, limit),
-            ).fetchall()
-            return [dict(row) for row in rows]
-        except sqlite3.OperationalError:
-            # Invalid FTS5 query syntax — fall back to empty results
-            return []
-
-
-def query_graduation_candidates(
-    *,
-    min_confidence: float = 0.9,
-    min_observations: int = 3,
-    limit: int = 10,
-) -> list[dict]:
-    """Return learning entries that are candidates for graduation into agent/skill files.
-
-    Graduation criteria (all must be met):
-    - confidence >= min_confidence
-    - observation_count >= min_observations
-    - graduated_to IS NULL (not already graduated)
-    - topic is scoped (starts with 'skill:' or 'agent:')
-
-    Args:
-        min_confidence: Minimum confidence threshold (default 0.9).
-        min_observations: Minimum observation count (default 3).
-        limit: Maximum number of results to return (default 10).
-
-    Returns:
-        List of learning dicts sorted by confidence DESC, then observation_count DESC.
-        Each dict contains: id, topic, key, value, category, confidence,
-        observation_count, first_seen, last_seen, tags.
-    """
-    init_db()
-
-    with get_connection() as conn:
-        rows = conn.execute(
-            """
-            SELECT id, topic, key, value, category, confidence,
-                   observation_count, first_seen, last_seen, tags
-            FROM learnings
-            WHERE confidence >= ?
-              AND observation_count >= ?
-              AND graduated_to IS NULL
-              AND (topic LIKE 'skill:%' OR topic LIKE 'agent:%')
-            ORDER BY confidence DESC, observation_count DESC
-            LIMIT ?
-            """,
-            (min_confidence, min_observations, limit),
-        ).fetchall()
-        return [dict(row) for row in rows]
-
-
-def lookup_error_solution(
-    error_message: str,
-    min_confidence: float = 0.7,
-) -> dict | None:
-    """Look up a solution for an error pattern. Backward-compatible with error-learner."""
-    init_db()
-
-    error_type = classify_error(error_message)
-    signature = generate_signature(error_message, error_type)
-
-    with get_connection() as conn:
-        row = conn.execute(
-            """
-            SELECT topic, key, value, confidence, fix_type, fix_action, error_signature
-            FROM learnings
-            WHERE error_signature = ? AND confidence >= ? AND category = 'error'
-            """,
-            (signature, min_confidence),
-        ).fetchone()
-
-        if row:
-            return dict(row)
-        return None
-
-
-def record_activations(
-    entries: list[tuple[str, str]],
-    session_id: str | None = None,
-    outcome: str = "success",
-) -> None:
-    """Record that multiple learnings were surfaced during a session.
-
-    Uses a single connection + executemany for efficiency.
-    Called from injection hooks to track which learnings are actually used.
-
-    Args:
-        entries: List of (topic, key) pairs to record.
-        session_id: Session identifier.
-        outcome: Outcome string (default "success").
-    """
-    if not entries:
-        return
-    init_db()
-    now = datetime.now().isoformat()
-    rows = [(topic, key, session_id, now, outcome) for topic, key in entries]
-    with get_connection() as conn:
-        conn.executemany(
-            "INSERT INTO activations (topic, key, session_id, timestamp, outcome) VALUES (?, ?, ?, ?, ?)",
-            rows,
-        )
-        conn.commit()
-
-
-def record_activation(
-    topic: str,
-    key: str,
-    session_id: str | None = None,
-    outcome: str = "success",
-) -> None:
-    """Record that a learning was surfaced during a session.
-
-    Thin wrapper around record_activations() for single-entry convenience.
-    """
-    record_activations([(topic, key)], session_id, outcome)
-
-
 def record_instruction_compliance(
     instruction_id: str,
     compliant: bool,
     session_id: str | None = None,
+    directive_expected: bool | None = None,
 ) -> None:
     """Record a single instruction compliance observation.
 
@@ -1034,26 +2188,32 @@ def record_instruction_compliance(
         instruction_id: Instruction identifier (e.g. "M01").
         compliant: Whether the instruction was followed.
         session_id: Current session identifier.
+        directive_expected: Whether this dispatch was expected to carry the
+            directive at all. None means the caller cannot say.
     """
-    record_instruction_compliance_batch([(instruction_id, compliant, session_id)])
+    record_instruction_compliance_batch([(instruction_id, compliant, session_id, directive_expected)])
 
 
 def record_instruction_compliance_batch(
-    records: list[tuple[str, bool, str | None]],
+    records: list[tuple[str, bool, str | None]] | list[tuple[str, bool, str | None, bool | None]],
 ) -> None:
     """Record multiple instruction compliance observations in one transaction.
 
     Args:
-        records: List of (instruction_id, compliant, session_id) tuples.
+        records: List of (instruction_id, compliant, session_id) or
+            (instruction_id, compliant, session_id, directive_expected) tuples.
+            A 3-tuple records an unknown population (NULL): a caller that does
+            not state whether the directive was expected must not be guessed at.
     """
     if not records:
         return
     init_db()
     now = datetime.now().isoformat()
-    rows = [(instr_id, compliant, sid, now) for instr_id, compliant, sid in records]
+    rows = [(record[0], record[1], record[2], record[3] if len(record) > 3 else None, now) for record in records]
     with get_connection() as conn:
         conn.executemany(
-            "INSERT INTO instruction_compliance (instruction_id, compliant, session_id, timestamp) VALUES (?, ?, ?, ?)",
+            "INSERT INTO instruction_compliance "
+            "(instruction_id, compliant, session_id, directive_expected, timestamp) VALUES (?, ?, ?, ?, ?)",
             rows,
         )
         conn.commit()
@@ -1062,11 +2222,19 @@ def record_instruction_compliance_batch(
 def query_instruction_skip_rate(days: int = 30) -> list[dict]:
     """Query instruction compliance skip rates from the dedicated table.
 
+    The skip rate is computed ONLY over observations where the directive was
+    expected (directive_expected = 1). Dispatches that never carried the
+    directive, and rows recorded before the flag existed, are counted and
+    reported separately — folding either into the rate would measure the wrong
+    population. skip_rate is None when the scored population is empty.
+
     Args:
         days: Look back window in days (default 30).
 
     Returns:
-        List of dicts with instruction_id, observations, non_compliant, skip_rate.
+        List of dicts with instruction_id, observations, non_compliant,
+        scored_observations, scored_non_compliant, not_expected, unknown,
+        and skip_rate.
     """
     init_db()
     with get_connection() as conn:
@@ -1074,7 +2242,11 @@ def query_instruction_skip_rate(days: int = 30) -> list[dict]:
             """
             SELECT instruction_id,
                    COUNT(*) as observations,
-                   SUM(CASE WHEN NOT compliant THEN 1 ELSE 0 END) as non_compliant
+                   SUM(CASE WHEN NOT compliant THEN 1 ELSE 0 END) as non_compliant,
+                   SUM(CASE WHEN directive_expected = 1 THEN 1 ELSE 0 END) as scored,
+                   SUM(CASE WHEN directive_expected = 1 AND NOT compliant THEN 1 ELSE 0 END) as scored_skipped,
+                   SUM(CASE WHEN directive_expected = 0 THEN 1 ELSE 0 END) as not_expected,
+                   SUM(CASE WHEN directive_expected IS NULL THEN 1 ELSE 0 END) as unknown
             FROM instruction_compliance
             WHERE timestamp > datetime('now', ?)
             GROUP BY instruction_id
@@ -1084,15 +2256,18 @@ def query_instruction_skip_rate(days: int = 30) -> list[dict]:
         ).fetchall()
         results = []
         for row in rows:
-            obs = row["observations"]
-            nc = row["non_compliant"]
-            skip_rate = (nc / obs * 100) if obs > 0 else 0.0
+            scored = row["scored"]
+            scored_skipped = row["scored_skipped"]
             results.append(
                 {
                     "instruction_id": row["instruction_id"],
-                    "observations": obs,
-                    "non_compliant": nc,
-                    "skip_rate": round(skip_rate, 1),
+                    "observations": row["observations"],
+                    "non_compliant": row["non_compliant"],
+                    "scored_observations": scored,
+                    "scored_non_compliant": scored_skipped,
+                    "not_expected": row["not_expected"],
+                    "unknown": row["unknown"],
+                    "skip_rate": round(scored_skipped / scored * 100, 1) if scored else None,
                 }
             )
         return results
@@ -1138,27 +2313,6 @@ def decay_confidence(topic: str, key: str, delta: float = 0.10) -> float:
         return new_conf
 
 
-def mark_graduated(topic: str, key: str, target: str) -> bool:
-    """Mark entry as graduated to a permanent location.
-
-    Returns:
-        True if an entry was updated, False if no matching entry was found.
-    """
-    init_db()
-    with get_connection() as conn:
-        cursor = conn.execute(
-            "UPDATE learnings SET graduated_to = ? WHERE topic = ? AND key = ?",
-            (target, topic, key),
-        )
-        conn.commit()
-        if cursor.rowcount == 0:
-            import sys
-
-            print(f"WARNING: mark_graduated found no entry for topic={topic!r} key={key!r}", file=sys.stderr)
-            return False
-        return True
-
-
 VALID_EVENT_TYPES = {
     "secret_detected",
     "approval_requested",
@@ -1170,6 +2324,18 @@ VALID_EVENT_TYPES = {
 VALID_SEVERITIES = {"critical", "high", "medium", "warning"}
 
 VALID_RESOLUTIONS = {"dismissed", "false_positive", "remediated"}
+
+
+def governance_timestamp(age: timedelta | None = None) -> str:
+    """The current time, less ``age``, in the form ``governance_events.created_at`` holds.
+
+    The column holds naive local time (``datetime.now().isoformat()``), and SQLite
+    compares it as text. A reader that builds its cutoff in UTC, or with an offset
+    suffix, is wrong by the local UTC offset. Build every cutoff for this column
+    here, or the same way.
+    """
+    now = datetime.now()
+    return (now - age if age else now).isoformat()
 
 
 def record_governance_event(
@@ -1212,7 +2378,7 @@ def record_governance_event(
         eid = event_id or f"gov-{ts_ms}-{suffix}"
 
         payload_str = _json.dumps(payload) if payload else None
-        created_at = datetime.now().isoformat()
+        created_at = governance_timestamp()
 
         with get_connection() as conn:
             conn.execute(
@@ -1258,7 +2424,7 @@ def resolve_governance_event(
 
     try:
         init_db()
-        resolved_at = datetime.now().isoformat()
+        resolved_at = governance_timestamp()
         with get_connection() as conn:
             result = conn.execute(
                 "UPDATE governance_events SET resolved_at = ?, resolution = ? WHERE id = ?",
@@ -1299,7 +2465,7 @@ def query_governance_events(
         params: list = []
 
         if days is not None:
-            cutoff = (datetime.now() - timedelta(days=days)).isoformat()
+            cutoff = governance_timestamp(timedelta(days=days))
             conditions.append("created_at >= ?")
             params.append(cutoff)
 
@@ -1488,93 +2654,6 @@ def prune(min_confidence: float = 0.3, older_than_days: int = 90) -> int:
 
 
 # ─── Import / Export ───────────────────────────────────────────
-
-
-def import_from_retro(retro_dir: str) -> dict:
-    """Import existing retro L2 markdown files into learning.db."""
-    retro_path = Path(retro_dir)
-    l2_dir = retro_path / "L2"
-    if not l2_dir.is_dir():
-        return {"imported": 0, "skipped": 0, "errors": ["L2 directory not found"]}
-
-    imported = 0
-    skipped = 0
-    errors = []
-
-    for md_file in sorted(l2_dir.glob("*.md")):
-        try:
-            content = md_file.read_text()
-            topic = md_file.stem
-
-            # Extract metadata from header
-            conf_match = re.search(r"\*\*Confidence\*\*:\s*(\w+)", content)
-            confidence_str = conf_match.group(1) if conf_match else "MEDIUM"
-            conf_map = {"HIGH": 0.85, "MEDIUM": 0.65, "LOW": 0.45}
-            base_confidence = conf_map.get(confidence_str.upper(), 0.65)
-
-            tags_match = re.search(r"\*\*Tags\*\*:\s*(.+)", content)
-            tags = [t.strip() for t in tags_match.group(1).split(",")] if tags_match else []
-
-            source_match = re.search(r"\*\*Source\*\*:\s*(.+)", content)
-            source_str = f"migrated:{source_match.group(1).strip()}" if source_match else "migrated:retro"
-
-            # Parse entries by ### heading
-            parts = re.split(r"(?=^### )", content, flags=re.MULTILINE)
-            for part in parts[1:] if len(parts) > 1 else []:
-                heading_match = re.match(r"### (.+?)(?:\n|$)", part)
-                if not heading_match:
-                    continue
-
-                raw_key = heading_match.group(1).strip()
-
-                # Check for graduation marker
-                graduated_to = None
-                grad_match = re.search(r"\[GRADUATED\s*→\s*(.+?)\]", raw_key)
-                if grad_match:
-                    graduated_to = grad_match.group(1).strip()
-                    raw_key = re.sub(r"\s*\[GRADUATED\s*→\s*.+?\]", "", raw_key).strip()
-
-                # Check for observation count
-                obs_match = re.search(r"\[(\d+)x\]", raw_key)
-                obs_count = int(obs_match.group(1)) if obs_match else 1
-                raw_key = re.sub(r"\s*\[\d+x\]", "", raw_key).strip()
-
-                key = raw_key.lower().replace(" ", "-")
-                value = part[len(heading_match.group(0)) :].strip()
-
-                if not value:
-                    skipped += 1
-                    continue
-
-                result = record_learning(
-                    topic=topic,
-                    key=key,
-                    value=value,
-                    category="design",  # Best guess for retro entries
-                    confidence=base_confidence,
-                    tags=tags if tags else None,
-                    source=source_str,
-                )
-
-                # Apply graduated_to if present
-                if graduated_to:
-                    mark_graduated(topic, key, graduated_to)
-
-                # Set observation count directly if > 1
-                if obs_count > 1:
-                    with get_connection() as conn:
-                        conn.execute(
-                            "UPDATE learnings SET observation_count = ? WHERE topic = ? AND key = ?",
-                            (obs_count, topic, key),
-                        )
-                        conn.commit()
-
-                imported += 1
-
-        except Exception as e:
-            errors.append(f"{md_file.name}: {e}")
-
-    return {"imported": imported, "skipped": skipped, "errors": errors}
 
 
 def import_from_patterns_db(db_path: str) -> dict:

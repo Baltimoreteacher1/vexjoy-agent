@@ -20,7 +20,7 @@ routing:
     - seed this
     - plant-seed
   pairs_with:
-    - feature-lifecycle
+    - workflow
   complexity: Simple
   category: process
 ---
@@ -212,4 +212,4 @@ To archive: remove the seed from `index.json` and write it as a standalone file 
 
 ## References
 
-- [Feature Lifecycle](../feature-lifecycle/SKILL.md) - Seeds are surfaced during feature-lifecycle design phase (Phase 0)
+- [Feature Lifecycle](../workflow/references/fl-pipeline.md) - Seeds are surfaced during feature-lifecycle design phase (Phase 0)

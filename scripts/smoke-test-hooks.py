@@ -8,8 +8,10 @@ Complements benchmark-hooks.py (timing) with correctness checks (exit codes).
 Valid hook exit codes:
   0 — advisory output or no action (always OK)
   2 — block action (OK for blocking hooks; advisory hooks should not emit 2)
-  Any other — unexpected, flag as WARN
-  Crash / exception — FAIL
+  Any other — a crash (an uncaught exception exits 1): FAIL. Claude Code blocks
+  only on exit 2, so a crashed gate lets the tool call through.
+
+Each hook gets its registered timeout, which is in seconds as Claude Code reads it.
 
 Usage:
     python scripts/smoke-test-hooks.py                # All registered hooks
@@ -21,9 +23,13 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import copy
 import json
+import os
+import re
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).parent.parent
@@ -50,13 +56,19 @@ MOCK_INPUTS: dict[str, dict] = {
         "hook_event_name": "PostToolUse",
         "tool_name": "Write",
         "tool_input": {"file_path": "/tmp/smoke-test.py"},
-        "tool_result": "File written successfully",
+        "tool_result": {"output": "File written successfully", "is_error": False},
         "session_id": "smoke-test-session",
     },
     "PreCompact": {"type": "PreCompact", "summary": "Working on feature"},
     "PostCompact": {"type": "PostCompact"},
     "Stop": {"type": "Stop", "stop_hook_active": False, "session_id": "smoke-test-session"},
     "StopFailure": {"type": "StopFailure"},
+    "SessionEnd": {
+        "type": "SessionEnd",
+        "hook_event_name": "SessionEnd",
+        "reason": "other",
+        "session_id": "smoke-test-session",
+    },
     "SubagentStop": {
         "type": "SubagentStop",
         "hook_event_name": "SubagentStop",
@@ -73,15 +85,23 @@ MOCK_INPUTS: dict[str, dict] = {
 }
 
 VALID_EXIT_CODES = {0, 2}
+# Seconds, when a settings entry has no timeout or comes from an untrusted target repo.
+DEFAULT_TIMEOUT_S = 5
+_SAFE_PATH = os.pathsep.join((str(Path(sys.executable).resolve().parent), "/usr/local/bin", "/usr/bin", "/bin"))
 
 
-def load_registered_hooks(event_filter: str | None = None) -> list[dict]:
-    """Extract hook entries from settings.json, optionally filtered by event."""
-    if not SETTINGS_PATH.exists():
-        print(f"ERROR: settings.json not found at {SETTINGS_PATH}", file=sys.stderr)
+def load_registered_hooks(
+    event_filter: str | None = None,
+    *,
+    settings_path: Path = SETTINGS_PATH,
+    trusted_hooks_dir: Path | None = None,
+) -> list[dict]:
+    """Extract hook entries, optionally mapping commands to trusted basenames."""
+    if not settings_path.exists():
+        print(f"ERROR: settings.json not found at {settings_path}", file=sys.stderr)
         return []
 
-    with open(SETTINGS_PATH) as f:
+    with open(settings_path) as f:
         settings = json.load(f)
 
     hooks_config = settings.get("hooks", {})
@@ -100,19 +120,26 @@ def load_registered_hooks(event_filter: str | None = None) -> list[dict]:
                     continue
                 cmd = entry.get("command", "")
                 # Extract python3 script path
-                import re
-
-                m = re.search(r'python3\s+"?([^"\s]+\.py)"?', cmd)
+                m = re.search(r'(?:python3|pyrun\.sh"?)\s+"?([^"\s]+\.py)"?', cmd)
                 if not m:
                     continue
-                script_path = m.group(1).replace("$HOME", str(Path.home()))
+                script_path = Path(m.group(1).replace("$HOME", str(Path.home())))
+                if trusted_hooks_dir is not None:
+                    basename = script_path.name
+                    if re.fullmatch(r"[A-Za-z0-9_-]+\.py", basename) is None:
+                        continue
+                    script_path = trusted_hooks_dir / basename
                 results.append(
                     {
                         "event": event,
                         "matcher": matcher,
-                        "script": Path(script_path),
+                        "script": script_path,
                         "description": entry.get("description", ""),
-                        "timeout_ms": entry.get("timeout", 5000),
+                        "timeout_s": (
+                            DEFAULT_TIMEOUT_S
+                            if trusted_hooks_dir is not None
+                            else entry.get("timeout", DEFAULT_TIMEOUT_S)
+                        ),
                         "command": cmd,
                     }
                 )
@@ -120,33 +147,103 @@ def load_registered_hooks(event_filter: str | None = None) -> list[dict]:
     return results
 
 
-def run_hook(hook: dict, verbose: bool = False) -> dict:
+def _safe_execution_environment(trusted_root: Path, untrusted_root: Path, home: Path) -> dict[str, str]:
+    """Build an environment with no target-derived or interpreter injection state.
+
+    HOME is a throwaway dir, never the trusted root: hooks write ``~/.claude``
+    state, and the trusted root is a repo checkout (HOME=repo made the sync
+    hook install a full runtime tree into ``repo/.claude``).
+    """
+    trusted = str(trusted_root.resolve())
+    untrusted = str(untrusted_root.resolve())
+    env = {
+        "HOME": str(home),
+        "VEXJOY_SYNC_DISABLED": "1",
+        "PATH": _SAFE_PATH,
+        "PWD": trusted,
+        "TMPDIR": "/tmp",
+        "SHELL": "/bin/sh",
+        "CLAUDE_PROJECT_DIR": trusted,
+        "CLAUDE_HOOKS_DEBUG": "",
+        "REF_GATE_BYPASS": "1",
+        "PYTHONNOUSERSITE": "1",
+        "PYTHONSAFEPATH": "1",
+        "PYTHONIOENCODING": "utf-8",
+    }
+    for key in ("LANG", "LC_ALL", "LC_CTYPE", "TERM", "TZ"):
+        value = os.environ.get(key)
+        if value and untrusted not in value:
+            env[key] = value
+    return env
+
+
+def _safe_mock_input(event: str, trusted_root: Path) -> str:
+    """Build a synthetic event whose paths are confined to the trusted root."""
+    root = str(trusted_root.resolve())
+    payload = copy.deepcopy(MOCK_INPUTS.get(event, MOCK_INPUTS["PostToolUse"]))
+    payload["cwd"] = root
+    payload["project_dir"] = root
+    payload["project_root"] = root
+    payload["repo_root"] = root
+    for field in ("tool_input", "input"):
+        value = payload.get(field)
+        if isinstance(value, dict) and "file_path" in value:
+            value["file_path"] = str(trusted_root.resolve() / ".vexjoy-smoke-test.py")
+    return json.dumps(payload)
+
+
+def run_hook(
+    hook: dict,
+    verbose: bool = False,
+    *,
+    trusted_root: Path | None = None,
+    untrusted_root: Path | None = None,
+    home: Path | None = None,
+) -> dict:
     """Run a single hook with mock stdin. Return result dict."""
     script = hook["script"]
     event = hook["event"]
-    timeout_s = (hook["timeout_ms"] + 500) / 1000  # Add 500ms buffer
+    timeout_s = hook["timeout_s"] + 0.5  # half a second over the registered timeout
 
     if not script.exists():
         return {**hook, "status": "MISSING", "exit_code": -1, "stdout": "", "stderr": ""}
 
-    mock_input = json.dumps(MOCK_INPUTS.get(event, MOCK_INPUTS["PostToolUse"]))
+    safe_mode = trusted_root is not None and untrusted_root is not None
+    mock_input = (
+        _safe_mock_input(event, trusted_root)
+        if safe_mode
+        else json.dumps(MOCK_INPUTS.get(event, MOCK_INPUTS["PostToolUse"]))
+    )
+    if home is None:
+        home = Path(tempfile.gettempdir()) / "vexjoy-smoke-home"
+        home.mkdir(exist_ok=True)
+    child_env = (
+        _safe_execution_environment(trusted_root, untrusted_root, home)
+        if safe_mode
+        else {
+            **os.environ,
+            # Never the real HOME: hooks would sync installs and log into ~/.claude.
+            "HOME": str(home),
+            "VEXJOY_SYNC_DISABLED": "1",
+            "CLAUDE_HOOKS_DEBUG": "",
+            "REF_GATE_BYPASS": "1",
+        }
+    )
+    child_cwd = str(trusted_root.resolve()) if safe_mode else str(REPO_ROOT)
+    child_command = [sys.executable, "-I", str(script)] if safe_mode else [sys.executable, str(script)]
 
     try:
         result = subprocess.run(
-            [sys.executable, str(script)],
+            child_command,
             input=mock_input,
             capture_output=True,
             text=True,
             timeout=timeout_s,
-            cwd=str(REPO_ROOT),
-            env={
-                **__import__("os").environ,
-                "CLAUDE_HOOKS_DEBUG": "",
-                "REF_GATE_BYPASS": "1",  # Prevent advisory hooks from cluttering output
-            },
+            cwd=child_cwd,
+            env=child_env,
         )
         exit_code = result.returncode
-        status = "PASS" if exit_code in VALID_EXIT_CODES else "WARN"
+        status = "PASS" if exit_code in VALID_EXIT_CODES else "FAIL"
         return {
             **hook,
             "status": status,
@@ -166,23 +263,47 @@ def main() -> int:
     parser.add_argument("--verbose", action="store_true", help="Show stdout/stderr output")
     parser.add_argument("--ci", action="store_true", help="Exit 1 on any FAIL or MISSING")
     parser.add_argument("--compact", action="store_true", help="One line per hook (default for >20 hooks)")
+    parser.add_argument("--repo-root", type=Path, help="Repository whose .claude/settings.json should be inspected")
+    parser.add_argument("--hooks-dir", type=Path, help="Trusted hooks directory used with --repo-root")
     args = parser.parse_args()
 
-    hooks = load_registered_hooks(event_filter=args.event)
+    if (args.repo_root is None) != (args.hooks_dir is None):
+        parser.error("--repo-root and --hooks-dir must be provided together")
+    settings_path = SETTINGS_PATH
+    trusted_hooks_dir = None
+    untrusted_root = None
+    if args.repo_root is not None:
+        untrusted_root = args.repo_root.resolve()
+        settings_path = untrusted_root / ".claude" / "settings.json"
+        trusted_hooks_dir = args.hooks_dir.resolve()
+    trusted_root = trusted_hooks_dir.parent if trusted_hooks_dir is not None else None
+
+    hooks = load_registered_hooks(
+        event_filter=args.event,
+        settings_path=settings_path,
+        trusted_hooks_dir=trusted_hooks_dir,
+    )
     if not hooks:
         print("No registered hooks found.")
-        return 0
+        return 1 if args.ci and args.repo_root is not None else 0
 
     compact = args.compact or (len(hooks) > 20 and not args.verbose)
 
     results = []
-    for hook in hooks:
-        r = run_hook(hook, verbose=args.verbose)
-        results.append(r)
+    with tempfile.TemporaryDirectory(prefix="vexjoy-smoke-home-") as home_dir:
+        for hook in hooks:
+            r = run_hook(
+                hook,
+                verbose=args.verbose,
+                trusted_root=trusted_root,
+                untrusted_root=untrusted_root,
+                home=Path(home_dir),
+            )
+            results.append(r)
 
     # Print results
     fails = 0
-    statuses = {"PASS": 0, "WARN": 0, "FAIL": 0, "MISSING": 0, "TIMEOUT": 0}
+    statuses = {"PASS": 0, "FAIL": 0, "MISSING": 0, "TIMEOUT": 0}
 
     for r in results:
         status = r["status"]
@@ -209,7 +330,7 @@ def main() -> int:
     total = len(results)
     print()
     print(
-        f"Hooks: {total} | PASS: {statuses['PASS']} | WARN: {statuses['WARN']} | "
+        f"Hooks: {total} | PASS: {statuses['PASS']} | "
         f"FAIL: {statuses['FAIL']} | MISSING: {statuses['MISSING']} | TIMEOUT: {statuses['TIMEOUT']}"
     )
 

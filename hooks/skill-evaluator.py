@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# hook-version: 1.0.0
+# hook-version: 1.0.1
 """
 UserPromptSubmit Hook: Dynamic Skill/Agent Evaluation
 
@@ -12,13 +12,15 @@ import os
 import sys
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).parent / "lib"))
+from hook_utils import hook_error
+
 REPO_ROOT = Path(__file__).parent.parent
 
 # Complete agent routing guide with when-to-use descriptions
 AGENT_ROUTING = {
     # Language/Framework Experts
     "golang-general-engineer": "Go development, concurrency, testing, interfaces",
-    "golang-general-engineer-compact": "Go tasks with tight context limits",
     "python-general-engineer": "Python development, async, typing, pytest",
     "python-openstack-engineer": "OpenStack Python, oslo libraries, Tempest",
     "typescript-frontend-engineer": "TypeScript, React, type safety, Zod",
@@ -73,14 +75,14 @@ SKILL_ROUTING = {
     "pr-workflow": "PR lifecycle umbrella: commit, codex-review, sync, status, fix, cleanup, miner, branch-name, ci-check",
     # Research/Analysis
     "codebase-overview": "Rapidly understand unfamiliar codebases",
-    "codebase-analyzer": "Extract implicit coding rules from patterns",
+    # codebase-analyzer: demoted to codebase-overview
     "pr-miner": "Mine PR comments for coding standards",
     "pr-mining-coordinator": "Coordinate PR mining operations",
     # Process
-    "workflow-orchestrator": "Multi-step tasks, brainstorming, planning",
+    "workflow": "Multi-step tasks, brainstorming, planning",
     "verification-before-completion": "Multiple validation layers before done",
     "read-only-ops": "Exploration and reporting without modifications",
-    "skill-composer": "Orchestrate multi-skill workflows",
+    # skill-composer: demoted to workflow
     # Evaluation
     "agent-evaluation": "Evaluate agents/skills for quality",
     "agent-comparison": "A/B test agent variants",
@@ -88,9 +90,8 @@ SKILL_ROUTING = {
     # Specialized
     "distinctive-frontend-design": "Unique aesthetics, avoid generic AI patterns",
     "professional-communication": "Transform technical to business formats",
-    "endpoint-validator": "API endpoint validation, pass/fail",
-    "service-health-check": "Service monitoring, restart recommendations",
-    "cron-job-auditor": "Audit cron scripts for best practices",
+    "service-health-check": "Service health, endpoint validation, CVE source auditing",
+    "cron-automation": "Audit and create cron jobs with safety",
     "docs-sync-checker": "Verify all skills/agents documented",
     "routing-table-updater": "Maintain /do routing tables",
     # Plan Management
@@ -137,7 +138,7 @@ def get_evaluation_prompt(complexity: str) -> str:
     # Group agents by category for readability
     agent_sections = """
 **Agents by Domain:**
-- Go: golang-general-engineer (full) or golang-general-engineer-compact (tight context)
+- Go: golang-general-engineer
 - Python: python-general-engineer, python-openstack-engineer (OpenStack)
 - TypeScript/React: typescript-frontend-engineer, typescript-debugging-engineer (bugs)
 - Node.js: nodejs-api-engineer, nextjs-ecommerce-engineer, react-portfolio-engineer
@@ -157,8 +158,8 @@ def get_evaluation_prompt(complexity: str) -> str:
 - Code Review: systematic-code-review, systematic-debugging, systematic-refactoring
 - Quality Gates: go-patterns, python-quality-gate, universal-quality-gate
 - Git: pr-workflow (umbrella: commit, codex-review, sync, status, fix, cleanup, miner, branch-name, ci-check)
-- Process: workflow-orchestrator, verification-before-completion, test-driven-development
-- Analysis: codebase-overview, codebase-analyzer, agent-evaluation
+- Process: workflow, verification-before-completion, test-driven-development
+- Analysis: codebase-overview, agent-evaluation
 - Cleanup: code-cleanup, comment-quality, code-linting"""
 
     phases = {
@@ -210,6 +211,9 @@ def should_skip(prompt: str) -> bool:
     return bool(prompt_lower.endswith("?") and len(prompt_lower) < 50)
 
 
+_BYPASS_ENV = "SKILL_EVALUATOR_BYPASS"
+
+
 def main():
     """Process UserPromptSubmit hook event.
 
@@ -219,6 +223,11 @@ def main():
     routing guidance injected. The Agent tool descriptions in the system
     prompt already list all available agents.
     """
+    if os.environ.get(_BYPASS_ENV) == "1":
+        if os.environ.get("CLAUDE_HOOKS_DEBUG"):
+            print("[skill-evaluator] Bypassed via SKILL_EVALUATOR_BYPASS=1", file=sys.stderr)
+        sys.exit(0)
+
     return
 
 
@@ -226,10 +235,6 @@ if __name__ == "__main__":
     try:
         main()
     except Exception as e:
-        if os.environ.get("CLAUDE_HOOKS_DEBUG"):
-            import traceback
-
-            print(f"[skill-evaluator] HOOK-ERROR: {type(e).__name__}: {e}", file=sys.stderr)
-            traceback.print_exc(file=sys.stderr)
+        hook_error("skill-evaluator", e)
     finally:
         sys.exit(0)

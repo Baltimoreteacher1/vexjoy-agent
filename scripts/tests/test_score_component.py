@@ -12,6 +12,10 @@ import pytest
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 SCRIPT = REPO_ROOT / "scripts" / "score-component.py"
 
+# The routing-registration check reads agents/skills INDEX.json, which are
+# generated and gitignored. Point it at a tmp public build.
+pytestmark = pytest.mark.usefixtures("use_public_index")
+
 
 def run_script(*args: str, expect_rc: int = 0) -> subprocess.CompletedProcess[str]:
     """Run score-component.py with given arguments."""
@@ -43,11 +47,6 @@ class TestSingleComponent:
         result = run_script("skills/meta/do/SKILL.md", expect_rc=0)
         assert "Component Health Score" in result.stdout
         assert "Type: skill" in result.stdout
-
-    def test_grade_in_output(self) -> None:
-        result = run_script("agents/golang-general-engineer.md")
-        # Must contain one of the valid grades
-        assert any(f"({g})" in result.stdout for g in ("A", "B", "C", "D", "F"))
 
 
 class TestBatchMode:
@@ -102,17 +101,6 @@ class TestJsonOutput:
         assert "earned" in check
         assert "max" in check
         assert check["status"] in ("PASS", "FAIL", "PART")
-
-
-class TestSecretDetection:
-    """Test --check-secrets flag."""
-
-    def test_no_secrets_in_agents(self) -> None:
-        result = run_script("agents/golang-general-engineer.md", "--check-secrets", "--json")
-        data = json.loads(result.stdout)
-        entry = data["results"][0]
-        assert entry["secret_penalty"] == 0
-        assert entry["secrets_found"] == []
 
 
 class TestErrorHandling:

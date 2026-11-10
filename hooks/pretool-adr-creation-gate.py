@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-# hook-version: 1.1.0
+# hook-version: 1.2.4
 """
 PreToolUse:Write Hook: ADR Creation Gate
 
-Blocks creation of new agent/skill/pipeline component files when no ADR
+Blocks creation of new agent/skill/pipeline/hook component files when no ADR
 exists for that component.
 
 This is a HARD GATE — exits 0 with JSON permissionDecision:deny to block the Write tool.
@@ -18,6 +18,9 @@ that, the directory basename of the project root.
 Detection logic:
 - Tool is Write (edits to existing files pass through)
 - Target path matches /agents/<name>.md, /skills/<name>/SKILL.md,
+  /pipelines/<name>/SKILL.md, or /hooks/<name>.py (top level; lib/ and
+  tests/ never match; hook gating applies only in toolkit-shaped repos —
+  agents/ and skills/ dirs beside the hooks/ dir)
 - The target file does not already exist on disk (new creation only)
 - ADR not found in either lookup path
 
@@ -25,10 +28,29 @@ Allow-through conditions:
 - Tool is not Write
 - Target file does not match a component path pattern
 - Target file already exists on disk (update, not creation)
-- Target path matches _ADR_PATH_ALLOWLIST (producer-allowlisted skills like create-voice)
+- Target path matches _ADR_PATH_ALLOWLIST (producer-allowlisted skills like writing)
 - ADR exists in centralized or project-root location
 - ADR_CREATION_GATE_BYPASS=1 env var
 """
+
+import sys  # vexjoy-pyguard
+
+if sys.version_info < (3, 10):  # vexjoy-pyguard gate
+    import os
+
+    if not os.environ.get("VEXJOY_PYGUARD_REEXEC"):
+        os.environ["VEXJOY_PYGUARD_REEXEC"] = "1"
+        for _d in [*os.environ.get("PATH", "").split(os.pathsep), "/opt/homebrew/bin", "/usr/local/bin", "/usr/bin"]:
+            for _v in ("14", "13", "12", "11", "10"):
+                _p = os.path.join(_d, "python3." + _v)
+                if _d and "/shims" not in _d and os.access(_p, os.X_OK):
+                    os.execv(_p, [_p, *sys.argv])
+    sys.stderr.write(
+        "[vexjoy] hook %s needs Python 3.10+, got %s (%s); run ./install.sh in vexjoy-agent from a terminal"
+        " outside Claude Code (gated tool calls stay blocked until then)\n"
+        % (__file__.rsplit("/", 1)[-1], sys.version.split()[0], sys.executable)
+    )
+    sys.exit(2)
 
 import json
 import os
@@ -39,6 +61,7 @@ import traceback
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent / "lib"))
+from hook_utils import deny_tool_use, hook_error
 from stdin_timeout import read_stdin
 
 _BYPASS_ENV = "ADR_CREATION_GATE_BYPASS"
@@ -49,6 +72,30 @@ _AGENT_RE = re.compile(r"/agents/([^/]+)\.md$")
 _SKILL_RE = re.compile(r"/skills/(?:[^/]+/)?([^/]+)/SKILL\.md$")
 # Match pipelines/foo-bar/SKILL.md → "foo-bar"
 _PIPELINE_RE = re.compile(r"/pipelines/([^/]+)/SKILL\.md$")
+# Match hooks/foo-bar.py → "foo-bar". Top-level hook files only: lib/ and
+# tests/ paths carry an extra segment so [^/]+ never matches them. Hooks are
+# a component class that is hard to govern once it runs — same
+# ADR-before-creation rule as agents/skills/pipelines. UNLIKE the sibling
+# patterns, this rule is scoped to toolkit-shaped repos (_is_toolkit_repo):
+# the gate runs user-level in every repo, and a random project's hooks/ dir
+# (git hooks, cookiecutter layouts) must not be denied with toolkit-specific
+# ADR guidance.
+_HOOK_RE = re.compile(r"/hooks/([^/]+)\.py$")
+
+
+def _is_toolkit_repo(root: Path) -> bool:
+    """Toolkit marker: agents/ AND skills/ dirs at the repo root.
+
+    Same detection convention as sync-to-user-claude.py and the PR pipeline's
+    toolkit-only phases. ``root`` is the directory CONTAINING the matched
+    hooks/ dir, derived from the target path itself (not cwd), so a Write
+    into another repo is judged by that repo's own shape.
+    """
+    try:
+        return (root / "agents").is_dir() and (root / "skills").is_dir()
+    except OSError:
+        return False
+
 
 # Path-shape allowlist for components whose creation is governed by an upstream
 # skill's own methodology, not by a per-component ADR. Mirrors the allowlist in
@@ -60,10 +107,10 @@ _PIPELINE_RE = re.compile(r"/pipelines/([^/]+)/SKILL\.md$")
 # path shape produced by exactly one well-known upstream skill. If a new
 # component type wants in, write the producer skill first, then add the entry.
 _ADR_PATH_ALLOWLIST: list[tuple[re.Pattern[str], str]] = [
-    # voice-* skills are produced by `create-voice` (skills/content/create-voice/
-    # SKILL.md Step 5: GENERATE). The create-voice skill itself documents the
+    # voice-* skills are produced by the `writing` skill's Voice Creation mode
+    # (skills/content/writing/SKILL.md). That mode documents the
     # voice-creation methodology; a per-voice ADR would be redundant.
-    (re.compile(r"/skills/(?:[^/]+/)?voice-[^/]+/SKILL\.md$"), "create-voice"),
+    (re.compile(r"/skills/(?:[^/]+/)?voice-[^/]+/SKILL\.md$"), "writing"),
 ]
 
 
@@ -161,7 +208,19 @@ def _extract_component_name(file_path: str) -> str | None:
         match = pattern.search(normalised)
         if match:
             return match.group(1)
-    return None
+    # Hooks: match the lexically resolved path so hooks/sub/../new.py cannot
+    # skip the pattern. Normalization is scoped to the hook rule so sibling
+    # pattern behavior is unchanged.
+    resolved = os.path.normpath(normalised).replace("\\", "/")
+    match = _HOOK_RE.search(resolved)
+    if match is None or match.group(1) == "__init__":
+        # __init__.py is packaging, not a hook component.
+        return None
+    # Opt-in scoping: gate hooks only in toolkit-shaped repos (see _HOOK_RE).
+    repo_root = Path(resolved[: match.start()] or "/")
+    if not _is_toolkit_repo(repo_root):
+        return None
+    return match.group(1)
 
 
 def main() -> None:
@@ -198,7 +257,10 @@ def main() -> None:
     # If the file already exists this is an update, not a creation — allow through.
     if Path(file_path).exists():
         if debug:
-            print(f"[adr-creation-gate] File already exists (update), allowing: {file_path}", file=sys.stderr)
+            print(
+                f"[adr-creation-gate] File already exists (update), allowing: {file_path}",  # nosec: plain English
+                file=sys.stderr,
+            )
         sys.exit(0)
 
     # Path-shape allowlist: skills produced by named upstream pipelines whose
@@ -230,20 +292,12 @@ def main() -> None:
         f"  Alternative: adr/{component_name}.md (project root)",
         file=sys.stderr,
     )
-    print("[fix-with-skill] plans", file=sys.stderr)
-    print(
-        json.dumps(
-            {
-                "hookSpecificOutput": {
-                    "hookEventName": "PreToolUse",
-                    "permissionDecision": "deny",
-                    "permissionDecisionReason": (
-                        f"Create ADR at {centralized_hint} (or adr/{component_name}.md in project root) "
-                        "before creating this new component. Use the plans skill to draft the ADR first."
-                    ),
-                }
-            }
-        )
+    print("[fix-with-skill] process", file=sys.stderr)
+    deny_tool_use(
+        "PreToolUse",
+        f"Create ADR at {centralized_hint} (or adr/{component_name}.md in project root) "
+        "before creating this new component. [fix-with-skill] process\n"
+        "Call the Skill tool with `process`.",
     )
     sys.exit(0)
 
@@ -254,10 +308,6 @@ if __name__ == "__main__":
     except SystemExit:
         raise  # Let sys.exit(0) propagate normally
     except Exception as e:
-        if os.environ.get("CLAUDE_HOOKS_DEBUG"):
-            traceback.print_exc(file=sys.stderr)
-        else:
-            print(f"[adr-creation-gate] Error: {type(e).__name__}: {e}", file=sys.stderr)
-        # A crashed hook must fail OPEN — never block tools.
+        hook_error("pretool-adr-creation-gate", e)
     finally:
         sys.exit(0)

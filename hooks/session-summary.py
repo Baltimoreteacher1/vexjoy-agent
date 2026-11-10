@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# hook-version: 1.0.0
+# hook-version: 1.0.3
 """
 Stop Hook: Session Summary and Metrics
 
@@ -13,6 +13,25 @@ Design Principles:
 - Non-blocking (always exits 0)
 """
 
+import sys  # vexjoy-pyguard
+
+if sys.version_info < (3, 10):  # vexjoy-pyguard advisory
+    import os
+
+    if not os.environ.get("VEXJOY_PYGUARD_REEXEC"):
+        os.environ["VEXJOY_PYGUARD_REEXEC"] = "1"
+        for _d in [*os.environ.get("PATH", "").split(os.pathsep), "/opt/homebrew/bin", "/usr/local/bin", "/usr/bin"]:
+            for _v in ("14", "13", "12", "11", "10"):
+                _p = os.path.join(_d, "python3." + _v)
+                if _d and "/shims" not in _d and os.access(_p, os.X_OK):
+                    os.execv(_p, [_p, *sys.argv])
+    sys.stderr.write(
+        "[vexjoy] hook %s needs Python 3.10+, got %s (%s); run ./install.sh in vexjoy-agent from a terminal"
+        " outside Claude Code (gated tool calls stay blocked until then)\n"
+        % (__file__.rsplit("/", 1)[-1], sys.version.split()[0], sys.executable)
+    )
+    sys.exit(0)
+
 import json
 import os
 import sys
@@ -21,19 +40,24 @@ from pathlib import Path
 # Add lib directory to path for imports
 sys.path.insert(0, str(Path(__file__).parent / "lib"))
 
-from hook_utils import get_session_id
+from hook_utils import get_session_id, hook_error
 from learning_db_v2 import get_stats, record_session
 from stdin_timeout import read_stdin
+
+_BYPASS_ENV = "SESSION_SUMMARY_BYPASS"
 
 
 def main():
     """Generate session summary on conversation end."""
+    if os.environ.get(_BYPASS_ENV) == "1":
+        if os.environ.get("CLAUDE_HOOKS_DEBUG"):
+            print("[session-summary] Bypassed via SESSION_SUMMARY_BYPASS=1", file=sys.stderr)
+        sys.exit(0)
+
     try:
         event_data = read_stdin(timeout=2)
         cwd = os.getcwd()
-
-        # Generate session ID
-        session_id = get_session_id()
+        event = None
 
         if event_data:
             try:
@@ -55,7 +79,9 @@ def main():
             errors = 0
             resolved = 0
 
-        # Record session
+        # Key the row on the event's session_id so every Stop of one session
+        # updates the same row.
+        session_id = get_session_id(event)
         record_session(
             session_id,
             files_modified=files_modified,
@@ -79,9 +105,7 @@ def main():
             print(f"[session-summary] Total sessions: {total_sessions}")
 
     except Exception as e:
-        # Log to stderr if debug enabled, but never fail
-        if os.environ.get("CLAUDE_HOOKS_DEBUG"):
-            print(f"[session-summary] Error: {e}", file=sys.stderr)
+        hook_error("session-summary", e)
     finally:
         sys.exit(0)
 

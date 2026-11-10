@@ -38,8 +38,8 @@ skipped. A prior investigation showed that for the 29 files under
 ``skills/engineering/kotlin-coroutines/references/preferred-patterns.md``, the substring
 matches are false positives for dispatch purposes:
 
-1. The pipeline dispatcher in ``scripts/index-router.py`` keys on JSON keys
-   from ``skills/workflow/references/pipeline-index.json`` and on file paths,
+1. The pipeline dispatcher in ``scripts/pre-route.py`` keys on JSON keys
+   from ``skills/process/workflow/references/pipeline-index.json`` and on file paths,
    not on the YAML ``name:`` field inside the reference files themselves.
 2. The only script that reads the YAML ``name:`` field is
    ``scripts/generate-pipeline-catalog.py``. When ``name`` is absent it
@@ -87,6 +87,10 @@ except ImportError:
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
+sys.path.insert(0, str(REPO_ROOT))
+
+from scripts.lib.frontmatter import load_yaml_mapping
+
 AGENT_REF_GLOB = "agents/*/references/*.md"
 SKILL_REF_GLOB = "skills/*/references/*.md"
 
@@ -95,7 +99,7 @@ ROUTING_TABLE = REPO_ROOT / "skills" / "do" / "references" / "routing-tables.md"
 
 # Verified-safe allowlist. These files were flagged by the conservative
 # audit as potentially routed, but investigation showed the matches are
-# false positives: dispatch is JSON-keyed (see scripts/index-router.py)
+# false positives: dispatch is JSON-keyed (see scripts/pre-route.py)
 # and scripts/generate-pipeline-catalog.py has a skill_file.stem fallback
 # that reproduces the same string after name: is removed. The proof of
 # no behavioral change is a byte-identical pipeline-catalog.json before
@@ -128,8 +132,7 @@ VERIFIED_SAFE_PATHS: frozenset[str] = frozenset(
         "skills/workflow/references/systematic-debugging.md",
         "skills/workflow/references/systematic-refactoring.md",
         "skills/workflow/references/toolkit-improvement.md",
-        "skills/workflow/references/voice-calibrator.md",
-        "skills/workflow/references/voice-writer.md",
+        "skills/workflow/references/voice-pipeline.md",
         "skills/workflow/references/workflow-orchestrator.md",
     }
 )
@@ -151,11 +154,8 @@ def read_frontmatter(path: Path) -> tuple[dict | None, str | None, str]:
     if not match:
         return None, None, text
     raw = match.group(1)
-    try:
-        data = yaml.safe_load(raw)
-    except yaml.YAMLError:
-        return None, raw, text
-    if not isinstance(data, dict):
+    data = load_yaml_mapping(raw)
+    if data is None:
         return None, raw, text
     return data, raw, text
 
@@ -213,7 +213,15 @@ def audit_routed_names(candidates: list[tuple[Path, str]]) -> dict[str, list[str
     """
     hits: dict[str, list[str]] = {}
 
-    routing_text = ROUTING_TABLE.read_text(encoding="utf-8") if ROUTING_TABLE.exists() else ""
+    if ROUTING_TABLE.exists():
+        routing_text = ROUTING_TABLE.read_text(encoding="utf-8")
+    else:
+        print(
+            f"NOTE: {ROUTING_TABLE.relative_to(REPO_ROOT)} no longer exists "
+            "(absorbed into INDEX.json). Skipping the routing-table portion "
+            "of this audit; pipeline-JSON checks below still run."
+        )
+        routing_text = ""
     routing_lines = routing_text.splitlines()
 
     pipeline_paths = collect_pipeline_json_paths()
@@ -385,7 +393,7 @@ def main() -> int:
             if rel in VERIFIED_SAFE_PATHS:
                 skip_list.discard(path)
                 overridden.append(path)
-        print(f"Allowlist hits removed from skip list: {len(overridden)}")
+        print(f"Allowlist hits removed from skip list: {len(overridden)}")  # nosec - plain print, no SQL
         for path in overridden:
             print(f"  OVERRIDE: {path.relative_to(REPO_ROOT)}")
         # Warn if the allowlist references paths that are not even

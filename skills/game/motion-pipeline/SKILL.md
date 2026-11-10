@@ -1,6 +1,7 @@
 ---
 name: motion-pipeline
-user-invocable: true
+promoted_to: game-dev
+user-invocable: false
 description: "CPU-only motion data processing pipeline for game animation: BVH import, contact detection, root decomposition, motion blending, FABRIK IK. No GPU required."
 allowed-tools:
   - Read
@@ -24,8 +25,7 @@ routing:
     - "skeletal animation data"
   category: game-animation
   pairs_with:
-    - game-sprite-pipeline
-    - phaser-gamedev
+    - game-dev
   agents:
     - rive-skeletal-animator
     - pixijs-combat-renderer

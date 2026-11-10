@@ -7,23 +7,30 @@ and generates agents/INDEX.json for fast /do router lookups.
 
 Usage:
     python scripts/generate-agent-index.py
-    python scripts/generate-agent-index.py --include-private
+    python scripts/generate-agent-index.py --include-private  # writes agents/INDEX.local.json
     python scripts/generate-agent-index.py --include-private --output agents/INDEX.local.json
 
 Options:
     --include-private   Include symlinked agent files (default: skip them)
-    --output PATH       Output path (default: agents/INDEX.json)
+    --output PATH       Output path (default: agents/INDEX.json; INDEX.local.json with --include-private)
 
 Output:
-    agents/INDEX.json - Routing index for /do router (public, tracked)
+    agents/INDEX.json - Public routing index for /do
+    agents/INDEX.local.json - Private-inclusive local overlay
 """
 
 import argparse
 import json
 import re
+import sys
 from pathlib import Path
 
 import yaml
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from scripts.lib.atomic_io import atomic_write_text
+from scripts.lib.frontmatter import extract_frontmatter_block
 
 
 def extract_frontmatter(content: str) -> dict | None:
@@ -32,11 +39,9 @@ def extract_frontmatter(content: str) -> dict | None:
     Uses PyYAML for parsing, with fallback to regex for complex description fields
     that contain colons (common in agent descriptions with examples).
     """
-    match = re.match(r"^---\n(.*?)\n---", content, re.DOTALL)
-    if not match:
+    yaml_content = extract_frontmatter_block(content)
+    if yaml_content is None:
         return None
-
-    yaml_content = match.group(1)
 
     # Try PyYAML first
     try:
@@ -112,10 +117,12 @@ def extract_short_description(description: str) -> str:
     if match:
         return match.group(0)
 
-    # Fallback: first sentence
-    sentences = desc.split(".")
-    if sentences:
-        return sentences[0].strip()
+    # Fallback: first sentence, without its closing period. Same rule as
+    # generate-skill-index.py: a dot followed by a letter, digit or underscore
+    # is part of an identifier (Node.js, PHP 8.x, 1.2), not a sentence end.
+    match = re.match(r"((?:[^.!?]|\.(?=[a-zA-Z0-9_]))+)[.!?]?", desc)
+    if match:
+        return match.group(1).strip()
 
     return description[:100]
 
@@ -202,6 +209,11 @@ def generate_index(
     return index
 
 
+def default_output_path(agents_dir: Path, include_private: bool) -> Path:
+    """Keep private-inclusive indexes out of the public index filename."""
+    return agents_dir / ("INDEX.local.json" if include_private else "INDEX.json")
+
+
 def main() -> int:
     """Main entry point."""
     parser = argparse.ArgumentParser(
@@ -220,11 +232,17 @@ def main() -> int:
         default=None,
         help="Output file path (default: agents/INDEX.json relative to repo root).",
     )
+    parser.add_argument(
+        "--repo-root",
+        type=Path,
+        default=None,
+        help="Repository to scan (default: parent of this script).",
+    )
     args = parser.parse_args()
 
     # Find agents directory relative to script
     script_dir = Path(__file__).parent
-    repo_root = script_dir.parent
+    repo_root = (args.repo_root or script_dir.parent).resolve()
     agents_dir = repo_root / "agents"
 
     if not agents_dir.exists():
@@ -232,7 +250,9 @@ def main() -> int:
         return 1
 
     # Resolve output path
-    output_path: Path = args.output if args.output is not None else agents_dir / "INDEX.json"
+    output_path: Path = (
+        args.output if args.output is not None else default_output_path(agents_dir, args.include_private)
+    )
 
     # Generate index: symlinked files skipped by default, included with --include-private.
     # Private agents directory (gitignored) is only scanned when --include-private is set.
@@ -245,8 +265,7 @@ def main() -> int:
             index["agents"].update(private_index["agents"])
 
     # Write index file
-    with open(output_path, "w") as f:
-        json.dump(index, f, indent=2)
+    atomic_write_text(output_path, json.dumps(index, indent=2))
 
     # Summary
     print(f"Generated {output_path}")

@@ -4,19 +4,21 @@ Generate skill routing index from YAML frontmatter.
 
 Reads skills/**/SKILL.md, extracts routing metadata
 from YAML frontmatter, and generates a dict-keyed index file:
-  - skills/INDEX.json   (skills only, v2.0)
+  - skills/INDEX.json       (public skills only, v2.0)
+  - skills/INDEX.local.json (private-inclusive local overlay)
 
 Usage:
     python scripts/generate-skill-index.py
-    python scripts/generate-skill-index.py --include-private
+    python scripts/generate-skill-index.py --include-private  # writes skills/INDEX.local.json
     python scripts/generate-skill-index.py --include-private --output skills/INDEX.local.json
 
 Options:
     --include-private   Include symlinked directories (default: skip them)
-    --output PATH       Output path (default: skills/INDEX.json)
+    --output PATH       Output path (default: skills/INDEX.json; INDEX.local.json with --include-private)
 
 Output:
-    skills/INDEX.json    - Skill routing index for /do router (public, tracked)
+    skills/INDEX.json       - Public routing index for /do
+    skills/INDEX.local.json - Private-inclusive local overlay
 
 
 Exit codes:
@@ -28,6 +30,7 @@ Exit codes:
 
 import argparse
 import json
+import os
 import re
 import subprocess
 import sys
@@ -35,6 +38,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import yaml
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from scripts.lib.atomic_io import atomic_write_text
+from scripts.lib.frontmatter import extract_frontmatter_block
 
 # Phase header regex: matches "## Phase 1:" or "### Phase 1:", "### Phase 0.5:", "### Phase 4b:", etc.
 # Captures the NAME part after the colon, stopping before parenthetical or em-dash suffixes.
@@ -52,11 +60,9 @@ def extract_frontmatter(content: str) -> tuple[dict | None, bool]:
     Returns:
         tuple: (frontmatter dict or None, used_fallback bool)
     """
-    match = re.match(r"^---\n(.*?)\n---", content, re.DOTALL)
-    if not match:
+    yaml_content = extract_frontmatter_block(content)
+    if yaml_content is None:
         return None, False
-
-    yaml_content = match.group(1)
 
     try:
         result = yaml.safe_load(yaml_content)
@@ -427,6 +433,8 @@ def generate_index(
             old_ok = (repo_root / existing["file"]).is_file() if repo_root else False
             if old_ok and not new_ok:
                 return
+            if old_ok and new_ok:
+                warnings.append(f"  - {name}: duplicate skill name — {existing['file']} overwritten by {entry['file']}")
         index[collection_key][name] = entry
 
     for child in sorted(source_dir.iterdir()):
@@ -440,7 +448,17 @@ def generate_index(
         # Check if this directory directly contains a SKILL.md (flat layout)
         if (child / "SKILL.md").exists():
             _process_skill_dir(child)
-        # Check for nested skill/SKILL.md layout (e.g., voice-dragonball-z/skill/SKILL.md)
+            # Hybrid dirs (e.g. skills/process/, skills/research/) have both a top-level SKILL.md and nested skill subdirs.
+            for nested in sorted(child.iterdir()):
+                if not nested.is_dir():
+                    continue
+                if nested.is_symlink() and not include_private:
+                    continue
+                if (nested / "SKILL.md").exists():
+                    _process_skill_dir(nested)
+                elif (nested / "skill" / "SKILL.md").exists():
+                    _process_skill_dir(nested, skill_file_override=nested / "skill" / "SKILL.md")
+        # Check for nested skill/SKILL.md layout (e.g., voice-example/skill/SKILL.md)
         elif (child / "skill" / "SKILL.md").exists():
             _process_skill_dir(child, skill_file_override=child / "skill" / "SKILL.md")
         else:
@@ -468,6 +486,31 @@ def generate_index(
                             _process_skill_dir(deep, skill_file_override=deep / "skill" / "SKILL.md")
 
     return index, warnings
+
+
+def prune_phantom_entries(skills_index: dict, roots: list[Path]) -> list[str]:
+    """Drop entries whose advertised `file` path exists under none of `roots`.
+
+    The --include-private scans index deployed and private packages; some
+    (e.g. voice packages with only a nested skill/SKILL.md) get a flat
+    `skills/{name}/SKILL.md` path that exists in no layout. Advertising them
+    creates phantom routes — the router selects a skill nothing can load.
+
+    Args:
+        skills_index: Index dict with entries under "skills".
+        roots: Layout roots to resolve `file` against (repo root, deployed root).
+
+    Returns:
+        Sorted names of pruned entries.
+    """
+    pruned: list[str] = []
+    skills = skills_index.get("skills", {})
+    for name in sorted(skills):
+        rel = skills[name].get("file", "")
+        if rel and not any((root / rel).is_file() for root in roots):
+            del skills[name]
+            pruned.append(name)
+    return pruned
 
 
 def check_trigger_collisions(
@@ -513,7 +556,7 @@ def write_index(index: dict, output_path: Path) -> bool:
         True on success, False on error (error printed to stderr).
     """
     try:
-        output_path.write_text(json.dumps(index, indent=2) + "\n", encoding="utf-8")
+        atomic_write_text(output_path, json.dumps(index, indent=2) + "\n")
         return True
     except PermissionError:
         print(f"Error: Permission denied writing to {output_path}", file=sys.stderr)
@@ -521,6 +564,29 @@ def write_index(index: dict, output_path: Path) -> bool:
     except OSError as e:
         print(f"Error: Failed to write index file: {e}", file=sys.stderr)
         return False
+
+
+def default_output_path(skills_dir: Path, include_private: bool) -> Path:
+    """Keep private-inclusive indexes out of the public index filename."""
+    return skills_dir / ("INDEX.local.json" if include_private else "INDEX.json")
+
+
+def _should_run_drift_gate(output: str | None, repo_root: Path, script_dir: Path) -> bool:
+    """Return whether the post-generation routing-drift check should run.
+
+    The gate is skipped when:
+    - A non-default output path is set (``--output``).
+    - The repo root differs from this script's own checkout (``--repo-root``).
+    - A consumer (``ensure_fresh_indexes``) started this run, indicated by
+      the ``VEXJOY_INDEX_REGEN`` environment variable.
+    """
+    if output is not None:
+        return False
+    if repo_root != script_dir.parent.resolve():
+        return False
+    if os.environ.get("VEXJOY_INDEX_REGEN"):
+        return False
+    return True
 
 
 def main() -> int:
@@ -547,10 +613,16 @@ def main() -> int:
         default=False,
         help="Disable regex fallback. YAML parse failure = skip the skill and log an error.",
     )
+    parser.add_argument(
+        "--repo-root",
+        type=Path,
+        default=None,
+        help="Repository to scan (default: parent of this script).",
+    )
     args = parser.parse_args()
 
     script_dir = Path(__file__).parent
-    repo_root = script_dir.parent
+    repo_root = (args.repo_root or script_dir.parent).resolve()
     skills_dir = repo_root / "skills"
 
     if not skills_dir.exists():
@@ -558,7 +630,9 @@ def main() -> int:
         return 1
 
     # Resolve output path
-    output_path: Path = args.output if args.output is not None else skills_dir / "INDEX.json"
+    output_path: Path = (
+        args.output if args.output is not None else default_output_path(skills_dir, args.include_private)
+    )
 
     # Generate skills index
     # When --include-private is used (for INDEX.local.json), flatten nested paths
@@ -576,9 +650,8 @@ def main() -> int:
 
     # Scan ~/.claude/skills/ for deployed skills not already indexed.
     # Only when --include-private: the repo skills/ scan skips symlinked
-    # directories (private/voice skills), so this picks up voice-*,
-    # create-voice, anti-ai-editor, and any other skills deployed by the
-    # sync hook. Without --include-private, these entries would reference
+    # directories (private/voice skills), so this picks up voice-* profiles
+    # and any other private skills deployed by the sync hook. Without --include-private, these entries would reference
     # files that don't exist in the repo and break CI.
     user_skills_dir = Path.home() / ".claude" / "skills"
     if args.include_private and user_skills_dir.is_dir():
@@ -603,6 +676,10 @@ def main() -> int:
             if not fm:
                 continue
             if used_fallback and args.strict:
+                continue
+            # Folded skills stay folded: a deployed copy of a promoted skill
+            # must not re-enter routing through the local overlay.
+            if fm.get("promoted_to"):
                 continue
             # Override name to match deployed name
             fm["name"] = deploy_name
@@ -663,6 +740,9 @@ def main() -> int:
                         continue
                     if used_fallback and args.strict:
                         continue
+                    # Folded skills stay folded, same rule as the deployed scan.
+                    if fm.get("promoted_to"):
+                        continue
 
                     # Override name to match deployed name
                     fm["name"] = deploy_name
@@ -682,6 +762,13 @@ def main() -> int:
                     if _repo_relative_path(skill_dir, "skills", repo_root) is None:
                         entry["file"] = f"skills/{deploy_name}/SKILL.md"
                     skills_index["skills"][deploy_name] = entry
+
+    # Phantom gate (include-private only): advertise only files that resolve
+    # in a live layout — the repo (nested paths) or ~/.claude (flat deployed).
+    if args.include_private:
+        pruned = prune_phantom_entries(skills_index, [repo_root, Path.home() / ".claude"])
+        for name in pruned:
+            skills_warnings.append(f"  - {name}: advertised file exists in no layout (pruned)")
 
     # Report warnings if any
     if skills_warnings:
@@ -730,8 +817,7 @@ def main() -> int:
     print(f"Force-routed: {force_routed}")
 
     # Post-generation drift gate: warn when routing manifest falls out of sync.
-    # Only runs for the default output (skills/INDEX.json); skips local override indexes.
-    if args.output is None:
+    if _should_run_drift_gate(args.output, repo_root, script_dir):
         drift_script = Path(__file__).parent / "check-routing-drift.py"
         if drift_script.exists():
             drift_result = subprocess.run(

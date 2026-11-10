@@ -75,13 +75,46 @@ def test_exact_collision_neither_has_not_for(tmp_path: Path) -> None:
     assert row["kind"] == "exact"
     assert row["trigger"] == "foo"
     assert set(row["owners"]) == {"skill:a", "agent:b"}
-    assert row["any_not_for"] is False
+    assert row["disambiguated"] is False
 
 
-def test_collision_disambiguated_on_one_side_excluded(tmp_path: Path) -> None:
+def test_generic_not_for_does_not_disambiguate(tmp_path: Path) -> None:
+    """A not_for that exists but never names the colliding partner must not
+    suppress the report. This is the exact report-card bug: any non-empty
+    not_for used to count, regardless of relevance.
+    """
     sp, ap = make_indexes(
         tmp_path,
-        skills={"a": {"triggers": ["foo"], "not_for": "not the other thing"}},
+        skills={"a": {"triggers": ["foo"], "not_for": "some unrelated thing (use z)"}},
+        agents={"b": {"triggers": ["foo"]}},
+    )
+    data = run_json(sp, ap)
+    assert data["totals"]["collisions"] >= 1
+    assert data["totals"]["undisambiguated"] == 1
+    assert data["reportable"][0]["trigger"] == "foo"
+
+
+def test_not_for_naming_wrong_skill_still_reportable(tmp_path: Path) -> None:
+    """not_for names a real, but different, third skill — the actual colliding
+    partner is still unaddressed, so the pair stays reportable.
+    """
+    sp, ap = make_indexes(
+        tmp_path,
+        skills={
+            "a": {"triggers": ["foo"], "not_for": "micro choices (use decision-helper)"},
+            "b": {"triggers": ["foo"]},
+        },
+        agents={},
+    )
+    data = run_json(sp, ap)
+    assert data["totals"]["undisambiguated"] == 1
+    assert data["reportable"][0]["owners"] == ["skill:a", "skill:b"]
+
+
+def test_collision_disambiguated_when_not_for_names_partner(tmp_path: Path) -> None:
+    sp, ap = make_indexes(
+        tmp_path,
+        skills={"a": {"triggers": ["foo"], "not_for": "some unrelated thing (use b)"}},
         agents={"b": {"triggers": ["foo"]}},
     )
     data = run_json(sp, ap)
@@ -89,6 +122,58 @@ def test_collision_disambiguated_on_one_side_excluded(tmp_path: Path) -> None:
     assert data["totals"]["collisions"] >= 1
     assert data["totals"]["undisambiguated"] == 0
     assert data["reportable"] == []
+
+
+def test_collision_disambiguated_via_that_is_idiom(tmp_path: Path) -> None:
+    sp, ap = make_indexes(
+        tmp_path,
+        skills={"a": {"triggers": ["foo"], "not_for": "personal prioritization — that is b."}},
+        agents={"b": {"triggers": ["foo"]}},
+    )
+    data = run_json(sp, ap)
+    assert data["totals"]["undisambiguated"] == 0
+
+
+def test_not_for_matches_space_form_of_hyphenated_slug(tmp_path: Path) -> None:
+    sp, ap = make_indexes(
+        tmp_path,
+        skills={"my-skill": {"triggers": ["foo"], "not_for": "policy work (use other skill)"}},
+        agents={"other-skill": {"triggers": ["foo"]}},
+    )
+    data = run_json(sp, ap)
+    assert data["totals"]["undisambiguated"] == 0
+
+
+def test_group_disambiguation_requires_every_owner_linked(tmp_path: Path) -> None:
+    """3-owner collision where only two of the three name each other — the
+    third owner is still unaddressed, so the whole group stays reportable.
+    """
+    sp, ap = make_indexes(
+        tmp_path,
+        skills={
+            "a": {"triggers": ["foo"], "not_for": "... (use b)"},
+            "b": {"triggers": ["foo"]},
+            "c": {"triggers": ["foo"]},
+        },
+        agents={},
+    )
+    data = run_json(sp, ap)
+    assert data["totals"]["undisambiguated"] == 1
+    assert set(data["reportable"][0]["owners"]) == {"skill:a", "skill:b", "skill:c"}
+
+
+def test_group_disambiguation_when_every_owner_linked(tmp_path: Path) -> None:
+    sp, ap = make_indexes(
+        tmp_path,
+        skills={
+            "a": {"triggers": ["foo"], "not_for": "... (use b)"},
+            "b": {"triggers": ["foo"], "not_for": "... (use c)"},
+            "c": {"triggers": ["foo"], "not_for": "... (use a)"},
+        },
+        agents={},
+    )
+    data = run_json(sp, ap)
+    assert data["totals"]["undisambiguated"] == 0
 
 
 def test_near_duplicate_via_article(tmp_path: Path) -> None:
@@ -202,3 +287,37 @@ def test_top_does_not_truncate_json(tmp_path: Path) -> None:
     # JSON is always full regardless of --top.
     data = run_json(sp, ap, "--top", "1")
     assert len(data["reportable"]) == 2
+
+
+def test_stale_default_index_is_regenerated_before_the_audit(tmp_path: Path) -> None:
+    """With default index paths, an index older than its sources is rebuilt first."""
+    import os
+    import shutil
+
+    scripts = tmp_path / "scripts"
+    (scripts / "lib").mkdir(parents=True)
+    shutil.copy(SCRIPT, scripts / SCRIPT.name)
+    shutil.copy(SCRIPT.parent / "lib" / "index_freshness.py", scripts / "lib" / "index_freshness.py")
+    fresh = {"version": "2.0", "skills": {"a": {"triggers": ["foo"]}, "c": {"triggers": ["foo"]}}}
+    (scripts / "generate-skill-index.py").write_text(
+        f"import json, pathlib\npathlib.Path('skills/INDEX.json').write_text(json.dumps({fresh!r}))\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "skills" / "a").mkdir(parents=True)
+    (tmp_path / "agents").mkdir()
+    stale = tmp_path / "skills" / "INDEX.json"
+    write_index(stale, "skills", {"a": {"triggers": ["foo"]}})
+    write_index(tmp_path / "agents" / "INDEX.json", "agents", {})
+    os.utime(stale, (1, 1))
+
+    proc = subprocess.run(
+        [sys.executable, str(scripts / SCRIPT.name), "--json"],
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+
+    assert proc.returncode == 0, proc.stderr
+    owners = [row["owners"] for row in json.loads(proc.stdout)["reportable"]]
+    assert any("c" in " ".join(o) for o in owners), proc.stdout

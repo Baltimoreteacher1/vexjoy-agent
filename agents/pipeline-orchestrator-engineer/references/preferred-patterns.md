@@ -17,13 +17,13 @@ grep -rn 'subagent_type' agents/ --include="*.md" | grep -v "spec\|manifest\|dis
 
 ---
 
-### Run codebase-analyzer Before Scaffolding
+### Run assessment Before Scaffolding
 
 Always Phase 1 before Phase 3. If existing agent covers 80%+, bind new skills instead of duplicating. Two agents with overlapping triggers produce non-deterministic routing.
 
 **Detection**:
 ```bash
-grep -rn 'codebase-analyzer' adr/ --include="*.md" | wc -l
+grep -rn 'assessment' adr/ --include="*.md" | wc -l
 ```
 
 ---
@@ -34,7 +34,7 @@ Decompose multi-subdomain domains into N skills, one per subdomain, same agent. 
 
 **Detection**:
 ```bash
-grep -rn 'description:' skills/*/SKILL.md | grep ' and \| & ' | grep -v "test\|spec"
+grep -rn 'description:' skills/*/*/SKILL.md | grep ' and \| & ' | grep -v "test\|spec"
 ```
 
 ---
@@ -44,7 +44,8 @@ grep -rn 'description:' skills/*/SKILL.md | grep ' and \| & ' | grep -v "test\|s
 `validate-chain` on every chain before scaffolding. Catches type incompatibilities at design time.
 
 ```bash
-python3 scripts/artifact-utils.py validate-chain --chain "research,draft,review,publish" --domain prometheus
+# pipeline-spec.json: a JSON array of {"step": ..., "schema": ...} objects, one per chain step
+python3 scripts/artifact-utils.py validate-chain /tmp/pipeline-spec.json
 ```
 
 **Detection**:
@@ -56,20 +57,20 @@ grep -rn 'validate-chain' adr/ --include="*.md"
 
 ### Integrate Routing in Same Session
 
-Phase 4 is not optional. Run `routing-table-updater` in same session as Phase 3. Unrouted pipeline = invisible dead code.
+Phase 4 is not optional. Call the Skill tool with `toolkit`. Do this in the same session as Phase 3. Unrouted pipeline = invisible dead code.
 
 **Detection**:
 ```bash
 comm -23 \
-  <(ls agents/*.md | xargs -I{} basename {} .md | sort) \
-  <(grep -o '`[a-z-]*-engineer\|[a-z-]*-agent`' skills/meta/do/references/routing-tables.md | tr -d '`' | sort)
+  <(ls agents/*.md | xargs -I{} basename {} .md | grep -v '^base-instructions$' | LC_ALL=C sort) \
+  <(python3 -c "import json; print('\n'.join(sorted(json.load(open('agents/INDEX.json'))['agents'])))")
 ```
 
 ---
 
 ### Set allowed-tools in Every Agent Frontmatter
 
-Match tools to role per ADR-063. Reviewers/research: read-only. Code modifiers: full access.
+Match tools to role. Reviewers/research: read-only. Code modifiers: full access. The list is advisory: Claude Code ignores `allowed-tools` for agents, so put any read-only rule in the agent body too.
 
 ```yaml
 # Reviewers/research — read-only
@@ -97,10 +98,10 @@ Agent, skill, and hook files have no data dependencies during creation. Sequenti
 | Error | Root Cause | Fix |
 |-------|------------|-----|
 | `validate-chain: type mismatch at step N` | Output/input type incompatibility | Choose compatible step or add adapter |
-| `routing-table-updater: trigger conflict` | Overlaps existing force-route | More specific triggers; preserve force-routes |
-| `audit-tool-restrictions: missing allowed-tools` | No `allowed-tools` in frontmatter | Add role-appropriate list per ADR-063 |
+| `toolkit: trigger conflict` | Overlaps existing force-route | More specific triggers; preserve force-routes |
+| `audit-tool-restrictions: missing allowed-tools` | No `allowed-tools` in frontmatter | Add a role-appropriate list (advisory) |
 | `adr-enforcement: hash mismatch` | Spec hash doesn't match ADR | Recompute: `adr-query.py hash --adr {path}` |
-| `skill-creator: template section missing` | Missing frontmatter/operator context | Re-run with explicit template reference |
+| `toolkit: template section missing` | Missing frontmatter/operator context | Re-run with explicit template reference |
 | Duplicate Component | Existing agent/skill covers purpose | Bind existing instead of creating new |
 | Chain Validation Failure | Type incompatibilities | Re-invoke workflow (composition) with error |
 | Domain Research Insufficient | < 2 subdomains | Fall back to single-pipeline mode |
@@ -113,16 +114,16 @@ Agent, skill, and hook files have no data dependencies during creation. Sequenti
 # Sub-agents missing context package
 grep -rn 'subagent_type' agents/ --include="*.md" | grep -v "spec\|manifest\|discovery"
 
-# Missing tool restrictions (ADR-063)
+# Missing tool lists
 grep -rL 'allowed-tools' agents/*.md
 
-# Unregistered agents in routing
+# Agents missing from the generated agent index
 comm -23 \
-  <(ls agents/*.md | xargs -I{} basename {} .md | sort) \
-  <(grep -oP '[a-z-]+-engineer|[a-z-]+-agent' skills/meta/do/references/routing-tables.md | sort -u)
+  <(ls agents/*.md | xargs -I{} basename {} .md | grep -v '^base-instructions$' | LC_ALL=C sort) \
+  <(python3 -c "import json; print('\n'.join(sorted(json.load(open('agents/INDEX.json'))['agents'])))")
 
 # Multi-subdomain skills (should be split)
-grep -rn 'description:' skills/*/SKILL.md | grep ' and \| & '
+grep -rn 'description:' skills/*/*/SKILL.md | grep ' and \| & '
 
 # Missing chain validation in ADRs
 grep -rn 'validate-chain' adr/ --include="*.md"
@@ -133,5 +134,5 @@ grep -rn 'validate-chain' adr/ --include="*.md"
 ## See Also
 
 - `orchestration-patterns.md` — fan-out/fan-in patterns and gate idioms
-- `skills/workflow/references/step-menu.md` — valid steps and type signatures
+- `skills/process/workflow/references/pipeline-scaffolder/references/step-menu.md` — valid steps and type signatures
 - `scripts/artifact-utils.py` — chain validation and discovery

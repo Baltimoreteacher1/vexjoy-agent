@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# hook-version: 1.0.0
+# hook-version: 1.2.1
 """
 PreToolUse:Agent Hook: Reference Loading Enforcer
 
@@ -12,7 +12,9 @@ unused on disk.
 
 Design:
 - Read prompt from tool_input["prompt"]
-- Check if REFERENCE_LOADING_REQUIREMENT marker is already in prompt
+- Check (case-insensitively) whether the prompt already carries a
+  reference-loading instruction — either this hook's own marker or the /do
+  dispatch text from scripts/build-dispatch.py INJ_REFERENCE_LOADING
 - If NOT present, inject the instruction via context_output
 - No file I/O — just string inspection and context injection
 - Always exits 0 (non-blocking)
@@ -20,6 +22,25 @@ Design:
 
 Bypass: REFERENCE_ENFORCER_BYPASS=1 env var skips injection.
 """
+
+import sys  # vexjoy-pyguard
+
+if sys.version_info < (3, 10):  # vexjoy-pyguard advisory
+    import os
+
+    if not os.environ.get("VEXJOY_PYGUARD_REEXEC"):
+        os.environ["VEXJOY_PYGUARD_REEXEC"] = "1"
+        for _d in [*os.environ.get("PATH", "").split(os.pathsep), "/opt/homebrew/bin", "/usr/local/bin", "/usr/bin"]:
+            for _v in ("14", "13", "12", "11", "10"):
+                _p = os.path.join(_d, "python3." + _v)
+                if _d and "/shims" not in _d and os.access(_p, os.X_OK):
+                    os.execv(_p, [_p, *sys.argv])
+    sys.stderr.write(
+        "[vexjoy] hook %s needs Python 3.10+, got %s (%s); run ./install.sh in vexjoy-agent from a terminal"
+        " outside Claude Code (gated tool calls stay blocked until then)\n"
+        % (__file__.rsplit("/", 1)[-1], sys.version.split()[0], sys.executable)
+    )
+    sys.exit(0)
 
 import json
 import os
@@ -29,24 +50,23 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent / "lib"))
 
-from hook_utils import context_output, empty_output
+from hook_utils import context_output, empty_output, hook_error
 from stdin_timeout import read_stdin
 
 EVENT_NAME = "PreToolUse"
 
-# Marker string used to detect whether injection has already occurred.
-# Must be unique enough to avoid false positives.
-_INJECTION_MARKER = "REFERENCE LOADING REQUIREMENT"
+# Marker used to detect whether the prompt already carries a reference-loading
+# instruction. Matched case-insensitively so it covers both this hook's own
+# injection ("REFERENCE LOADING REQUIREMENT: ...") and the /do dispatch text
+# from scripts/build-dispatch.py INJ_REFERENCE_LOADING ("... Reference Loading
+# Table ..."). Lockstep guarded by hooks/tests/test_reference_loading_enforcer.py.
+_INJECTION_MARKER = "reference loading"
 
 # The instruction to inject into agent prompts.
 _REFERENCE_LOADING_INSTRUCTION = (
-    "REFERENCE LOADING REQUIREMENT: Before starting work, read your agent .md file "
-    "or skill SKILL.md to find the Reference Loading Table. Load EVERY reference file "
-    "whose signal matches this task — load greedily, not conservatively. Multiple "
-    "matching signals = load all matching references. Reference files contain "
-    "domain-specific patterns, anti-patterns, code examples, and detection commands "
-    "that make your output expert-quality. Skipping this step means operating without "
-    "domain expertise that exists on disk."
+    "REFERENCE LOADING REQUIREMENT: Consult the Reference Loading Table in your "
+    "agent .md file or skill SKILL.md and read the references that match this task "
+    "— they carry the domain patterns and detection commands your output needs."
 )
 
 _BYPASS_ENV = "REFERENCE_ENFORCER_BYPASS"
@@ -94,8 +114,8 @@ def main() -> None:
     tool_input = event.get("tool_input", {})
     prompt = tool_input.get("prompt", "")
 
-    # If the injection marker is already present, do nothing.
-    if _INJECTION_MARKER in prompt:
+    # If the prompt already carries a reference-loading instruction, do nothing.
+    if _INJECTION_MARKER in prompt.lower():
         if debug:
             print("[ref-enforcer] Injection marker already present — skipping", file=sys.stderr)
         empty_output(EVENT_NAME).print_and_exit()
@@ -113,10 +133,6 @@ if __name__ == "__main__":
     except SystemExit:
         raise
     except Exception as e:
-        if os.environ.get("CLAUDE_HOOKS_DEBUG"):
-            traceback.print_exc(file=sys.stderr)
-        else:
-            print(f"[ref-enforcer] Error: {type(e).__name__}: {e}", file=sys.stderr)
-        # Fail open — never exit non-zero.
+        hook_error("reference-loading-enforcer", e)
     finally:
         sys.exit(0)

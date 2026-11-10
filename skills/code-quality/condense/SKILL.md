@@ -22,8 +22,7 @@ routing:
     - tighten
     - fewer words
   pairs_with:
-    - skill-creator
-    - anti-ai-editor
+    - toolkit
   complexity: Simple
   category: code-quality
 ---

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# hook-version: 1.0.0
+# hook-version: 1.1.0
 # Voice sample capture — records authentic user prompts to learning.db as voice corpus.
 """
 UserPromptSubmit Hook: Capture user prompts as voice samples.
@@ -16,9 +16,30 @@ Filter logic:
   specs fire UserPromptSubmit like human turns (see is_machine_prompt)
 - Skip if this exact prompt was already captured this session (dedup)
 
-Records to learning.db category=voice, topic=voice-sample.
+Records to learning.db category=voice, topic=voice-sample. Secrets in the
+prompt (keys, tokens, passwords, PEM blocks) are redacted with
+secret_redact.redact_text before the 500-character cap and the write.
 Silent on skip. Advisory (non-blocking).
 """
+
+import sys  # vexjoy-pyguard
+
+if sys.version_info < (3, 10):  # vexjoy-pyguard advisory
+    import os
+
+    if not os.environ.get("VEXJOY_PYGUARD_REEXEC"):
+        os.environ["VEXJOY_PYGUARD_REEXEC"] = "1"
+        for _d in [*os.environ.get("PATH", "").split(os.pathsep), "/opt/homebrew/bin", "/usr/local/bin", "/usr/bin"]:
+            for _v in ("14", "13", "12", "11", "10"):
+                _p = os.path.join(_d, "python3." + _v)
+                if _d and "/shims" not in _d and os.access(_p, os.X_OK):
+                    os.execv(_p, [_p, *sys.argv])
+    sys.stderr.write(
+        "[vexjoy] hook %s needs Python 3.10+, got %s (%s); run ./install.sh in vexjoy-agent from a terminal"
+        " outside Claude Code (gated tool calls stay blocked until then)\n"
+        % (__file__.rsplit("/", 1)[-1], sys.version.split()[0], sys.executable)
+    )
+    sys.exit(0)
 
 import hashlib
 import json
@@ -29,8 +50,9 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent / "lib"))
 
-from hook_utils import empty_output, get_session_id
+from hook_utils import empty_output, get_session_id, hook_error
 from learning_db_v2 import record_learning
+from secret_redact import redact_text
 from stdin_timeout import read_stdin
 
 EVENT_NAME = "UserPromptSubmit"
@@ -175,7 +197,15 @@ def is_natural_language(text: str) -> bool:
     return True
 
 
+_BYPASS_ENV = "PROMPT_CAPTURE_BYPASS"
+
+
 def main():
+    if os.environ.get(_BYPASS_ENV) == "1":
+        if os.environ.get("CLAUDE_HOOKS_DEBUG"):
+            print("[prompt-capture] Bypassed via PROMPT_CAPTURE_BYPASS=1", file=sys.stderr)
+        sys.exit(0)
+
     try:
         raw = read_stdin(timeout=5)
         if not raw:
@@ -208,7 +238,8 @@ def main():
         record_learning(
             topic="voice-sample",
             key=key,
-            value=prompt[:500],
+            # Redact before the cap so a key cut by the cap is never half-stored.
+            value=redact_text(prompt)[:500],
             category="voice",
             confidence=0.80,
             tags=["source:user-prompt", "authentic"],
@@ -222,11 +253,7 @@ def main():
         empty_output(EVENT_NAME).print_and_exit()
 
     except Exception as e:
-        if os.environ.get("CLAUDE_HOOKS_DEBUG"):
-            import traceback
-
-            print(f"[prompt-capture] HOOK-ERROR: {type(e).__name__}: {e}", file=sys.stderr)
-            traceback.print_exc(file=sys.stderr)
+        hook_error("prompt-capture", e)
     finally:
         sys.exit(0)  # Never block
 

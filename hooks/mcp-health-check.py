@@ -34,6 +34,7 @@ import urllib.request
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent / "lib"))
+from hook_utils import hook_error
 from stdin_timeout import read_stdin
 
 # ═══════════════════════════════════════════════════════════════
@@ -528,6 +529,5 @@ if __name__ == "__main__":
         main()
     except SystemExit:
         raise  # Let sys.exit(2) propagate for blocks
-    except Exception:
-        # Fail OPEN — a crashed hook must never exit 2.
-        sys.exit(0)
+    except Exception as e:
+        hook_error("mcp-health-check", e)

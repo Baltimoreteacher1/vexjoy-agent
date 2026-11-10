@@ -14,7 +14,7 @@ Router handles directly. No agent dispatched.
 
 **When**: The user named an exact file path to read, or asked a question answerable from conversation context.
 
-**Examples**: "Read `scripts/index-router.py`", "What branch am I on?", "Show me the last commit."
+**Examples**: "Read `scripts/pre-route.py`", "What branch am I on?", "Show me the last commit."
 
 ### Level 1: Quick Trivial
 
@@ -22,7 +22,7 @@ Use `quick --trivial` for tasks that appear to be 1-3 file edits.
 
 **When**: The change looks self-contained — a bug fix, a config tweak, adding a small block of code. The agent attempts the fix and watches for escalation signals.
 
-**Examples**: "Fix the typo in routing-guide.md", "Add a --verbose flag to index-router.py", "Update the version number in SKILL.md."
+**Examples**: "Fix the typo in docs/router-ab-runbook.md", "Add a --verbose flag to pre-route.py", "Update the version number in SKILL.md."
 
 **Escalation signals** (any one triggers escalation):
 - More than 3 files need changes
@@ -58,10 +58,10 @@ When an agent at any level determines it needs escalation, it must emit a struct
 Current level: 1 (Fast)
 Reason: Found 7 files need changes, original estimate was 2
 Recommended level: 2 (Methodical)
-Work completed so far: Fixed the primary file (routing-guide.md), discovered 6 other references that need matching updates
+Work completed so far: Fixed the primary file (docs/router-ab-runbook.md), discovered 6 other references that need matching updates
 ```
 
-The router receives this signal, preserves the work completed so far, and re-dispatches at the recommended level with context about what was already done.
+The router receives this signal and re-dispatches at the recommended level. The block becomes the `prior_results` field of the new Task Spec. The router copies these fields into it: current level, reason, work completed so far, and files touched.
 
 ---
 
@@ -76,7 +76,7 @@ Users can override depth at any time during routing or execution:
 | "full pipeline" | Escalate to Level 3 (Pipeline) |
 | "start over deeper" | Abandon current work, restart at specified level |
 
-The escape hatch exists because the user has context the router lacks. When a user overrides, record the override in `learning.db` via `effectiveness` category with tag `user-depth-override` — this feeds future routing accuracy.
+The escape hatch exists because the user has context the router lacks. An override is a routing signal: the routing hooks record the dispatch and score its outcome on the next turn, so the corrected depth shows up in `learning-db.py route-health` without any extra step.
 
 ---
 

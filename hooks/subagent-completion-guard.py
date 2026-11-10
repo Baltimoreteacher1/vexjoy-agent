@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# hook-version: 1.0.0
+# hook-version: 1.1.0
 """
 SubagentStop Hook: Completion Guard
 
@@ -9,8 +9,7 @@ Enforces safety tiers and captures metadata at the moment any subagent stops:
     Detects if cwd is a git worktree (not the main repo), captures the
     branch name, commit count, and uncommitted file status. Outputs
     structured [worktree-result]/[worktree-warning]/[worktree-empty]
-    lines so the dispatcher knows what to merge/cleanup. Records the
-    worktree-to-branch mapping in the learning DB.
+    lines so the dispatcher knows what to merge/cleanup.
 
   Tier 1: Branch Safety Guard (ALWAYS ACTIVE)
     Blocks if the subagent committed directly to master/main.
@@ -19,7 +18,8 @@ Enforces safety tiers and captures metadata at the moment any subagent stops:
   Tier 2: READ-ONLY Violation Guard (reviewer-* agents only)
     Blocks if a reviewer-* agent used Write, Edit, or NotebookEdit tools.
     Detection: agent_type field starts with "reviewer-".
-    Uses: transcript JSON scan for write tool invocations.
+    Uses: scan of the subagent's own transcript (agent_transcript_path)
+    for write tool invocations.
 
   Tier 3: Protected-Org Workflow Guard (protected-org repos only)
     Blocks if git push or gh pr merge ran without user confirmation
@@ -28,10 +28,34 @@ Enforces safety tiers and captures metadata at the moment any subagent stops:
 
 Design Principles:
 - Sub-50ms execution (git log is fast, transcript scan is O(n))
+- Transcript scans read agent_transcript_path, never transcript_path: on
+  SubagentStop the latter is the parent session's transcript, so scanning it
+  would charge the subagent with the parent's tool calls
+- Transcript lines carry tool_use blocks under message.content (Claude Code);
+  the older flat tool_name and top-level content shapes still parse
 - Non-blocking on hook errors (always exits 0 on internal failures)
 - Blocks ONLY on detected violations (never on uncertainty)
 - Uses exit 0 + JSON permissionDecision:deny to feed blocking message back to the subagent
 """
+
+import sys  # vexjoy-pyguard
+
+if sys.version_info < (3, 10):  # vexjoy-pyguard advisory
+    import os
+
+    if not os.environ.get("VEXJOY_PYGUARD_REEXEC"):
+        os.environ["VEXJOY_PYGUARD_REEXEC"] = "1"
+        for _d in [*os.environ.get("PATH", "").split(os.pathsep), "/opt/homebrew/bin", "/usr/local/bin", "/usr/bin"]:
+            for _v in ("14", "13", "12", "11", "10"):
+                _p = os.path.join(_d, "python3." + _v)
+                if _d and "/shims" not in _d and os.access(_p, os.X_OK):
+                    os.execv(_p, [_p, *sys.argv])
+    sys.stderr.write(
+        "[vexjoy] hook %s needs Python 3.10+, got %s (%s); run ./install.sh in vexjoy-agent from a terminal"
+        " outside Claude Code (gated tool calls stay blocked until then)\n"
+        % (__file__.rsplit("/", 1)[-1], sys.version.split()[0], sys.executable)
+    )
+    sys.exit(0)
 
 import json
 import os
@@ -41,9 +65,10 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent / "lib"))
+from hook_utils import hook_error
 from stdin_timeout import read_stdin
 
-__EVENT_NAME = "SubagentStop"
+_EVENT_NAME = "SubagentStop"
 
 # Agents whose names start with this prefix are READ-ONLY by contract
 _REVIEWER_PREFIX = "reviewer-"
@@ -164,42 +189,6 @@ def format_worktree_output(meta: dict) -> list[str]:
     return lines
 
 
-def record_worktree_learning(meta: dict, agent_type: str) -> None:
-    """
-    Record worktree-to-branch mapping in the learning DB (best-effort).
-
-    Uses lazy import to avoid slowing down the common non-worktree path.
-    """
-    if not meta or not meta.get("is_worktree"):
-        return
-
-    branch = meta.get("branch", "")
-    if not branch:
-        return
-
-    try:
-        # Lazy import — only pay the cost when we actually have worktree data
-        sys.path.insert(0, str(Path(__file__).parent / "lib"))
-        from learning_db_v2 import record_learning
-
-        record_learning(
-            topic="worktree-branches",
-            key=f"worktree-{branch}",
-            value=(
-                f"path={meta['worktree_path']} branch={branch} "
-                f"commits={meta['commits_ahead']} "
-                f"uncommitted={meta['uncommitted_files']}"
-            ),
-            category="effectiveness",
-            confidence=0.8,
-            tags=["worktree", branch, agent_type] if agent_type else ["worktree", branch],
-            source="hook:subagent-completion-guard",
-        )
-    except Exception:
-        # Best-effort — never block the hook for a learning DB write
-        pass
-
-
 # ---------------------------------------------------------------------------
 # Tier 1: Branch Safety
 # ---------------------------------------------------------------------------
@@ -253,12 +242,20 @@ def check_branch_safety(cwd: str) -> str | None:
             )
             return None
 
+        # Recovery targets origin/<branch>, never HEAD~N. git log is newest-first
+        # and approved commits can sit above unapproved ones, so a count of the
+        # filtered list does not name the range to move (issue #1021).
         commit_list = "\n".join(f"  {c}" for c in unapproved)
+        upstream = f"origin/{current_branch}"
         return (
             f"BLOCKED: Subagent committed directly to {current_branch}.\n"
-            f"Commits found:\n{commit_list}\n\n"
-            f"Required action: git reset --soft HEAD~{len(unapproved)}, "
-            f"create a feature branch, re-commit there.\n"
+            f"Unapproved commits:\n{commit_list}\n\n"
+            f"Required action: move all {len(lines)} commit(s) ahead of {upstream} "
+            f"to a feature branch (no commits are lost):\n"
+            f"  git branch <feature-branch> HEAD\n"
+            f"  git reset --keep {upstream}\n"
+            f"Then push <feature-branch> and open a PR. Approved commits in that range "
+            f"move too; cherry-pick them back only if they must land directly.\n"
             f"(To explicitly approve a direct commit, add '{_APPROVED_DIRECT_MARKER}' "
             f"to the commit message.)"
         )
@@ -279,48 +276,76 @@ def is_reviewer_agent(agent_type: str) -> bool:
     return bool(agent_type) and agent_type.startswith(_REVIEWER_PREFIX)
 
 
+def _iter_tool_uses(transcript_path: str):
+    """
+    Yield (tool_name, tool_input) for every tool call in an NDJSON transcript.
+
+    Parses three line shapes:
+      - Claude Code: {"type": "assistant", "message": {"content": [tool_use blocks]}}
+      - top-level content list: {"content": [tool_use blocks]}
+      - flat: {"tool_name": ..., "tool_input": {...}}
+
+    Yields nothing for a missing, unreadable, or empty path.
+    """
+    if not transcript_path:
+        return
+
+    path = Path(transcript_path)
+    if not path.is_file():
+        return
+
+    try:
+        content = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return
+
+    for line in content.splitlines():
+        # Every shape parsed below carries one of these keys verbatim; skip
+        # decoding the text and result lines that make up most of a transcript.
+        if "tool_use" not in line and "tool_name" not in line:
+            continue
+        try:
+            entry = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(entry, dict):
+            continue
+
+        tool_name = entry.get("tool_name")
+        if isinstance(tool_name, str) and tool_name:
+            tool_input = entry.get("tool_input") or entry.get("input") or {}
+            yield tool_name, tool_input if isinstance(tool_input, dict) else {}
+
+        message = entry.get("message")
+        block_lists = [entry.get("content")]
+        if isinstance(message, dict):
+            block_lists.append(message.get("content"))
+        for blocks in block_lists:
+            if not isinstance(blocks, list):
+                continue
+            for block in blocks:
+                if not isinstance(block, dict) or block.get("type") != "tool_use":
+                    continue
+                name = block.get("name")
+                if not isinstance(name, str) or not name:
+                    continue
+                block_input = block.get("input")
+                yield name, block_input if isinstance(block_input, dict) else {}
+
+
 def find_write_tool_in_transcript(transcript_path: str) -> str | None:
     """
     Scan the transcript for any Write/Edit/NotebookEdit tool use.
 
     Returns the first offending tool name + file, or None if clean.
     """
-    if not transcript_path:
-        return None
-
-    path = Path(transcript_path)
-    if not path.exists() or not path.is_file():
-        return None
-
-    try:
-        content = path.read_text(encoding="utf-8", errors="replace")
-    except OSError:
-        return None
-
-    # Each transcript line is a JSON object (newline-delimited JSON)
-    for line in content.splitlines():
-        line = line.strip()
-        if not line:
+    for tool_name, tool_input in _iter_tool_uses(transcript_path):
+        if tool_name not in _WRITE_TOOLS:
             continue
-        try:
-            entry = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-
-        # Tool-use entries have type="tool_use" or tool_name field
-        tool_name = entry.get("tool_name")
-        if not tool_name and isinstance(entry.get("content"), list):
-            for block in entry["content"]:
-                if isinstance(block, dict) and block.get("type") == "tool_use" and block.get("name") in _WRITE_TOOLS:
-                    tool_name = block["name"]
-                    break
-        if tool_name in _WRITE_TOOLS:
-            # Try to extract the file path from tool_input
-            tool_input = entry.get("tool_input") or entry.get("input") or {}
-            file_path = tool_input.get("file_path", "")
-            if file_path:
-                return f"{tool_name}({file_path})"
-            return tool_name
+        file_path = tool_input.get("file_path") or tool_input.get("notebook_path") or ""
+        if isinstance(file_path, str) and file_path:
+            return f"{tool_name}({file_path})"
+        return tool_name
 
     return None
 
@@ -403,37 +428,12 @@ def find_gated_command_in_transcript(transcript_path: str) -> str | None:
 
     Returns the offending command string if found, None if clean.
     """
-    if not transcript_path:
-        return None
-
-    path = Path(transcript_path)
-    if not path.exists() or not path.is_file():
-        return None
-
-    try:
-        content = path.read_text(encoding="utf-8", errors="replace")
-    except OSError:
-        return None
-
-    for line in content.splitlines():
-        line = line.strip()
-        if not line:
+    for tool_name, tool_input in _iter_tool_uses(transcript_path):
+        if tool_name.lower() != "bash":
             continue
-        try:
-            entry = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-
-        # Look for Bash tool calls
-        tool_name = entry.get("tool_name")
-        if not tool_name or tool_name.lower() != "bash":
-            continue
-
-        tool_input = entry.get("tool_input") or entry.get("input") or {}
         command = tool_input.get("command", "")
-        if not command:
+        if not isinstance(command, str) or not command:
             continue
-
         for pattern in _PROTECTED_ORG_GATED_PATTERNS:
             if pattern.search(command):
                 return command.strip()
@@ -468,7 +468,15 @@ def check_protected_org_workflow(cwd: str, transcript_path: str) -> str | None:
 # ---------------------------------------------------------------------------
 
 
+_BYPASS_ENV = "SUBAGENT_COMPLETION_GUARD_BYPASS"
+
+
 def main() -> None:
+    if os.environ.get(_BYPASS_ENV) == "1":
+        if os.environ.get("CLAUDE_HOOKS_DEBUG"):
+            print("[subagent-completion-guard] Bypassed via SUBAGENT_COMPLETION_GUARD_BYPASS=1", file=sys.stderr)
+        sys.exit(0)
+
     try:
         raw = read_stdin(timeout=2)
         if not raw:
@@ -478,12 +486,21 @@ def main() -> None:
 
         # Only process SubagentStop events
         event_type = event.get("hook_event_name") or event.get("type", "")
-        if event_type != __EVENT_NAME:
+        if event_type != _EVENT_NAME:
             sys.exit(0)
 
         cwd = event.get("cwd", str(Path.cwd()))
-        transcript_path = event.get("transcript_path", "")
+        # The subagent's own transcript. transcript_path is the parent
+        # session's on SubagentStop, so it is never a fallback here.
+        transcript_path = event.get("agent_transcript_path") or ""
+        if not isinstance(transcript_path, str):
+            transcript_path = ""
         agent_type = event.get("agent_type", "")
+        if not transcript_path and is_reviewer_agent(agent_type):
+            print(
+                f"[readonly-guard] skipped for {agent_type}: event has no agent_transcript_path",
+                file=sys.stderr,
+            )
 
         # Tier 0: Worktree metadata capture (always active, non-blocking)
         # Note: worktree metadata is output to stderr for dispatchers but
@@ -531,12 +548,7 @@ def main() -> None:
         # Malformed input — don't block (non-blocking on internal errors)
         sys.exit(0)
     except Exception as e:
-        if os.environ.get("CLAUDE_HOOKS_DEBUG"):
-            import traceback
-
-            print(f"[subagent-completion-guard] HOOK-ERROR: {type(e).__name__}: {e}", file=sys.stderr)
-            traceback.print_exc(file=sys.stderr)
-        sys.exit(0)
+        hook_error("subagent-completion-guard", e)
 
 
 if __name__ == "__main__":

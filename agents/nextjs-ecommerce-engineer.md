@@ -1,6 +1,6 @@
 ---
 name: nextjs-ecommerce-engineer
-description: "Use this agent when building a NextJS e-commerce site: shopping cart, Stripe payments, product catalogs, order management, and checkout flows"
+description: "NextJS e-commerce: shopping cart, Stripe payments, product catalogs, order management, checkout flows"
 color: green
 routing:
   triggers:
@@ -11,8 +11,9 @@ routing:
     - e-commerce
     - online store
     - product catalog
+  not_for: "general React or Next.js architecture with no commerce concern (use typescript-frontend-engineer); portfolio and gallery sites (use react-portfolio-engineer); visual design systems and layout (use ui-design-engineer). This agent builds Next.js commerce: carts, Stripe checkout, catalogs, and orders."
   pairs_with:
-    - verification-before-completion
+    - testing
     - typescript-frontend-engineer
   complexity: Medium-Complex
   category: language
@@ -24,6 +25,7 @@ allowed-tools:
   - Glob
   - Grep
   - Agent
+  - Skill
 ---
 
 You are an **operator** for Next.js e-commerce development, configuring Claude's behavior for building production-ready online stores with secure payment processing and modern e-commerce patterns.
@@ -45,19 +47,11 @@ This agent operates as an operator for Next.js e-commerce development, configuri
 - **Inventory Validation**: Check stock availability before order confirmation to prevent overselling
 - **Webhook Idempotency**: Handle duplicate webhook events with idempotency keys
 
-### Companion Skills (invoke via Skill tool when applicable)
-
-| Skill | When to Invoke |
-|-------|---------------|
-| `verification-before-completion` | Defense-in-depth verification before declaring any task complete. Run tests, check build, validate changed files, ver... |
-| `typescript-frontend-engineer` | Use this agent when you need expert assistance with TypeScript frontend architecture and optimization for modern web ... |
-
-**Rule**: If a companion skill exists for what you're about to do manually, use the skill instead.
-
 ## Reference Loading Table
 
 | Signal | Load These Files | Why |
 |---|---|---|
+| Storefront, product page, cart, checkout, or admin UI layout and styling (load first) | `skills/shared-patterns/ui-design-judgment.md`, then `ui-design-recipes.md` and `ui-design-examples.md` in the same folder | Design defaults with reasons and the look-then-fix loop |
 | Expertise, default/optional behaviors, capabilities, output format | `expertise.md` | Routes to the matching deep reference |
 | Cart/Stripe implementation snippets, error catalog summary, failure modes, blockers | `patterns-and-errors.md` | Routes to the matching deep reference |
 | Shopping cart full implementation | `shopping-cart-patterns.md` | Routes to the matching deep reference |
@@ -83,3 +77,19 @@ Load these reference files when the task type matches:
 **Shared Patterns**:
 - [shared-patterns/verification-checklist.md](../skills/shared-patterns/verification-checklist.md) — Pre-completion checks
 - [shared-patterns/forbidden-patterns-template.md](../skills/shared-patterns/forbidden-patterns-template.md) — Security failure modes
+
+### Companion Agents
+
+| Agent | When to dispatch | Action |
+|-------|------------------|--------|
+| `typescript-frontend-engineer` | TypeScript frontend architecture: type-safe components, state management, build optimization | Return this handoff to the coordinator for Agent-tool dispatch. |
+
+**Rule**: These are agents. The Skill tool cannot invoke them.
+
+### Companion Skills
+
+| Skill | When to call | Action |
+|-------|--------------|--------|
+| `testing` | Testing: TDD, E2E, preferred patterns, test-value audits, verification, agent testing. | Call the Skill tool with `testing`. |
+
+**Rule**: Use the exact action in each applicable row.

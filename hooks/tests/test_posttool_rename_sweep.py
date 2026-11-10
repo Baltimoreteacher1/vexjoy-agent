@@ -208,12 +208,99 @@ class TestExitCode:
         )
         assert result.returncode == 0
 
+
+# ---------------------------------------------------------------------------
+# Regression: tool_input arriving as a string (H1 crash — 4,540 errors)
+# ---------------------------------------------------------------------------
+
+
+class TestToolInputAsString:
+    """tool_input sometimes arrives as a JSON string, not a dict.
+
+    The real payload shape from hook-errors.jsonl: tool_input is a string
+    like '{"command":"git mv old.py new.py"}' — the AttributeError on
+    .get() crashed the hook 4,540 times. These tests pin the fix.
+    """
+
     @pytest.mark.parametrize("tool_result_block", _EMPTY_RESULT_PARAMS)
-    def test_valid_bash_no_git_mv(self, tool_result_block: dict) -> None:
+    def test_string_tool_input_without_git_mv_silent(self, tool_result_block: dict) -> None:
+        """A string tool_input with no git mv produces no output (no crash)."""
         event = {
             "tool_name": "Bash",
-            "tool_input": {"command": "echo hello"},
+            "tool_input": '{"command": "ls -la"}',
             **tool_result_block,
         }
         stdout, stderr, rc = run_hook(event)
         assert rc == 0
+        assert stdout == ""
+        assert "HOOK-ERROR" not in stderr
+
+    @pytest.mark.parametrize("tool_result_block", _EMPTY_RESULT_PARAMS)
+    def test_string_tool_input_with_git_mv_produces_output(self, tool_result_block: dict) -> None:
+        """A string tool_input containing git mv still triggers the sweep.
+
+        This verifies the hook WORKS on the string shape, not just that
+        it doesn't crash.
+        """
+        event = {
+            "tool_name": "Bash",
+            "tool_input": '{"command": "git mv hooks/old-hook.py hooks/new-hook.py"}',
+            **tool_result_block,
+        }
+        stdout, stderr, rc = run_hook(event)
+        assert rc == 0
+        # The hook should at least not crash; whether it finds references
+        # depends on the filesystem, so we only assert no crash.
+        assert "HOOK-ERROR" not in stderr
+
+    def test_plain_string_tool_input_no_json(self) -> None:
+        """tool_input as a bare command string (not JSON-encoded dict)."""
+        event = {
+            "tool_name": "Bash",
+            "tool_input": "echo hello",
+            "tool_result": {},
+        }
+        stdout, stderr, rc = run_hook(event)
+        assert rc == 0
+        assert stdout == ""
+        assert "HOOK-ERROR" not in stderr
+
+
+# ---------------------------------------------------------------------------
+# B-03: the warning reaches the model
+# ---------------------------------------------------------------------------
+
+
+class TestWarningReachesModel:
+    """Plain PostToolUse stdout shows only in the transcript view (ctrl+o).
+
+    The model reads hookSpecificOutput.additionalContext, so the stale-reference
+    list must arrive there.
+    """
+
+    def test_stale_references_arrive_as_additional_context(self, tmp_path: Path) -> None:
+        (tmp_path / "renamed-runtime.md").write_text("# Renamed Runtime\n", encoding="utf-8")
+        (tmp_path / "stale-reference.md").write_text("See old-runtime for details.\n", encoding="utf-8")
+        event = {
+            "hook_event_name": "PostToolUse",
+            "tool_name": "Bash",
+            "tool_input": {"command": "git mv old-runtime.md renamed-runtime.md"},
+            "tool_response": {"output": "", "exit_code": 0, "is_error": False},
+        }
+        result = subprocess.run(
+            [sys.executable, str(HOOK_PATH)],
+            input=json.dumps(event),
+            capture_output=True,
+            text=True,
+            cwd=tmp_path,
+            timeout=10,
+        )
+        assert result.returncode == 0, result.stderr
+        output = json.loads(result.stdout)
+        assert set(output) == {"hookSpecificOutput"}
+        inner = output["hookSpecificOutput"]
+        assert inner["hookEventName"] == "PostToolUse"
+        context = inner["additionalContext"]
+        assert context.startswith('[rename-sweep] Stale references to "old-runtime" found after git mv:')
+        assert "stale-reference.md:1:See old-runtime for details." in context
+        assert context.rstrip().endswith("Consider updating these references before committing.")

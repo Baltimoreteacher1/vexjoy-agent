@@ -1,301 +1,199 @@
 #!/usr/bin/env python3
-"""
-Validation script for docs-sync-checker skill.
-Tests core functionality and verifies reference files.
-"""
+"""Validate the docs-sync-checker skill against the repository's current contract."""
 
-__version__ = "1.0.0"
+from __future__ import annotations
 
+import re
+import subprocess
 import sys
+import tempfile
 from pathlib import Path
-from typing import List, Tuple
+
+ValidationResult = tuple[str, bool, str]
+SKILL_DIR = Path(__file__).resolve().parent.parent
+REPO_ROOT = SKILL_DIR.parents[2]
 
 
-def validate_skill_structure() -> List[Tuple[str, bool, str]]:
-    """Validate skill directory structure."""
-    results = []
-    skill_dir = Path(__file__).parent.parent
+def _frontmatter(content: str) -> dict[str, str]:
+    """Parse the scalar fields this validator needs without imposing optional metadata."""
+    if not content.startswith("---\n"):
+        return {}
+    try:
+        block = content.split("\n---", 1)[0].removeprefix("---\n")
+    except ValueError:
+        return {}
+    fields: dict[str, str] = {}
+    for line in block.splitlines():
+        if ":" not in line or line.startswith((" ", "-")):
+            continue
+        key, value = line.split(":", 1)
+        fields[key.strip()] = value.strip().strip('"')
+    return fields
 
-    # Check required files
-    required_files = [
+
+def validate_skill_contract() -> list[ValidationResult]:
+    """Check the canonical required fields and routing metadata for this skill."""
+    skill_file = SKILL_DIR / "SKILL.md"
+    if not skill_file.is_file():
+        return [("SKILL.md exists", False, "Missing SKILL.md")]
+
+    fields = _frontmatter(skill_file.read_text(encoding="utf-8"))
+    results: list[ValidationResult] = []
+    results.append(("frontmatter name", fields.get("name") == "docs-sync-checker", "Must match directory name"))
+    results.append(("frontmatter description", bool(fields.get("description")), "Missing description"))
+    results.append(("routing metadata", "routing" in fields, "Missing routing mapping"))
+    return results
+
+
+def validate_required_files() -> list[ValidationResult]:
+    """Check every document and executable that the skill's entrypoint names."""
+    required = [
         "SKILL.md",
         "scripts/scan_tools.py",
         "scripts/parse_docs.py",
         "scripts/generate_report.py",
-        "scripts/validate.py",
+        "references/documentation-structure.md",
+        "references/integration-guide.md",
+        "references/sync-rules.md",
+    ]
+    return [(f"file exists: {path}", (SKILL_DIR / path).is_file(), f"Missing {path}") for path in required]
+
+
+def validate_script_syntax() -> list[ValidationResult]:
+    """Compile the locally shipped Python scripts without requiring execute bits."""
+    results: list[ValidationResult] = []
+    for script in sorted((SKILL_DIR / "scripts").glob("*.py")):
+        try:
+            compile(script.read_text(encoding="utf-8"), str(script), "exec")
+        except SyntaxError as exc:
+            results.append((f"syntax: {script.name}", False, str(exc)))
+        else:
+            results.append((f"syntax: {script.name}", True, "OK"))
+    return results
+
+
+def validate_scanner_contract() -> list[ValidationResult]:
+    """Verify a category-nested skill without version metadata is discovered."""
+    sys.path.insert(0, str(SKILL_DIR / "scripts"))
+    from scan_tools import ToolScanner
+
+    with tempfile.TemporaryDirectory() as temp_dir:
+        repo = Path(temp_dir)
+        skill_file = repo / "skills" / "testing" / "demo" / "SKILL.md"
+        skill_file.parent.mkdir(parents=True)
+        skill_file.write_text(
+            "---\nname: demo\ndescription: Demo skill\nrouting:\n  category: testing\n---\n", encoding="utf-8"
+        )
+        agent_file = repo / "agents" / "demo-agent.md"
+        agent_file.parent.mkdir()
+        agent_file.write_text("---\nname: demo-agent\ndescription: Demo agent\n---\n", encoding="utf-8")
+
+        invalid_skill = repo / "skills" / "testing" / "mismatch" / "SKILL.md"
+        invalid_skill.parent.mkdir(parents=True)
+        invalid_skill.write_text(
+            "---\nname: wrong-name\ndescription: Invalid skill\nrouting:\n  category: testing\n---\n",
+            encoding="utf-8",
+        )
+
+        scan = ToolScanner(repo).scan_all(["skills", "agents"])
+
+    return [
+        ("nested skill discovery", [item["name"] for item in scan["skills"]] == ["demo"], str(scan["skills"])),
+        ("versionless component discovery", [item["name"] for item in scan["skills"]] == ["demo"], str(scan["skills"])),
+        (
+            "name mismatch detection",
+            any("does not match directory" in error for error in scan.get("errors", [])),
+            str(scan.get("errors", [])),
+        ),
+        ("agent discovery", [item["name"] for item in scan["agents"]] == ["demo-agent"], str(scan["agents"])),
     ]
 
-    for file_path in required_files:
-        full_path = skill_dir / file_path
-        exists = full_path.exists()
-        results.append(
-            (f"File exists: {file_path}", exists, f"Missing required file: {file_path}" if not exists else "OK")
-        )
 
-    return results
+def _parse_docs_module():
+    sys.path.insert(0, str(SKILL_DIR / "scripts"))
+    import parse_docs
+
+    return parse_docs
 
 
-def validate_yaml_frontmatter() -> List[Tuple[str, bool, str]]:
-    """Validate SKILL.md YAML frontmatter."""
-    results = []
-    skill_dir = Path(__file__).parent.parent
-    skill_md = skill_dir / "SKILL.md"
+def validate_primary_docs(repo_root: Path = REPO_ROOT) -> list[ValidationResult]:
+    """Every doc the checker targets exists, and SKILL.md names exactly those targets.
 
-    if not skill_md.exists():
-        return [("YAML frontmatter validation", False, "SKILL.md not found")]
-
-    with open(skill_md, "r", encoding="utf-8") as f:
-        content = f.read()
-
-    # Check for YAML frontmatter
-    if not content.startswith("---"):
-        results.append(("YAML frontmatter exists", False, "Missing opening ---"))
-        return results
-
-    # Extract frontmatter
-    parts = content.split("---", 2)
-    if len(parts) < 3:
-        results.append(("YAML frontmatter format", False, "Missing closing ---"))
-        return results
-
-    frontmatter = parts[1].strip()
-
-    # Check required fields
-    required_fields = ["name:", "description:", "version:"]
-    for field in required_fields:
-        if field in frontmatter:
-            results.append((f"YAML field {field}", True, "OK"))
-        else:
-            results.append((f"YAML field {field}", False, f"Missing {field}"))
-
-    return results
-
-
-def validate_reference_files() -> List[Tuple[str, bool, str]]:
-    """Validate reference files exist and are readable."""
-    results = []
-    skill_dir = Path(__file__).parent.parent
-    references_dir = skill_dir / "references"
-
-    if not references_dir.exists():
-        return [("References directory", False, "references/ directory not found")]
-
-    results.append(("References directory exists", True, "OK"))
-
-    # List all reference files
-    reference_files = list(references_dir.rglob("*"))
-    file_count = len([f for f in reference_files if f.is_file()])
+    A target list naming files that do not exist made every agent and command
+    look undocumented (agents/README.md and commands/README.md were gone).
+    """
+    parse_docs = _parse_docs_module()
+    results: list[ValidationResult] = [
+        (f"primary doc exists: {rel}", (repo_root / rel).is_file(), f"Missing {rel}; update PRIMARY_DOCS")
+        for rel in parse_docs.PRIMARY_DOCS.values()
+    ]
+    skill_text = (SKILL_DIR / "SKILL.md").read_text(encoding="utf-8")
+    phase2 = skill_text.split("### Phase 2", 1)[-1].split("### Phase 3", 1)[0]
+    named = set(re.findall(r"^\| `([^`]+\.md)` \|", phase2, re.M))
+    expected = set(parse_docs.PRIMARY_DOCS.values()) | {"README.md"}
     results.append(
         (
-            f"Reference files count: {file_count}",
-            file_count > 0,
-            "No reference files found" if file_count == 0 else "OK",
+            "SKILL.md Phase 2 table matches PRIMARY_DOCS",
+            named == expected,
+            f"table {sorted(named)} != {sorted(expected)}",
         )
     )
-
+    for rel in sorted(named):
+        results.append((f"Phase 2 doc exists: {rel}", (repo_root / rel).is_file(), f"Missing {rel}"))
     return results
 
 
-def validate_script_executability() -> List[Tuple[str, bool, str]]:
-    """Validate scripts are executable."""
-    results = []
-    skill_dir = Path(__file__).parent.parent
-    scripts_dir = skill_dir / "scripts"
+def validate_primary_docs_parse(repo_root: Path = REPO_ROOT) -> list[ValidationResult]:
+    """Every primary doc parses to more than 0 entries for its type at the repo root.
 
-    if not scripts_dir.exists():
-        return [("Scripts directory", False, "scripts/ directory not found")]
-
-    python_scripts = list(scripts_dir.glob("*.py"))
-    for script in python_scripts:
-        # Check if file has execute permissions
-        is_executable = script.stat().st_mode & 0o111 != 0
-        results.append(
-            (
-                f"Script executable: {script.name}",
-                is_executable,
-                f"Script not executable: {script.name}" if not is_executable else "OK",
-            )
-        )
-
+    A renamed section heading or changed first-cell format otherwise yields an
+    empty documented set and a flood of false "missing" issues.
+    """
+    parse_docs = _parse_docs_module()
+    parser = parse_docs.DocumentationParser(repo_root)
+    results: list[ValidationResult] = []
+    for tool_type, rel in parse_docs.PRIMARY_DOCS.items():
+        try:
+            count = len(parser.parse_primary(tool_type))
+        except (OSError, ValueError) as exc:
+            results.append((f"primary doc parses: {rel}", False, str(exc)))
+        else:
+            results.append((f"primary doc parses: {rel}", count > 0, f"{count} {tool_type} entries"))
     return results
 
 
-def validate_functional_tests() -> List[Tuple[str, bool, str]]:
-    """Run functional tests of core logic."""
-    results = []
-
-    try:
-        # Test 1: Tool discovery
-        sys.path.insert(0, str(Path(__file__).parent))
-
-        # Create temp test structure
-        import tempfile
-
-        from scan_tools import ToolScanner
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            tmppath = Path(tmpdir)
-
-            # Create test skill
-            skill_dir = tmppath / "skills" / "test-skill"
-            skill_dir.mkdir(parents=True)
-            (skill_dir / "SKILL.md").write_text("""---
-name: test-skill
-description: Test skill for validation
-version: 1.0.0
----
-
-# Test Skill
-""")
-
-            # Create test agent
-            agents_dir = tmppath / "agents"
-            agents_dir.mkdir(parents=True)
-            (agents_dir / "test-agent.md").write_text("""---
-name: test-agent
-description: Test agent for validation
-version: 1.0.0
----
-
-# Test Agent
-""")
-
-            # Create test command
-            commands_dir = tmppath / "commands"
-            commands_dir.mkdir(parents=True)
-            (commands_dir / "test-command.md").write_text("# Test Command\n\nTest command description")
-
-            # Test scanning
-            scanner = ToolScanner(tmppath, debug=False)
-            scan_results = scanner.scan_all()
-
-            # Validate results
-            skills_found = len(scan_results.get("skills", []))
-            results.append(("Tool discovery: skills", skills_found == 1, f"Expected 1 skill, found {skills_found}"))
-
-            agents_found = len(scan_results.get("agents", []))
-            results.append(("Tool discovery: agents", agents_found == 1, f"Expected 1 agent, found {agents_found}"))
-
-            commands_found = len(scan_results.get("commands", []))
-            results.append(
-                ("Tool discovery: commands", commands_found == 1, f"Expected 1 command, found {commands_found}")
-            )
-
-        # Test 2: Markdown table parsing
-        from parse_docs import DocumentationParser
-
-        test_markdown = """
-# Skills
-
-| Name | Description | Command |
-|------|-------------|---------|
-| test-skill | Test skill | `skill: test-skill` |
-| another-skill | Another skill | `skill: another-skill` |
-"""
-
-        parser = DocumentationParser(Path.cwd(), debug=False)
-        rows = parser.parse_markdown_table(test_markdown)
-
-        results.append(("Markdown table parsing", len(rows) == 2, f"Expected 2 rows, parsed {len(rows)}"))
-
-        # Test 3: Missing entry detection
-        discovered = {
-            "skills": [
-                {
-                    "name": "new-skill",
-                    "description": "New skill",
-                    "version": "1.0.0",
-                    "path": "skills/new-skill/SKILL.md",
-                }
-            ],
-            "agents": [],
-            "commands": [],
-        }
-        documented = {"docs/skills.md": [{"name": "old-skill", "description": "Old skill"}]}
-
-        issues = parser.detect_issues(discovered, documented)
-        missing_count = len(issues["missing_entries"])
-
-        results.append(
-            ("Missing entry detection", missing_count == 1, f"Expected 1 missing entry, found {missing_count}")
+def validate_missing_target_fails() -> list[ValidationResult]:
+    """parse_docs.py exits 2 when a primary doc is missing, instead of reporting it empty."""
+    with tempfile.TemporaryDirectory() as temp_dir:
+        repo = Path(temp_dir)
+        (repo / "docs").mkdir()
+        (repo / "docs" / "skills.md").write_text("| Skill | Description |\n|---|---|\n", encoding="utf-8")
+        proc = subprocess.run(
+            [sys.executable, str(SKILL_DIR / "scripts" / "parse_docs.py"), "--repo-root", str(repo)],
+            capture_output=True,
+            text=True,
+            check=False,
         )
-
-        # Test 4: Stale entry detection
-        stale_count = len(issues["stale_entries"])
-
-        results.append(("Stale entry detection", stale_count == 1, f"Expected 1 stale entry, found {stale_count}"))
-
-        # Test 5: Version mismatch detection (would need version in README)
-        results.append(
-            (
-                "Version mismatch detection",
-                True,  # Placeholder - would need version column in test
-                "OK (not implemented in test data)",
-            )
-        )
-
-    except Exception as e:
-        results.append(("Functional tests", False, f"Exception during functional tests: {e}"))
-
-    return results
+    return [("missing primary doc exits 2", proc.returncode == 2, f"exit {proc.returncode}: {proc.stderr[:200]}")]
 
 
 def run_all_validations() -> bool:
-    """Run all validation checks."""
-    all_results = []
-
-    print("=" * 60)
-    print("SKILL VALIDATION REPORT")
-    print("=" * 60)
-    print()
-
-    # Run validation categories
+    """Run every validation and print a compact result table."""
     validations = [
-        ("Skill Structure", validate_skill_structure),
-        ("YAML Frontmatter", validate_yaml_frontmatter),
-        ("Reference Files", validate_reference_files),
-        ("Script Executability", validate_script_executability),
-        ("Functional Tests", validate_functional_tests),
+        ("Skill contract", validate_skill_contract),
+        ("Required files", validate_required_files),
+        ("Script syntax", validate_script_syntax),
+        ("Scanner contract", validate_scanner_contract),
+        ("Primary docs", validate_primary_docs),
+        ("Primary docs parse", validate_primary_docs_parse),
+        ("Missing target", validate_missing_target_fails),
     ]
-
-    all_passed = True
-
-    for category, validation_func in validations:
-        print(f"\n{category}:")
-        print("-" * 60)
-        results = validation_func()
-        all_results.extend(results)
-
-        for description, passed, message in results:
-            status = "✓ PASS" if passed else "✗ FAIL"
-            print(f"  {status} - {description}")
-            if not passed:
-                print(f"         {message}")
-                all_passed = False
-
-    # Summary
-    print("\n" + "=" * 60)
-    total_checks = len(all_results)
-    passed_checks = sum(1 for _, passed, _ in all_results if passed)
-    failed_checks = total_checks - passed_checks
-
-    print(f"SUMMARY: {passed_checks}/{total_checks} checks passed")
-    if failed_checks > 0:
-        print(f"         {failed_checks} checks failed")
-    print("=" * 60)
-
-    return all_passed
-
-
-def main():
-    """Main entry point."""
-    try:
-        all_passed = run_all_validations()
-        sys.exit(0 if all_passed else 1)
-    except Exception as e:
-        print(f"\nValidation error: {e}", file=sys.stderr)
-        sys.exit(2)
+    results = [result for _, check in validations for result in check()]
+    for description, passed, detail in results:
+        print(f"{'PASS' if passed else 'FAIL'} {description}" + (f": {detail}" if not passed else ""))
+    print(f"SUMMARY: {sum(passed for _, passed, _ in results)}/{len(results)} checks passed")
+    return all(passed for _, passed, _ in results)
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(0 if run_all_validations() else 1)

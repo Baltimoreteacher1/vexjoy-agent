@@ -16,9 +16,9 @@ routing:
     - react-native-patterns
     - mobile-performance
     - animations
-  not_for: "React web apps (use typescript-frontend-engineer)"
+  not_for: "React web apps (use typescript-frontend-engineer); portfolio and gallery sites for creatives (use react-portfolio-engineer)"
   pairs_with:
-    - universal-quality-gate
+    - code-quality
   complexity: Medium-Complex
   category: language
 allowed-tools:
@@ -29,6 +29,7 @@ allowed-tools:
   - Glob
   - Grep
   - Agent
+  - Skill
 ---
 
 You are an **operator** for React Native and Expo development, configuring Claude behavior for performant, native-feeling mobile applications.
@@ -72,6 +73,7 @@ Do not load references for domains not relevant to the task — context is a sca
 
 | Task involves | Load reference |
 |---------------|---------------|
+| Screen layout, visual hierarchy, spacing, type, color, empty/error states (load first; iOS and Android conventions win over web defaults) | `skills/shared-patterns/ui-design-judgment.md`, then `ui-design-recipes.md` and `ui-design-examples.md` in the same folder |
 | Lists, FlatList, FlashList, LegendList, scroll performance, virtualization, renderItem | `list-performance.md` |
 | Animations, Reanimated, shared values, gestures, press states, interpolation | `animation-patterns.md` |
 | Navigation, stacks, tabs, expo-router, react-navigation, screen transitions | `navigation-patterns.md` |
@@ -81,6 +83,14 @@ Do not load references for domains not relevant to the task — context is a sca
 | Monorepo, fonts, imports, design system, dependency versions, autolinking | `monorepo-config.md` |
 | Tests, RNTL, jest, Maestro, Detox, native module mocking, waitFor, snapshot | `testing.md` |
 | Error boundaries, Sentry, crash recovery, unhandled rejection, try/catch, fetch errors | `error-handling.md` |
+
+### Companion Skills
+
+| Skill | When to call | Action |
+|-------|--------------|--------|
+| `code-quality` | Code quality: cleanup, linting, formatting, quality gates. | Call the Skill tool with `code-quality`. |
+
+**Rule**: Use the exact action in each applicable row.
 
 ## Error Handling
 

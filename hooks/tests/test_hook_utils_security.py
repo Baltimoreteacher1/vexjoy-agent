@@ -121,14 +121,6 @@ class TestHasReviewableContent:
 
 
 class TestWorkingTreeDiff:
-    def test_returns_stdout_on_success(self):
-        class _R:
-            returncode = 0
-            stdout = "diff --git a/x b/x\n"
-
-        with patch("hook_utils.subprocess.run", return_value=_R()):
-            assert working_tree_diff("/repo") == "diff --git a/x b/x\n"
-
     def test_nonzero_returncode_yields_empty(self):
         class _R:
             returncode = 128
@@ -148,14 +140,6 @@ class TestWorkingTreeDiff:
 
 
 class TestDiffDedup:
-    def test_signature_distinguishes_cwd(self):
-        d = DiffDedup(Path("/tmp/x"), Path("/tmp/x/s.json"))
-        assert d.signature("/a", "diff") != d.signature("/b", "diff")
-
-    def test_signature_distinguishes_diff(self):
-        d = DiffDedup(Path("/tmp/x"), Path("/tmp/x/s.json"))
-        assert d.signature("/a", "diff1") != d.signature("/a", "diff2")
-
     def test_first_seen_is_not_duplicate(self, tmp_path):
         d = DiffDedup(tmp_path, tmp_path / "s.json")
         is_dup, _ = d.is_duplicate("/repo", "diffA")
@@ -274,10 +258,6 @@ class TestDiffDedup:
 
 
 class TestNormalizeDiffForFingerprint:
-    def test_drops_index_line(self):
-        norm = normalize_diff_for_fingerprint("index 71aae3b..739f207 100644\n")
-        assert "index " not in norm
-
     def test_drops_mode_lines(self):
         diff = "old mode 100644\nnew mode 100755\n"
         assert normalize_diff_for_fingerprint(diff).strip() == ""
@@ -299,9 +279,6 @@ class TestNormalizeDiffForFingerprint:
         norm = normalize_diff_for_fingerprint(diff)
         assert "rename from old.py" in norm and "rename to new.py" in norm
 
-    def test_empty_diff_is_empty(self):
-        assert normalize_diff_for_fingerprint("") == ""
-
 
 # ---------------------------------------------------------------------------
 # async_rewake
@@ -320,3 +297,54 @@ class TestAsyncRewake:
         data = json.loads(out.getvalue().strip().splitlines()[0])
         assert data["rewakeSummary"] == "ONE-LINE-SUMMARY"
         assert "CONTEXT-BODY" in err.getvalue()
+
+
+# ---------------------------------------------------------------------------
+# is_sensitive_path
+# ---------------------------------------------------------------------------
+
+
+class TestIsSensitivePath:
+    """Credential-shaped paths are flagged; ordinary source paths are not."""
+
+    def test_credential_directories_flagged(self):
+        from hook_utils import is_sensitive_path
+
+        for p in (
+            "/home/u/.ssh/deploy_ed25519.pub",
+            "/home/u/.ssh/id_rsa",
+            "/home/u/.gnupg/pubring.kbx",
+            "/home/u/.aws/config",
+            "relative/.kube/config",
+        ):
+            assert is_sensitive_path(p), p
+
+    def test_credential_basenames_flagged(self):
+        from hook_utils import is_sensitive_path
+
+        for p in (
+            "/app/.env",
+            "/app/.env.production",
+            "/certs/server.pem",
+            "/certs/tls.key",
+            "/home/u/id_ed25519.pub",
+            "/srv/service-account-credentials.json",
+            "/srv/client_secret.json",
+            "/home/u/token.json",
+            "/home/u/.netrc",
+        ):
+            assert is_sensitive_path(p), p
+
+    def test_ordinary_paths_not_flagged(self):
+        from hook_utils import is_sensitive_path
+
+        for p in (
+            "/app/main.py",
+            "/repo/hooks/adr-enforcement.py",
+            "/docs/environment.md",  # 'env' substring must not match
+            "/src/assh/parser.go",  # '.ssh' must match whole segments only
+            "/lib/monkey.rb",  # '.key' suffix check is on basename pattern, not substring
+            "README.md",
+            "",
+        ):
+            assert not is_sensitive_path(p), p

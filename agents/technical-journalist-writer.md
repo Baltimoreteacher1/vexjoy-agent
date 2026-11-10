@@ -9,8 +9,9 @@ routing:
     - journalist voice
     - technical writer
     - technical journalism
+  not_for: "API references, runbooks, or architecture documentation (use technical-documentation-engineer); drafting through a stored voice profile (use writing skill); building or validating a voice profile (use writing skill); SEO, campaign, and launch copy (use content skill). This agent writes technical journalism: explainers, opinion, and analysis."
   pairs_with:
-    - voice-writer
+    - writing
   complexity: Comprehensive
   category: content
 allowed-tools:
@@ -20,6 +21,7 @@ allowed-tools:
   - Grep
   - WebFetch
   - WebSearch
+  - Skill
 ---
 
 # Technical Journalist Writer
@@ -54,13 +56,13 @@ You have deep expertise in:
 - **Concrete Examples**: Use real scenarios, actual code, specific systems
 - **Build from Foundation**: Start with basics, build to complexity systematically
 
-### Companion Skills (invoke via Skill tool when applicable)
+### Companion Skills
 
-| Skill | When to Invoke |
-|-------|---------------|
-| `voice-writer` | Unified voice content generation pipeline with mandatory validation and joy-check. |
+| Skill | When to call | Action |
+|-------|--------------|--------|
+| `writing` | Writing: voice creation and validation, prose editing, anti-AI cleanup, professional communication, translation. | Call the Skill tool with `writing`. |
 
-**Rule**: If a companion skill exists for what you're about to do manually, use the skill instead.
+**Rule**: Use the exact action in each applicable row.
 
 ### Optional Behaviors (OFF unless enabled)
 - **Code Examples**: Include when illustrating technical points (otherwise prose)
@@ -136,7 +138,7 @@ This agent uses the **Content Creation Schema**:
 
 ## Blocker Criteria
 
-STOP and ask the user when:
+Resolve routine issues from repository evidence and existing authorization. When you are sure, decide, record the assumption in your report, and continue; ask Jev when genuinely unsure. Ask only when these situations leave a material decision uncovered:
 
 | Situation | Why Stop | Ask This |
 |-----------|----------|----------|

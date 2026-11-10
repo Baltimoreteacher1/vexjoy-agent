@@ -34,24 +34,25 @@ _spec.loader.exec_module(dwc)
     [
         # claude-code: any of the distinctive markers
         ({"CLAUDECODE": "1"}, "claude-code"),
-        ({"CLAUDE_CODE_ENTRYPOINT": "cli"}, "claude-code"),
-        ({"CLAUDE_CODE_SESSION_ID": "abc123"}, "claude-code"),
+        # antigravity: distinctive env markers or _ binary basename
+        ({"ANTIGRAVITY_AGENT": "1"}, "antigravity"),
+        ({"ANTIGRAVITY_CLI": "1"}, "antigravity"),
+        ({"ANTIGRAVITY_SESSION_ID": "s-1"}, "antigravity"),
+        ({"ANTIGRAVITY_APP_DATA_DIR": "/Users/u/.gemini/antigravity-cli"}, "antigravity"),
+        ({"_": "/usr/local/bin/agy"}, "antigravity"),
+        ({"_": "/opt/bin/antigravity"}, "antigravity"),
         # codex: home / hooks dir markers
         ({"CODEX_HOME": "/home/u/.codex"}, "codex"),
-        ({"CODEX_HOOKS_DIR": "/x"}, "codex"),
-        # gemini/agy CLI markers removed with Gemini CLI support; unmapped now
+        # gemini CLI marker alone (without Antigravity markers) stays unmapped
         ({"GEMINI_CLI": "1"}, "unknown"),
-        ({"ANTIGRAVITY_AGENT": "1"}, "unknown"),
         # factory / droid
         ({"FACTORY_SESSION_ID": "f1"}, "factory"),
-        ({"DROID_SESSION_ID": "d1"}, "factory"),
         # reasonix: no env marker — keyed off the _ invocation var (basename match)
         ({"_": "/usr/local/bin/reasonix"}, "reasonix"),
         ({"_": "/opt/node/bin/Reasonix"}, "reasonix"),
         ({"_": "/usr/local/bin/reasonix-dev"}, "reasonix"),
         # basename guard: "reasonix" in the parent path must NOT match
         ({"_": "/Users/reasonix-fan/bin/python3"}, "unknown"),
-        ({"_": "/opt/reasonix-corp/python"}, "unknown"),
         # nothing distinctive
         ({}, "unknown"),
     ],
@@ -81,30 +82,12 @@ def test_claude_code_wins_over_other_markers():
     "harness,expected",
     [
         ("claude-code", True),
+        ("antigravity", True),
         ("codex", False),
-        ("factory", False),
-        ("reasonix", False),
-        ("unknown", False),
     ],
 )
 def test_workflow_capable(harness, expected):
     assert dwc.workflow_capable(harness) is expected
-
-
-def test_workflow_capable_set_is_single_source_of_truth():
-    """Adding a harness to WORKFLOW_CAPABLE is the one-line migration when a
-    harness ships native Workflow upstream. Pin the set so future changes are
-    deliberate.
-    """
-    expected = frozenset({"claude-code"})
-    assert dwc.WORKFLOW_CAPABLE == expected  # noqa: SIM300 — left side is the unit-under-test
-    # Every member of WORKFLOW_CAPABLE must classify as workflow_capable=True.
-    for h in dwc.WORKFLOW_CAPABLE:
-        assert dwc.workflow_capable(h) is True
-    # Every harness NOT in the set must classify as False.
-    for h in dwc.HARNESSES:
-        if h not in dwc.WORKFLOW_CAPABLE:
-            assert dwc.workflow_capable(h) is False
 
 
 # --- never raises ------------------------------------------------------------

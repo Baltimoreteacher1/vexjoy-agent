@@ -1,0 +1,278 @@
+"""vexinstall settings.json merge (spec 10): owned rule, merge, dedupe, backups, restore."""
+
+from __future__ import annotations
+
+import json
+import os
+from pathlib import Path
+
+import pytest
+
+from scripts.tests.vexinstall_support import TARGETS, Env, git, world
+from scripts.tests.vexinstall_support import settings_mod as sm
+
+
+def _rule(tmp_path: Path) -> sm.OwnerRule:
+    repo = tmp_path / "repo"
+    (repo / "hooks").mkdir(parents=True)
+    home = tmp_path / "home"
+    (home / ".claude").mkdir(parents=True)
+    os.symlink(repo / "hooks", home / ".claude" / "hooks")
+    return sm.OwnerRule(home=home, hooks_dir=home / ".claude" / "hooks", source_root=repo)
+
+
+def _cmd(c: str) -> dict:
+    return {"type": "command", "command": c}
+
+
+@pytest.mark.parametrize(
+    ("command", "owned"),
+    [
+        ('python3 "$HOME/.claude/hooks/a.py"', True),
+        ("python3 ${HOME}/.claude/hooks/a.py --flag", True),
+        ("python3 ~/.claude/hooks/lib/x.py", True),
+        ("python3 /home/someone/vexjoy-agent/hooks/old.py", True),
+        ("python3 /opt/user/hooks/mine.py", False),
+        ("echo hi", False),
+        ("python3 ${CLAUDE_PLUGIN_ROOT}/hooks/p.py", False),
+    ],
+)
+def test_owner_rule(tmp_path: Path, command: str, owned: bool) -> None:
+    assert _rule(tmp_path).owns(_cmd(command)) is owned
+
+
+def test_owner_rule_realpath_through_hooks_symlink(tmp_path: Path) -> None:
+    rule = _rule(tmp_path)
+    direct = str(rule.source_root / "hooks" / "a.py")
+    assert rule.owns(_cmd(f"python3 {direct}"))
+
+
+def test_merge_preserves_user_entries_and_collapses_owned(tmp_path: Path) -> None:
+    rule = _rule(tmp_path)
+    sync = _cmd('python3 "$HOME/.claude/hooks/sync.py"')
+    user = _cmd("python3 /opt/user/hook.py")
+    current = {
+        "theme": "dark",
+        "hooks": {
+            "SessionStart": [
+                {"hooks": [sync, user]},
+                {"matcher": "resume", "hooks": [sync]},
+                {"hooks": [sync]},
+                {"matcher": "startup", "hooks": [_cmd("python3 /old/vexjoy-agent/hooks/gone.py")]},
+            ],
+            "Notification": [{"hooks": [_cmd("notify-send hi")]}],
+        },
+    }
+    desired = {"SessionStart": [{"hooks": [sync, _cmd('python3 "$HOME/.claude/hooks/new.py"')]}]}
+    res = sm.merge(current, desired, rule)
+    hooks = res.settings["hooks"]
+    flat = [(g.get("matcher"), e["command"]) for g in hooks["SessionStart"] for e in g["hooks"]]
+    assert flat.count((None, sync["command"])) == 1
+    assert (None, user["command"]) in flat
+    assert all("gone.py" not in c for _, c in flat)
+    assert ("resume", sync["command"]) not in flat
+    assert (None, 'python3 "$HOME/.claude/hooks/new.py"') in flat
+    assert hooks["Notification"] == current["hooks"]["Notification"]
+    assert res.settings["theme"] == "dark"
+    assert res.deduped and res.removed and res.added
+    assert sm.duplicate_owned(res.settings, rule) == []
+    again = sm.merge(res.settings, desired, rule)
+    assert not again.changed
+
+
+def test_merge_ignores_a_dropped_description(tmp_path: Path) -> None:
+    # A writer that rewrites settings.json without the cosmetic description key must not make every
+    # owned entry look stale and missing (an account showed missing=74 stale=74 that way).
+    rule = _rule(tmp_path)
+    full = {**_cmd('python3 "$HOME/.claude/hooks/a.py"'), "description": "does a", "timeout": 5000}
+    bare = {k: v for k, v in full.items() if k != "description"}
+    desired = {"SessionStart": [{"hooks": [full]}]}
+    res = sm.merge({"hooks": {"SessionStart": [{"hooks": [bare]}]}}, desired, rule)
+    assert not res.changed, (res.added, res.removed)
+    assert res.settings["hooks"]["SessionStart"] == [{"hooks": [bare]}]
+    assert sm.canonical_hash({}, full) == sm.canonical_hash({}, bare)
+    assert sm.canonical_hash({}, full) != sm.canonical_hash({}, {**full, "timeout": 6000})
+
+
+@pytest.mark.parametrize("target", ["claude", "codex"])
+def test_apply_settings_merge_per_target(world: Env, target: str) -> None:
+    spath = world.home / ".claude" / "settings.json"
+    user = {"type": "command", "command": "python3 /opt/user/hook.py"}
+    owned = {"type": "command", "command": 'python3 "$HOME/.claude/hooks/h1.py"', "timeout": 20000}
+    original = {
+        "theme": "dark",
+        "hooks": {
+            "SessionStart": [
+                {"hooks": [owned, user]},
+                {"matcher": "resume", "hooks": [owned]},
+                {"hooks": [owned]},
+            ],
+            "PreToolUse": [{"matcher": "Bash", "hooks": [{"type": "command", "command": "mine.sh"}]}],
+        },
+    }
+    spath.write_text(json.dumps(original, indent=2))
+    before = spath.read_bytes()
+    res = world.run("apply", "--target", target)
+    assert res.code == 0, res.err
+    if target != "claude":
+        assert spath.read_bytes() == before, "non-claude targets must not touch ~/.claude/settings.json"
+        return
+    merged = json.loads(spath.read_text())
+    assert merged["theme"] == "dark"
+    assert merged["hooks"]["PreToolUse"] == original["hooks"]["PreToolUse"]
+    ss = [e["command"] for g in merged["hooks"]["SessionStart"] for e in g["hooks"]]
+    assert ss.count(owned["command"]) == 1
+    assert user["command"] in ss
+    assert any("h3.py" in e["command"] for g in merged["hooks"]["Stop"] for e in g["hooks"])
+    assert oct(spath.stat().st_mode & 0o777) == "0o600"
+    backups = sorted((world.home / ".claude" / "vexjoy" / "backups").glob("settings.*.json"))
+    assert len(backups) == 1 and backups[0].read_bytes() == before
+    assert world.ledger()["settings"]["claude"]
+    doctor = world.run("doctor", "--target", "claude")
+    assert not any("settings-" in line for line in doctor.out), doctor.out
+    ts = backups[0].name[len("settings.") : -len(".json")]
+    assert world.run("restore-settings", ts).code == 0
+    assert spath.read_bytes() == before
+
+
+def test_settings_backups_keep_ten(world: Env) -> None:
+    spath = world.home / ".claude" / "settings.json"
+    for i in range(13):
+        spath.write_text(json.dumps({"n": i, "hooks": {}}))
+        assert world.run("apply", "--target", "claude").code == 0
+    backups = list((world.home / ".claude" / "vexjoy" / "backups").glob("settings.*.json"))
+    assert len(backups) == 10
+
+
+def test_doctor_reports_settings_drift_and_duplicates(world: Env) -> None:
+    assert world.run("apply", "--target", "claude").code == 0
+    spath = world.home / ".claude" / "settings.json"
+    data = json.loads(spath.read_text())
+    extra = {"type": "command", "command": 'python3 "$HOME/.claude/hooks/h3.py"'}
+    data["hooks"]["SessionStart"].append({"hooks": [extra]})
+    data["hooks"]["SessionStart"].append({"hooks": [extra]})
+    spath.write_text(json.dumps(data))
+    out = "\n".join(world.run("doctor", "--target", "claude").out)
+    assert "settings-drift" in out and "settings-duplicate-owned" in out
+
+
+def test_merge_env_adds_missing_keeps_user_values() -> None:
+    settings = {"env": {"KEEP": "user", "OTHER": "x"}}
+    added = sm.merge_env(settings, {"KEEP": "repo", "CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION": "false"})
+    assert added == ["CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false"]
+    assert settings["env"] == {"KEEP": "user", "OTHER": "x", "CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION": "false"}
+    assert sm.merge_env(settings, {"KEEP": "repo"}) == []
+
+
+def test_merge_env_creates_env_block() -> None:
+    settings: dict = {}
+    assert sm.merge_env(settings, {"A": "1"}) == ["A=1"]
+    assert settings == {"env": {"A": "1"}}
+
+
+def test_desired_env_from_repo(tmp_path: Path) -> None:
+    (tmp_path / ".claude").mkdir()
+    (tmp_path / ".claude" / "settings.json").write_text(json.dumps({"env": {"A": "1", "B": 2}}))
+    assert sm.desired_env_from_repo(tmp_path) == {"A": "1"}
+    assert sm.desired_env_from_repo(tmp_path / "missing") == {}
+
+
+def test_repo_settings_disable_prompt_suggestion() -> None:
+    root = Path(__file__).resolve().parents[2]
+    assert sm.desired_env_from_repo(root).get("CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION") == "false"
+
+
+def test_repo_settings_give_subagents_1h_cache() -> None:
+    # subagents blocking on 5-15 min sims re-wrote their whole context once the 5m cache expired
+    root = Path(__file__).resolve().parents[2]
+    assert sm.desired_env_from_repo(root).get("CLAUDE_CODE_SUBAGENT_PROMPT_CACHE_TTL") == "1h"
+
+
+def test_remove_retired_env_only_shipped_value() -> None:
+    settings = {"env": {"CLAUDE_CODE_DISABLE_ADAPTIVE_THINKING": "1", "KEEP": "x"}}
+    assert sm.remove_retired_env(settings) == ["CLAUDE_CODE_DISABLE_ADAPTIVE_THINKING"]
+    assert settings["env"] == {"KEEP": "x"}
+    changed = {"env": {"CLAUDE_CODE_DISABLE_ADAPTIVE_THINKING": "0"}}
+    assert sm.remove_retired_env(changed) == []
+    assert sm.remove_retired_env({}) == []
+
+
+def test_repo_settings_do_not_ship_retired_env() -> None:
+    root = Path(__file__).resolve().parents[2]
+    assert not set(sm.desired_env_from_repo(root)) & set(sm.RETIRED_ENV)
+
+
+def test_repo_settings_auto_compact_500k() -> None:
+    root = Path(__file__).resolve().parents[2]
+    assert sm.desired_env_from_repo(root).get("CLAUDE_CODE_AUTO_COMPACT_WINDOW") == "500000"
+
+
+def test_update_superseded_env_moves_only_old_shipped_value_once() -> None:
+    key = "CLAUDE_CODE_AUTO_COMPACT_WINDOW"
+    desired = {key: "500000"}
+    marker = f"{key}=400000"
+    settings = {"env": {key: "400000", "KEEP": "x"}}
+    assert sm.update_superseded_env(settings, desired, set()) == ([f"{key}=500000"], [marker])
+    assert settings["env"] == {key: "500000", "KEEP": "x"}
+    # already migrated: a value the user sets afterwards, even the old default, is kept
+    chosen = {"env": {key: "400000"}}
+    assert sm.update_superseded_env(chosen, desired, {marker}) == ([], [])
+    assert chosen["env"][key] == "400000"
+    # a custom value is kept, but the migration is still marked done
+    custom = {"env": {key: "300000"}}
+    assert sm.update_superseded_env(custom, desired, set()) == ([], [marker])
+    assert custom["env"][key] == "300000"
+    # uninstall (no desired env) and a missing env block do nothing
+    assert sm.update_superseded_env({"env": {key: "400000"}}, {}, set()) == ([], [])
+    assert sm.update_superseded_env({}, desired, set()) == ([], [])
+
+
+def test_apply_settings_migrates_old_default_once(world: Env) -> None:
+    key = "CLAUDE_CODE_AUTO_COMPACT_WINDOW"
+    spath = world.home / ".claude" / "settings.json"
+    spath.write_text(json.dumps({"env": {key: "400000"}}))
+    assert world.run("apply", "--target", "claude").code == 0  # hooks in sync; repo ships no env yet
+    assert json.loads(spath.read_text())["env"][key] == "400000"
+    repo_settings = world.repo / ".claude" / "settings.json"
+    data = json.loads(repo_settings.read_text())
+    data["env"] = {key: "500000"}
+    repo_settings.write_text(json.dumps(data, indent=2))
+    git(world.repo, "commit", "-qam", "ship 500k")
+    assert world.run("apply", "--target", "claude").code == 0  # the env update is the only change
+    assert json.loads(spath.read_text())["env"][key] == "500000"
+    assert f"{key}=400000" in world.ledger()["settings"]["env_migrated"]
+    user = json.loads(spath.read_text())
+    user["env"][key] = "400000"
+    spath.write_text(json.dumps(user))
+    assert world.run("apply", "--target", "claude").code == 0
+    assert json.loads(spath.read_text())["env"][key] == "400000"
+
+
+def test_repo_settings_do_not_ship_superseded_value() -> None:
+    desired = sm.desired_env_from_repo(Path(__file__).resolve().parents[2])
+    for key, old_values in sm.SUPERSEDED_ENV.items():
+        assert desired.get(key) not in old_values
+
+
+def test_apply_settings_adds_attribution_once_and_keeps_user_value(world: Env) -> None:
+    spath = world.home / ".claude" / "settings.json"
+    spath.write_text(json.dumps({"theme": "dark"}))
+    res = world.run("apply", "--target", "claude")
+    assert res.code == 0, res.err
+    assert json.loads(spath.read_text())["attribution"] == {"commit": "", "pr": ""}
+    spath.write_text(json.dumps({**json.loads(spath.read_text()), "attribution": {"commit": "mine", "pr": ""}}))
+    assert world.run("apply", "--target", "claude").code == 0
+    assert json.loads(spath.read_text())["attribution"] == {"commit": "mine", "pr": ""}
+
+
+def test_merge_attribution_adds_only_when_absent() -> None:
+    settings: dict = {}
+    assert sm.merge_attribution(settings, {"commit": "", "pr": ""})
+    assert settings == {"attribution": {"commit": "", "pr": ""}}
+    assert not sm.merge_attribution(settings, {"commit": "x", "pr": "x"})
+    assert not sm.merge_attribution({}, None)
+
+
+def test_repo_settings_ship_empty_attribution() -> None:
+    root = Path(__file__).resolve().parents[2]
+    assert sm.desired_attribution_from_repo(root) == {"commit": "", "pr": ""}

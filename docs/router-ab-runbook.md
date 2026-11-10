@@ -46,11 +46,57 @@ prompt edits, re-rank policies) with the existing blind A/B harness. One harness
    `--rejoin` writes `scoreboard.json` with per-arm, per-bucket accuracy.
 7. **Gate.** `python3 scripts/routing-ab-test.py --gate --out-dir "$OUT"` prints
    the pre-registered gates, then the verdict. Exit 0 PROMOTE, 1 REJECT,
-   2 UNDERPOWERED. The gate is deterministic (expected-pair/`acceptable`
-   matching over raw.json), so it cannot be argued with after the fact.
+   2 UNDERPOWERED, 3 CEILING or FLOOR. The gate is deterministic
+   (expected-pair/`acceptable` matching over raw.json), so it cannot be argued
+   with after the fact. CEILING or FLOOR means fewer than 6 discordant pairs
+   with both arms at 95% or above, or 5% or below: the run sits at a bound and
+   showed no difference it could have shown, so report "the run judged
+   nothing", never "no difference", and harden the corpus. A run with 6 or more
+   discordant pairs did discriminate and gets the normal verdict even at a
+   bound.
 8. **PR.** Attach `scoreboard.json` + the `--gate` output to the router-change
    PR. The gate verdict decides; a REJECT means the change does not merge in its
    current form.
+
+## Pilot first: prove the corpus can discriminate
+
+Before a paid main run on a new or changed corpus, run steps 3-5 on a pilot of
+about 20% of cases with four arms: baseline, a deliberately degraded control
+(for routing, a manifest with descriptions stripped), a second baseline run as
+an A/A arm, and a reference arm of different quality (for example the baseline
+manifest under a stronger `--model-arm`), named with `--extra-arm`. The
+reference arm is required in practice: a case the baseline fails discriminates
+only when another arm passes it, and the degraded control rarely does. Without
+one, a pilot passes only if the control is the exact inverse of the baseline;
+a stable 60%/60%/0% baseline/A/A/control pilot is NON-DISCRIMINATING, and
+guarding every baseline failure leaves the baseline at 100% (CEILING). Leave
+the candidate arm out of the pilot. Then:
+
+```sh
+python3 scripts/routing-ab-test.py --pilot-check --out-dir "$PILOT" \
+  --control-arm stripped --aa-arm full2 --extra-arm strong [--guard-case ID]
+```
+
+It prints its pre-registered checks, then the verdict: baseline accuracy on the
+analysis set within 30-70%; every case discriminates, meaning baseline and A/A agree on it and the
+control or a reference arm gets the other result; and the control at least 30
+points (and more than twice the A/A gap) below baseline on the analysis set. A baseline/A/A flip is
+noise, not a split. A case every arm passes (ceiling) or fails (floor) fails
+the check unless it is named with `--guard-case`: guards sit outside the
+analysis set, so they count toward neither accuracy nor the control gap, and
+the verdict lists them. Log each guard and its reason in the
+change log. Guards may be at most 20% of the pilot, and the analysis set
+keeps at least 8 cases. Exit 0 PASS, 1 FAIL (CEILING, FLOOR,
+NON-DISCRIMINATING, CONTROL-DID-NOT-LOSE, or TOO-MANY-GUARDS). On FAIL,
+harden or replace the listed cases, guarding only within that cap, and pilot
+again; do not start the main run. A review or fix A/B outside this
+harness uses the same check through `--per-case FILE`, where FILE is
+`{"arms": {name: [true|false per case]}, "case_ids": [optional names]}`. Every
+arm in the data must be named by `--baseline-arm`, `--control-arm`, `--aa-arm`,
+or `--extra-arm`.
+
+Design rules for the corpus, arms, and graders:
+`skills/meta/toolkit/references/blind-ab-tests.md`.
 
 For force-route fast-path changes there is also a zero-model check:
 
@@ -60,12 +106,10 @@ python3 scripts/routing-ab-test.py --pre-route-map --assert-buckets --out-dir "$
 
 It asserts every benchmark-force_route, paraphrase-git, and paraphrase-security
 case is fast-path eligible (pre-route confidence `high` + `force_route`) and no
-false-positive-guard case is. Exit 0/1. As of corpus v1.1 this FAILS (13
-violations): all 10 paraphrase-git/security cases fall through the keyword
-pre-router by design, and 3 keyword force-route cases sit at `medium`
-confidence. Meaning: a fast path keyed on high-confidence force_route fires on
-only 8/99 corpus cases and never on paraphrased safety intents — those still
-need the semantic router. The guard direction holds (0/7 guards eligible).
+false-positive-guard case is. Exit 0/1. PR #833 closed the coverage hole this
+check originally exposed (13 violations under corpus v1.1); the check now
+PASSES (exit 0): all asserted buckets are fast-path eligible and no guard case
+is (0/7).
 
 ## The answer-collection bridge
 
@@ -86,7 +130,7 @@ orchestrator session or a human — bridges, exactly as in the semantic-first ru
 whose artifacts sit in `scripts/routing-ab-results/`:
 
 - For each `"$OUT"/prompts/<arm>/<id>.txt` (legacy: `prompts/<id>.txt`), send the
-  file content verbatim as a single prompt to **Haiku** (`claude-haiku-4-5`, the
+  file content verbatim as a single prompt to **Haiku** (`--model haiku`, now Haiku 5.5; earlier runs used `claude-haiku-4-5`, the
   router model before self-route landed) — or, when `arms.json` carries a `models` map
   (`--model-arm` runs), to that arm's model (`default` = omit `--model`).
   Record per-call `cost_usd` and token counts in the run dir
@@ -122,6 +166,9 @@ PRE-REGISTERED GATES (fixed in code before any run; change only BEFORE a run):
                  of baseline.
 VERDICT: PROMOTE (exit 0) = all gates pass AND discordant pairs >= 6.
          UNDERPOWERED (exit 2) = all gates pass but discordant pairs < 6.
+         CEILING / FLOOR (exit 3) = all gates pass, discordant pairs < 6, and
+                 both arms are >= 95.0% (CEILING) or <= 5.0% (FLOOR) accurate:
+                 the run sits at a bound and judges nothing. Harden the corpus.
          REJECT (exit 1) = any gate fails.
 ```
 
@@ -133,7 +180,7 @@ from `feat/outcome-routing-loop:scripts/route-value-eval.py`.
 
 ## Adding corpus cases or buckets
 
-Corpus: `scripts/routing-ab-corpus.json` (v1.1, 99 cases). Rules:
+Corpus: `scripts/routing-ab-corpus.json` (v1.3, 274 cases). Rules:
 
 - **Append only.** The 49 legacy v1.0 cases are pinned by SHA-256 in
   `scripts/tests/test_routing_ab_harness.py`; editing them breaks CI.
@@ -149,20 +196,76 @@ Corpus: `scripts/routing-ab-corpus.json` (v1.1, 99 cases). Rules:
   tiered-manifest tripwire), `sibling-disambiguation`, `pipeline-pick`
   (`expected_pipeline`; near-misses must yield pipeline null), `vague-interview`,
   `plain-english`.
+- Buckets v1.3 added, from 128 recorded production dispatches that fell back to
+  `general-purpose`: `prod-fallback-specialist` (a domain agent is correct),
+  `prod-fallback-general` (`general-purpose` is correct — labelled EXPLICITLY,
+  never as null, so an over-aggressive router fails too),
+  `prod-fallback-coordinator` (multi-deliverable conjunctive requests;
+  `project-coordinator-engineer` was chosen 0 times in 287 dispatches), and
+  `prod-fallback-ambiguous` (`expected_agent: null` WITH the reason in `notes`).
+- **Keep the `expected_agent` null rate low.** At v1.2 it was 142/178 (79.8%):
+  a router that routed LESS scored BETTER, so under-routing was undetectable and
+  a blind A/B promoted a regression as a 7-point gain. `test_null_agent_rate_stays_bounded`
+  caps it at 60%. Null means "genuinely ambiguous, reason stated", not
+  "no agent needed" — write `general-purpose` when that is the right answer.
+- `expected_agent` may be a built-in agent name (`general-purpose`) that has no
+  `agents/*.md` file; `routing-benchmark.py` accepts the `BUILTIN_AGENTS` set.
 - Add cases on a branch and run the corpus tests:
   `python3 -m pytest scripts/tests/test_routing_ab_harness.py -q`.
 
+## Provenance and the multi-box rule (v1.4)
+
+This toolkit runs on several machines with different workloads. `learning.db` is
+**per-box**: no host, machine, or project column, and nothing aggregates across
+boxes. A local sample is therefore evidence about ONE machine. **Local absence of
+an agent or skill is not evidence that it is unused** — do not reason from it.
+
+Every taggable case carries `provenance: {source, workload, sample}`:
+
+| `source` | Meaning | `workload` |
+|---|---|---|
+| `local-telemetry` | Sampled from recorded dispatches on one machine | names that workload |
+| `catalog-derived` | Written from INDEX semantics; no telemetry | `null` |
+| `unknown-legacy` | Not recorded at the time | `null` |
+
+The 49 pinned v1.0 cases cannot carry the field (SHA-256 pin plus
+`test_legacy_cases_have_no_new_fields`), so **absence resolves to
+`unknown-legacy`**. They are believed to be paraphrases of
+`routing-benchmark.json`, but that was never recorded, so it is not asserted.
+
+`test_no_single_workload_dominates_agent_labels` caps any one workload at 75% of
+the agent-asserting cases. At v1.4 the top workload (`mmr-ratings-flask`) holds
+70.0% — the cap is a ratchet against growth, not an endorsement of that share.
+
+**Contributing from another machine.** Balance comes from real cases, never from
+inventing cases for a workload nobody has observed. To contribute:
+
+1. Export your own general-purpose fallbacks (agent, skill, complexity, request).
+2. Label them the way v1.3 did: specialist / general / coordinator /
+   ambiguous-with-a-reason, `general-purpose` written explicitly when it is right.
+3. Tag `provenance.source: "local-telemetry"` with **your** `workload` name.
+4. Lower the cap in the guard test as real coverage arrives.
+
+Prefer agents that currently hold zero agent-asserting cases — as of v1.4 that is
+26 of 44, including every Node/React/Next agent, the observability agents
+(`prometheus-grafana-engineer`, `perses-engineer`), the messaging and search
+agents (`rabbitmq-messaging-engineer`, `opensearch-elasticsearch-engineer`),
+`ansible-automation-engineer`, `database-engineer`, `data-engineer`,
+`nodejs-api-engineer`, `typescript-debugging-engineer`, `reviewer-code`, and
+`reviewer-perspectives`. A box doing Node API or Kubernetes work can cover those
+in a way this box never will.
+
 ## Cost: 100-case, 2-arm run
 
-Haiku 4.5 (`claude-haiku-4-5`): $1.00/M input, $5.00/M output.
+Haiku 5.5 (`haiku` alias): $0.10/M input, $0.50/M output (prompts up to 100K tokens).
 
 | Step | Calls | Tokens (approx) | Cost |
 |---|---|---|---|
-| Routing answers | 200 (100 x 2 arms) | ~6K in + ~0.1K out each → 1.2M in, 20K out | ~$1.30 |
-| Blind judge | a single agent pass over 200 rows | ~40K in, ~5K out | ~$0.07 |
+| Routing answers | 200 (100 x 2 arms) | ~6K in + ~0.1K out each → 1.2M in, 20K out | ~$0.13 |
+| Blind judge | a single agent pass over 200 rows | ~40K in, ~5K out | ~$0.01 |
 | score / gate / pre-route-map | 0 model calls | — | $0 |
 
-**~$1.50 per full run** (compact manifest ≈ 20KB ≈ 5-6K tokens per prompt; a
+**~$0.15 per full run** (compact manifest ≈ 20KB ≈ 5-6K tokens per prompt; a
 tiered arm's prompts are smaller, so real runs cost less). Negligible against
 the Opus orchestrator session driving it.
 
@@ -178,20 +281,28 @@ the Opus orchestrator session driving it.
   `scripts/routing-ab-results/pre-route-map-v1.1/` (deterministic, regenerate
   any time with `--pre-route-map`).
 
-## Queued experiments
+## Completed experiments
 
-1. **Tiered manifest** (`feat/do-cost-diet`): run the standing sequence with
-   `--manifest-arm full=... --manifest-arm tiered=...` once that branch lands.
-   Watch gate (d) — stub-tier is the bucket a tiered manifest can starve.
-2. **Force-route fast path**: `--pre-route-map --assert-buckets` is the
-   behavior-identical check; today's failing baseline (above) is the comparison
-   point. A fast path must not make a guard case eligible, and any claim that
-   paraphrases are covered must flip those 10 cases to PASS first.
+1. **Tiered manifest** (`feat/do-cost-diet`): REJECTED twice, 2026-06-10.
+   tiered-v1 failed gates (c) safety and (d) stub-tier; the stub-attribution
+   fix (`c1080c04`) re-ran as tiered-v2 and failed the same two gates.
+   Verdicts: `scripts/routing-ab-results/tiered-v1/VERDICT.md`,
+   `scripts/routing-ab-results/tiered-v2/VERDICT.md`. Do not re-queue without
+   a mechanism change beyond attribution text.
+2. **Force-route fast path**: SHIPPED in `skills/meta/do/SKILL.md` Phase 2,
+   keyed on pre-route `confidence: high` + `force_route` for pr-workflow and
+   security skills. The zero-model check (`--pre-route-map --assert-buckets`,
+   above) initially FAILED with 13 assert-bucket violations — 10
+   paraphrase-git/security cases fell through the keyword pre-router and 3
+   force-route cases sat at medium confidence. PR #833 merged the coverage fix;
+   the check now PASSES (exit 0) and the guard direction holds (0/7 guards
+   eligible).
 
 ## Known limits
 
 - ~100 cases is small: gates use a 3-point margin, an exact McNemar test, and an
-  explicit UNDERPOWERED verdict (discordant < 6) instead of pretending power.
+  explicit UNDERPOWERED verdict (discordant < 6) instead of pretending power,
+  and a CEILING/FLOOR verdict when both arms sit at a bound.
 - Gate correctness is exact-pair matching softened only by `acceptable`; the
   blind judge scoreboard remains the nuanced read. When they disagree, say so in
   the PR rather than picking the friendlier number.

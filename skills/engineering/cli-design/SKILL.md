@@ -1,7 +1,7 @@
 ---
 name: cli-design
 description: "Design a CLI interface: args, flags, help, output, errors, exit codes, config."
-user_invocable: false  # default -- router-dispatched, not user-typed
+user-invocable: false  # default -- router-dispatched, not user-typed
 allowed-tools:
   - Read
   - Write
@@ -19,13 +19,19 @@ routing:
     - "exit codes"
   category: engineering
   pairs_with:
-    - test-driven-development
-    - python-quality-gate
+    - testing
+    - code-quality
 ---
 
 # CLI Design
 
 Design a command-line tool's interface before implementation: human-first, script-friendly, Linux-only. Output is a compact spec the user or an agent can implement directly. Rubric source: clig.dev (rebuilt as `references/clig-checklist.md`).
+
+## Deep References
+
+| When | Load | Content |
+|---|---|---|
+| Phase 2: applying design rubric | `references/clig-checklist.md` | CLI design checklist condensed from clig.dev |
 
 ## Workflow
 

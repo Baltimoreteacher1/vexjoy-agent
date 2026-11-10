@@ -1,1397 +1,428 @@
 #!/bin/bash
 #
-# VexJoy Agent - Installation Script
-#
-# This script sets up the VexJoy Agent ecosystem in your Claude Code environment.
+# VexJoy Agent installer: a thin wrapper around the vexinstall engine
+# (scripts/vexinstall). The engine installs every runtime (claude, codex,
+# factory, hermes, reasonix, antigravity), keeps a ledger in ~/.claude/vexjoy/, and moves
+# anything it removes to ~/.claude/vexjoy/trash/. Layout: docs/installer-layout.md.
 #
 # Usage:
-#   ./install.sh              # Interactive install
-#   ./install.sh --symlink    # Use symlinks (recommended for development)
-#   ./install.sh --copy       # Copy files (recommended for stability)
-#   ./install.sh --uninstall  # Remove installation
-#   ./install.sh --dry-run    # Show what would happen without making changes
+#   ./install.sh                     # apply (symlink mode for a main checkout off Windows, else copy)
+#   ./install.sh --symlink|--copy    # choose the mode (recorded in the ledger)
+#   ./install.sh --dry-run           # show the plan; write nothing
+#   ./install.sh --uninstall         # remove every engine-owned entry (to trash); with no --target
+#                                    # or --target claude, also rename install.sh's post-merge hook
+#                                    # so git skips it
+#   ./install.sh --rollback          # undo the last run: restore what it trashed and its settings backup
+#   ./install.sh --migrate-overlays  # write ~/.claude/vexjoy/overlays.json, then exit
+#                                    # (apply runs it when overlays.json is missing and
+#                                    # ~/private-skills or ~/pgh/private-skills exists)
+#   ./install.sh --help
 #
-# What this script does:
-#   1. Verifies Python 3.10+ is available
-#   2. Creates ~/.claude directory if needed
-#   3. Links/copies agents, skills, hooks, commands, scripts to ~/.claude
-#   4. Mirrors skills, agents, hooks, and scripts to ~/.codex, ~/.factory,
-#      ~/.hermes, and ~/.reasonix (no agent surface for ~/.reasonix)
-#   5. Sets up local overlay directory
-#   6. Configures hooks in settings.json
-#
+# Env: VEXJOY_NO_GIT_HOOKS=1 skips .git/hooks; VEXJOY_NO_DEPS=1 skips pip and npm.
 
-set -e
+set -euo pipefail
 
-# Colors for output
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
-NC='\033[0m' # No Color
+NC='\033[0m'
 
-# Get the directory where this script lives
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CLAUDE_DIR="${HOME}/.claude"
-CODEX_DIR="${HOME}/.codex"
-CODEX_SKILLS_DIR="${CODEX_DIR}/skills"
-CODEX_AGENTS_DIR="${CODEX_DIR}/agents"
-CODEX_HOOKS_DIR="${CODEX_DIR}/hooks"
-CODEX_SCRIPTS_DIR="${CODEX_DIR}/scripts"
-FACTORY_DIR="${HOME}/.factory"
-FACTORY_SKILLS_DIR="${FACTORY_DIR}/skills"
-FACTORY_DROIDS_DIR="${FACTORY_DIR}/droids"
-FACTORY_HOOKS_DIR="${FACTORY_DIR}/hooks"
-FACTORY_COMMANDS_DIR="${FACTORY_DIR}/commands"
-FACTORY_SCRIPTS_DIR="${FACTORY_DIR}/scripts"
-HERMES_DIR="${HOME}/.hermes"
-HERMES_SKILLS_DIR="${HERMES_DIR}/skills"
-HERMES_SCRIPTS_DIR="${HERMES_DIR}/scripts"
-REASONIX_DIR="${HOME}/.reasonix"
-REASONIX_SKILLS_DIR="${REASONIX_DIR}/skills"
-REASONIX_SCRIPTS_DIR="${REASONIX_DIR}/scripts"
-REASONIX_HOOKS_DIR="${REASONIX_DIR}/hooks"
+STATE_DIR="${CLAUDE_DIR}/vexjoy"
+RUNTIMES=(codex factory hermes reasonix)
+# One id per run: the engine groups this run's apply and prune (or uninstall) into the
+# rollback point that --rollback restores.
+RUN_ID="install-$(date -u +%Y%m%dT%H%M%SZ)-$$"
 
-echo -e "${BLUE}╔════════════════════════════════════════════════════════════════╗${NC}"
-echo -e "${BLUE}║                VexJoy Agent - Installation Script               ║${NC}"
-echo -e "${BLUE}╚════════════════════════════════════════════════════════════════╝${NC}"
-echo ""
-
-# Parse arguments
 MODE=""
+ACTION="apply"
 DRY_RUN=false
-FORCE=true  # Default to force — never prompt about existing directories
-CONFLICT_MODE=""  # per-item | replace | skip; set by --per-item/--sync or conflict prompt
+TAKEOVER=true
+TARGET="all"
 CONFIGURE=false
 CONFIGURE_ONLY=false
+EXTRA=()
+
+usage() {
+    cat << 'EOF'
+Usage: ./install.sh [options]
+
+  --symlink            Link entries to this checkout (default for a main git checkout off Windows)
+  --copy               Copy entries (default on Windows and for worktrees and /tmp checkouts)
+  --dry-run            Print the vexinstall plan; write nothing
+  --uninstall          Move every engine-owned entry to trash; remove owned settings hooks.
+                       With no --target or --target claude, also rename install.sh's post-merge
+                       git hook so git skips it (it reinstalls on pull). The pre-commit
+                       private-leak gate stays.
+  --rollback           Undo the last install or uninstall run: restore what it moved to trash
+                       and the settings.json it replaced (later syncs are left alone)
+  --target T           claude|codex|factory|hermes|reasonix|antigravity|all (default: all present)
+  --no-takeover        Leave unowned entries at desired paths in place (default: trash and replace)
+  --allow-mass-remove  Allow a plan that removes more than 10 entries or 20% of a target
+  --configure          Run the interactive profile picker, then install
+  --configure-only     Run the picker, write .local/profile.yaml, then exit
+  --migrate-overlays   Write ~/.claude/vexjoy/overlays.json from the legacy private roots, then exit
+  --force, --no-force, --per-item, --sync
+                       Deprecated; accepted and ignored (the engine never prompts)
+EOF
+}
+
+deprecated() {
+    echo -e "${YELLOW}Note: $1 is deprecated and ignored; vexinstall is always non-interactive and per-entry.${NC}"
+}
+
 while [[ $# -gt 0 ]]; do
     case $1 in
-        --symlink)
-            MODE="symlink"
+        --symlink) MODE="symlink" ;;
+        --copy) MODE="copy" ;;
+        --uninstall) ACTION="uninstall" ;;
+        --rollback) ACTION="rollback" ;;
+        --migrate-overlays) ACTION="migrate-overlays" ;;
+        --dry-run) DRY_RUN=true ;;
+        --target)
+            [[ $# -ge 2 ]] || { echo -e "${RED}--target needs a value${NC}"; exit 2; }
+            TARGET=$2
             shift
             ;;
-        --copy)
-            MODE="copy"
-            shift
-            ;;
-        --uninstall)
-            MODE="uninstall"
-            shift
-            ;;
-        --rollback)
-            MODE="rollback"
-            shift
-            ;;
-        --dry-run)
-            DRY_RUN=true
-            shift
-            ;;
-        --force|-f)
-            FORCE=true  # Already default, accepted for backward compat
-            shift
-            ;;
-        --no-force)
-            FORCE=false  # Opt in to interactive prompts
-            shift
-            ;;
-        --per-item)
-            CONFLICT_MODE="per-item"
-            shift
-            ;;
-        --sync)
-            CONFLICT_MODE="per-item"
-            # --sync implies symlink mode when MODE is not yet set
-            [ -z "$MODE" ] && MODE="symlink"
-            shift
-            ;;
-        --configure)
-            CONFIGURE=true
-            shift
-            ;;
-        --configure-only)
-            CONFIGURE_ONLY=true
-            shift
-            ;;
-        --help|-h)
-            echo "Usage: $0 [--symlink|--copy|--uninstall|--rollback|--dry-run|--force|--per-item|--sync]"
-            echo ""
-            echo "Options:"
-            echo "  --symlink    Create symlinks to this repo (recommended for development)"
-            echo "  --copy       Copy files to ~/.claude (recommended for stability)"
-            echo "  --uninstall  Remove the installation"
-            echo "  --rollback   Restore settings.json from the most recent backup"
-            echo "  --dry-run    Show what would happen without making changes"
-            echo "  --force      Replace existing directories without prompting (default)"
-            echo "  --no-force   Prompt before replacing existing directories"
-            echo "  --per-item   Symlink each item individually; preserve external content"
-            echo "  --sync       Alias for --per-item; implies --symlink mode default"
-            echo "  --configure       Run the interactive profile picker, then install"
-            echo "  --configure-only  Run the picker, write .local/profile.yaml, then exit"
-            echo ""
-            echo "If no option provided, will prompt interactively."
-            exit 0
-            ;;
-        *)
-            echo -e "${RED}Unknown option: $1${NC}"
-            exit 1
-            ;;
+        --no-takeover) TAKEOVER=false ;;
+        --allow-mass-remove) EXTRA+=(--allow-mass-remove) ;;
+        --configure) CONFIGURE=true ;;
+        --configure-only) CONFIGURE_ONLY=true ;;
+        --force|-f|--no-force|--per-item|--sync) deprecated "$1" ;;
+        --help|-h) usage; exit 0 ;;
+        *) echo -e "${RED}Unknown option: $1${NC}"; usage; exit 1 ;;
     esac
+    shift
 done
 
-# Dry run banner
-if [ "$DRY_RUN" = true ]; then
-    echo -e "${YELLOW}╔════════════════════════════════════════════════════════════════╗${NC}"
-    echo -e "${YELLOW}║                          DRY RUN MODE                          ║${NC}"
-    echo -e "${YELLOW}║             No changes will be made to your system             ║${NC}"
-    echo -e "${YELLOW}╚════════════════════════════════════════════════════════════════╝${NC}"
-    echo ""
-fi
-
-# Function to check Python version
 check_python() {
-    echo -e "${YELLOW}Checking Python version...${NC}"
-
-    # Try python3 first, then python
-    if command -v python3 &> /dev/null; then
-        PYTHON_CMD="python3"
-    elif command -v python &> /dev/null; then
-        PYTHON_CMD="python"
-    else
-        echo -e "${RED}Error: Python not found. Please install Python 3.10+${NC}"
-        exit 1
-    fi
-
-    # Check version
-    PYTHON_VERSION=$($PYTHON_CMD -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')
-    MAJOR=$(echo $PYTHON_VERSION | cut -d. -f1)
-    MINOR=$(echo $PYTHON_VERSION | cut -d. -f2)
-
-    if [ "$MAJOR" -lt 3 ] || ([ "$MAJOR" -eq 3 ] && [ "$MINOR" -lt 10 ]); then
-        echo -e "${RED}Error: Python 3.10+ required, found $PYTHON_VERSION${NC}"
-        exit 1
-    fi
-
-    echo -e "${GREEN}✓ Python $PYTHON_VERSION found${NC}"
-}
-
-# Prefer pip from the validated Python interpreter so dependency installs land
-# in the same environment used by the rest of the installer. Fall back to
-# platform-native pip commands only if that interpreter does not have pip.
-detect_pip_command() {
-    if "$PYTHON_CMD" -m pip --version &> /dev/null; then
-        PIP_CMD=("$PYTHON_CMD" -m pip)
-    elif command -v pip3 &> /dev/null; then
-        PIP_CMD=(pip3)
-    elif command -v pip &> /dev/null; then
-        PIP_CMD=(pip)
-    else
-        echo -e "${RED}Error: pip not found. Please install pip for ${PYTHON_CMD}.${NC}"
-        exit 1
-    fi
-
-    if ! "${PIP_CMD[@]}" --version &> /dev/null; then
-        echo -e "${RED}Error: ${PIP_CMD[*]} found but appears broken.${NC}"
-        exit 1
-    fi
-}
-
-pip_supports_break_system_packages() {
-    "${PIP_CMD[@]}" install --help 2>/dev/null | grep -q -- "--break-system-packages"
-}
-
-print_manual_pip_command() {
-    local use_break_system_packages=${1:-false}
-    local -a manual_cmd=("${PIP_CMD[@]}" install -r "${SCRIPT_DIR}/requirements.txt")
-    local manual_cmd_str
-
-    if [ "$use_break_system_packages" = true ]; then
-        manual_cmd+=(--break-system-packages)
-    fi
-
-    printf -v manual_cmd_str '%q ' "${manual_cmd[@]}"
-    echo "  Run manually: ${manual_cmd_str% }"
-}
-
-_canonical_path() {
-    python3 -c 'import os, sys; print(os.path.realpath(sys.argv[1]))' "$1"
-}
-
-_symlink_points_to() {
-    local link=$1
-    local expected=$2
-    local actual
-
-    [ -L "$link" ] || return 1
-    actual=$(readlink "$link") || return 1
-    case "$actual" in
-        /*) ;;
-        *) actual="$(dirname "$link")/$actual" ;;
-    esac
-    [ "$(_canonical_path "$actual")" = "$(_canonical_path "$expected")" ]
-}
-
-clean_codex_hooks_mirror_if_looped() {
-    local hook_dir="$1"
-    local hook_source_dir="$2"
-
-    if [ -z "$hook_dir" ] || [ -z "$hook_source_dir" ]; then
-        return
-    fi
-
-    if _symlink_points_to "$hook_dir" "$hook_source_dir"; then
-        if [ "$DRY_RUN" = true ]; then
-            echo -e "${YELLOW}  Would remove stale Codex hooks mirror symlink: ${hook_dir}${NC}"
-            echo -e "${YELLOW}  (points back into source hooks: ${hook_source_dir})${NC}"
+    # Run the engine with a python 3.10+. A bare python3 can be a pyenv shim that picks 3.9
+    # in some dirs, or /usr/bin/python3 3.9 on macOS, so try the known locations too.
+    # The engine separately links ~/.claude/vexjoy/bin/python3 for hooks (VEXJOY_PYTHON overrides).
+    local cand
+    PYTHON_CMD=""
+    if [[ -n "${VEXJOY_PYTHON:-}" ]]; then
+        if "$VEXJOY_PYTHON" -c 'import sys; sys.exit(sys.version_info < (3, 10))' 2> /dev/null; then
+            PYTHON_CMD="$VEXJOY_PYTHON"
             return
         fi
-        echo -e "${YELLOW}  Removing stale Codex hooks mirror symlink: ${hook_dir}${NC}"
-        echo -e "${YELLOW}  (points back into source hooks: ${hook_source_dir})${NC}"
-        unlink "$hook_dir"
-    fi
-}
-
-# unlink_skills_nested TARGET — tear down a nested skills tree built by
-# link_skills_nested, preserving any external (non-toolkit) entries.
-# Removes only symlinks; for category dirs, removes the per-skill symlinks we
-# created and drops the category dir if it ends up empty. Real files/dirs the
-# user added are left untouched.
-unlink_skills_nested() {
-    local target=$1
-    local source=${2:-${SCRIPT_DIR}/skills}
-    local entry entry_name child child_name
-
-    [ -d "$target" ] || return 0
-
-    for entry in "$target"/*; do
-        [ -e "$entry" ] || [ -L "$entry" ] || continue
-        entry_name=$(basename "$entry")
-        if [ -L "$entry" ]; then
-            # Top-level skill or file symlink (or a whole-category symlink from
-            # an older install): remove it only when it points at this toolkit.
-            if _symlink_points_to "$entry" "$source/$entry_name"; then
-                if [ "$DRY_RUN" = true ]; then
-                    echo -e "${BLUE}  Would remove skills entry: ${entry}${NC}"
-                else
-                    rm "$entry"
-                fi
-            fi
-        elif [ -d "$entry" ]; then
-            # Category / support dir: remove per-skill symlinks, keep real entries.
-            for child in "$entry"/*; do
-                [ -L "$child" ] || continue
-                child_name=$(basename "$child")
-                if _symlink_points_to "$child" "$source/$entry_name/$child_name"; then
-                    if [ "$DRY_RUN" = true ]; then
-                        echo -e "${BLUE}  Would remove skill symlink: ${child}${NC}"
-                    else
-                        rm "$child"
-                    fi
-                fi
-            done
-            # Drop the category dir if nothing external remains.
-            if [ "$DRY_RUN" != true ]; then
-                rmdir "$entry" 2>/dev/null || true
-            fi
-        fi
-    done
-    # Drop the skills dir itself if now empty (no external content remained).
-    if [ "$DRY_RUN" != true ]; then
-        rmdir "$target" 2>/dev/null || true
-        echo -e "${GREEN}  ✓ Removed toolkit skills (preserved any external skills)${NC}"
-    fi
-}
-
-# Function to uninstall
-uninstall() {
-    echo -e "${BLUE}╔════════════════════════════════════════════════════════════════╗${NC}"
-    echo -e "${BLUE}║               VexJoy Agent - Uninstaller               ║${NC}"
-    echo -e "${BLUE}╚════════════════════════════════════════════════════════════════╝${NC}"
-    echo ""
-
-    MANIFEST_FILE="${CLAUDE_DIR}/.install-manifest.json"
-    SETTINGS_FILE="${CLAUDE_DIR}/settings.json"
-    COMPONENTS=(agents skills hooks commands scripts)
-    REMOVED=()
-    PRESERVED=()
-
-    # Phase 1: Determine install mode from manifest or fall back to detection
-    echo -e "${YELLOW}Reading install manifest...${NC}"
-    INSTALL_MODE=""
-    if [ -f "$MANIFEST_FILE" ]; then
-        INSTALL_MODE=$(python3 -c "import json; print(json.load(open('${MANIFEST_FILE}')).get('mode', ''))" 2>/dev/null || echo "")
-        if [ -n "$INSTALL_MODE" ]; then
-            echo -e "${GREEN}  ✓ Manifest found (mode: ${INSTALL_MODE})${NC}"
-        else
-            echo -e "${YELLOW}  Manifest found but mode unreadable. Falling back to detection.${NC}"
-        fi
-    else
-        echo -e "${YELLOW}  No manifest found. Falling back to symlink detection.${NC}"
-    fi
-
-    # Phase 2: Remove component directories and symlinks
-    echo ""
-    echo -e "${YELLOW}Removing installed components...${NC}"
-    for item in "${COMPONENTS[@]}"; do
-        target="${CLAUDE_DIR}/${item}"
-        if [ "$item" = "skills" ] && [ "$INSTALL_MODE" != "copy" ] && { [ -L "$target" ] || [ -d "$target" ]; }; then
-            if [ -L "$target" ] && _symlink_points_to "$target" "${SCRIPT_DIR}/skills"; then
-                if [ "$DRY_RUN" = true ]; then
-                    echo -e "${BLUE}  Would remove symlink: ${target}${NC}"
-                else
-                    rm "$target"
-                    echo -e "${GREEN}  ✓ Removed symlink: ${target}${NC}"
-                fi
-                REMOVED+=("$item (symlink)")
-            else
-                # The skills dir may be a nested tree of toolkit-owned symlinks
-                # (real category dirs + per-skill links). Remove only what the
-                # toolkit created and preserve any external skills the user added.
-                unlink_skills_nested "$target" "${SCRIPT_DIR}/skills"
-                REMOVED+=("$item (nested symlinks)")
-            fi
-        elif [ -L "$target" ]; then
-            if [ "$DRY_RUN" = true ]; then
-                echo -e "${BLUE}  Would remove symlink: ${target}${NC}"
-            else
-                rm "$target"
-                echo -e "${GREEN}  ✓ Removed symlink: ${target}${NC}"
-            fi
-            REMOVED+=("$item (symlink)")
-        elif [ -d "$target" ]; then
-            # Only remove directories if the manifest says we copied them,
-            # or if no manifest exists (best-effort cleanup)
-            if [ "$INSTALL_MODE" = "copy" ] || [ -z "$INSTALL_MODE" ]; then
-                if [ "$DRY_RUN" = true ]; then
-                    echo -e "${BLUE}  Would remove directory: ${target}${NC}"
-                else
-                    rm -rf "$target"
-                    echo -e "${GREEN}  ✓ Removed directory: ${target}${NC}"
-                fi
-                REMOVED+=("$item (directory)")
-            else
-                echo -e "${YELLOW}  Skipping ${target}: manifest says symlink but found directory${NC}"
-                PRESERVED+=("$item (unexpected directory, not removed)")
-            fi
-        else
-            echo "  Not found: ${target} (already removed or never installed)"
-        fi
-    done
-
-    # Phase 2.5: Clean private-voice entries from repo skills directory
-    if [ -d "${SCRIPT_DIR}/private-voices" ]; then
-        echo ""
-        echo -e "${YELLOW}Cleaning private voice entries from skills/...${NC}"
-        for voice_dir in "${SCRIPT_DIR}/private-voices/"*; do
-            [ -d "$voice_dir" ] || continue
-            voice_name=$(basename "$voice_dir")
-            target="${SCRIPT_DIR}/skills/voice-${voice_name}"
-            if [ -L "$target" ] || [ -e "$target" ]; then
-                if [ "$DRY_RUN" = true ]; then
-                    echo -e "${BLUE}  Would remove: ${target}${NC}"
-                else
-                    rm -rf "$target"
-                    echo -e "${GREEN}  ✓ Removed voice-${voice_name} from skills/${NC}"
-                fi
-                REMOVED+=("voice-${voice_name} from skills/")
-            fi
-        done
-
-        # Clean voice shared references from skills/shared-patterns/
-        if [ -d "${SCRIPT_DIR}/private-voices/shared-references" ]; then
-            echo ""
-            echo -e "${YELLOW}Cleaning voice shared references from skills/shared-patterns/...${NC}"
-            for ref_file in "${SCRIPT_DIR}/private-voices/shared-references/"*.md; do
-                [ -f "$ref_file" ] || continue
-                ref_name=$(basename "$ref_file")
-                target="${SCRIPT_DIR}/skills/shared-patterns/${ref_name}"
-                if [ -L "$target" ] || [ -e "$target" ]; then
-                    if [ "$DRY_RUN" = true ]; then
-                        echo -e "${BLUE}  Would remove: ${target}${NC}"
-                    else
-                        rm -f "$target"
-                        echo -e "${GREEN}  ✓ Removed ${ref_name} from skills/shared-patterns/${NC}"
-                    fi
-                    REMOVED+=("${ref_name} from skills/shared-patterns/")
-                fi
-            done
-        fi
-    fi
-
-    # Phase 3: Clean hooks from settings.json
-    echo ""
-    echo -e "${YELLOW}Cleaning hooks from settings.json...${NC}"
-    if [ -f "$SETTINGS_FILE" ]; then
-        # Check if hooks key exists
-        HAS_HOOKS=$(python3 -c "import json; d=json.load(open('${SETTINGS_FILE}')); print('yes' if 'hooks' in d else 'no')" 2>/dev/null || echo "no")
-        if [ "$HAS_HOOKS" = "yes" ]; then
-            if [ "$DRY_RUN" = true ]; then
-                echo -e "${BLUE}  Would back up: ${SETTINGS_FILE}${NC}"
-                echo -e "${BLUE}  Would remove 'hooks' key from settings.json${NC}"
-            else
-                # Create timestamped backup (same pattern as installer)
-                BACKUP_TS=$(date +%Y%m%d-%H%M%S)
-                cp "$SETTINGS_FILE" "${SETTINGS_FILE}.backup.${BACKUP_TS}"
-                echo -e "${GREEN}  ✓ Backed up settings.json to settings.json.backup.${BACKUP_TS}${NC}"
-
-                # Remove the hooks key, preserve everything else
-                python3 -c "
-import json, os
-dst = '${SETTINGS_FILE}'
-with open(dst, encoding='utf-8') as f:
-    data = json.load(f)
-data.pop('hooks', None)
-tmp = dst + '.tmp'
-with open(tmp, 'w', encoding='utf-8') as f:
-    json.dump(data, f, indent=2)
-    f.flush()
-    os.fsync(f.fileno())
-os.rename(tmp, dst)
-"
-                echo -e "${GREEN}  ✓ Removed hooks from settings.json${NC}"
-            fi
-            REMOVED+=("hooks config from settings.json")
-        else
-            echo "  No hooks key found in settings.json. Nothing to clean."
-        fi
-    else
-        echo "  No settings.json found. Nothing to clean."
-    fi
-
-    # Phase 3.5: Clean toolkit-owned Codex mirror entries
-    echo ""
-    echo -e "${YELLOW}Cleaning Codex skills mirror...${NC}"
-    if [ -d "$CODEX_SKILLS_DIR" ]; then
-        for item in "${SCRIPT_DIR}/skills/"*; do
-            [ -e "$item" ] || continue
-            target="${CODEX_SKILLS_DIR}/$(basename "$item")"
-            if [ -L "$target" ] || [ -e "$target" ]; then
-                if [ "$DRY_RUN" = true ]; then
-                    echo -e "${BLUE}  Would remove Codex entry: ${target}${NC}"
-                else
-                    rm -rf "$target"
-                    echo -e "${GREEN}  ✓ Removed Codex entry: ${target}${NC}"
-                fi
-                REMOVED+=("Codex skill $(basename "$item")")
-            fi
-        done
-
-        if [ -d "${SCRIPT_DIR}/private-voices" ]; then
-            for voice_dir in "${SCRIPT_DIR}/private-voices/"*; do
-                [ -d "$voice_dir" ] || continue
-                skill_src="${voice_dir}/skill"
-                [ -d "$skill_src" ] || continue
-                voice_name=$(basename "$voice_dir")
-                target="${CODEX_SKILLS_DIR}/voice-${voice_name}"
-                if [ -L "$target" ] || [ -e "$target" ]; then
-                    if [ "$DRY_RUN" = true ]; then
-                        echo -e "${BLUE}  Would remove Codex entry: ${target}${NC}"
-                    else
-                        rm -rf "$target"
-                        echo -e "${GREEN}  ✓ Removed Codex entry: ${target}${NC}"
-                    fi
-                    REMOVED+=("Codex skill voice-${voice_name}")
-                fi
-            done
-        fi
-
-        if [ -d "${SCRIPT_DIR}/private-skills" ]; then
-            for item in "${SCRIPT_DIR}/private-skills/"*; do
-                [ -e "$item" ] || continue
-                target="${CODEX_SKILLS_DIR}/$(basename "$item")"
-                if [ -L "$target" ] || [ -e "$target" ]; then
-                    if [ "$DRY_RUN" = true ]; then
-                        echo -e "${BLUE}  Would remove Codex entry: ${target}${NC}"
-                    else
-                        rm -rf "$target"
-                        echo -e "${GREEN}  ✓ Removed Codex entry: ${target}${NC}"
-                    fi
-                    REMOVED+=("Codex skill $(basename "$item")")
-                fi
-            done
-        fi
-    else
-        echo "  No ~/.codex/skills mirror found. Nothing to clean."
-    fi
-
-    echo ""
-    echo -e "${YELLOW}Cleaning Codex agents mirror...${NC}"
-    if [ -d "$CODEX_AGENTS_DIR" ]; then
-        for item in "${SCRIPT_DIR}/agents/"*; do
-            [ -e "$item" ] || continue
-            target="${CODEX_AGENTS_DIR}/$(basename "$item")"
-            if [ -L "$target" ] || [ -e "$target" ]; then
-                if [ "$DRY_RUN" = true ]; then
-                    echo -e "${BLUE}  Would remove Codex entry: ${target}${NC}"
-                else
-                    rm -rf "$target"
-                    echo -e "${GREEN}  ✓ Removed Codex entry: ${target}${NC}"
-                fi
-                REMOVED+=("Codex agent $(basename "$item")")
-            fi
-        done
-
-        if [ -d "${SCRIPT_DIR}/private-agents" ]; then
-            for item in "${SCRIPT_DIR}/private-agents/"*; do
-                [ -e "$item" ] || continue
-                target="${CODEX_AGENTS_DIR}/$(basename "$item")"
-                if [ -L "$target" ] || [ -e "$target" ]; then
-                    if [ "$DRY_RUN" = true ]; then
-                        echo -e "${BLUE}  Would remove Codex entry: ${target}${NC}"
-                    else
-                        rm -rf "$target"
-                        echo -e "${GREEN}  ✓ Removed Codex entry: ${target}${NC}"
-                    fi
-                    REMOVED+=("Codex agent $(basename "$item")")
-                fi
-            done
-        fi
-    else
-        echo "  No ~/.codex/agents mirror found. Nothing to clean."
-    fi
-
-    # Phase 3.6: Clean toolkit-owned Codex hooks mirror (ADR-182)
-    echo ""
-    echo -e "${YELLOW}Cleaning Codex hooks mirror...${NC}"
-    if [ -d "$CODEX_HOOKS_DIR" ]; then
-        if [ "$DRY_RUN" = true ]; then
-            echo -e "${BLUE}  Would remove: ${CODEX_HOOKS_DIR}${NC}"
-        else
-            rm -rf "$CODEX_HOOKS_DIR"
-            echo -e "${GREEN}  ✓ Removed ${CODEX_HOOKS_DIR}${NC}"
-        fi
-        REMOVED+=("Codex hooks mirror directory")
-    else
-        echo "  No ~/.codex/hooks mirror found. Nothing to clean."
-    fi
-
-    echo ""
-    echo -e "${YELLOW}Cleaning Codex scripts mirror...${NC}"
-    if [ -d "$CODEX_SCRIPTS_DIR" ]; then
-        if [ "$DRY_RUN" = true ]; then
-            echo -e "${BLUE}  Would remove: ${CODEX_SCRIPTS_DIR}${NC}"
-        else
-            rm -rf "$CODEX_SCRIPTS_DIR"
-            echo -e "${GREEN}  ✓ Removed ${CODEX_SCRIPTS_DIR}${NC}"
-        fi
-        REMOVED+=("Codex scripts mirror directory")
-    else
-        echo "  No ~/.codex/scripts mirror found. Nothing to clean."
-    fi
-
-    if [ -f "${CODEX_DIR}/hooks.json" ]; then
-        if [ "$DRY_RUN" = true ]; then
-            echo -e "${BLUE}  Would archive: ${CODEX_DIR}/hooks.json${NC}"
-        else
-            # Archive rather than delete so users who edited the file manually
-            # can recover any custom entries we did not write.
-            ARCHIVE_TS=$(date +%Y%m%d-%H%M%S)
-            mv "${CODEX_DIR}/hooks.json" "${CODEX_DIR}/hooks.json.uninstalled.${ARCHIVE_TS}"
-            echo -e "${GREEN}  ✓ Archived ${CODEX_DIR}/hooks.json${NC}"
-        fi
-        REMOVED+=("Codex hooks.json (archived)")
-    else
-        echo "  No ~/.codex/hooks.json found. Nothing to archive."
-    fi
-
-    # Note: [features] hooks = true is intentionally left in config.toml.
-    # Users may have other Codex hook configurations we did not write.
-
-    # Phase 3.9: Clean toolkit-owned Factory mirror
-    echo ""
-    echo -e "${YELLOW}Cleaning Factory mirror...${NC}"
-    for dir_var in FACTORY_SKILLS_DIR FACTORY_DROIDS_DIR FACTORY_HOOKS_DIR FACTORY_COMMANDS_DIR FACTORY_SCRIPTS_DIR; do
-        target="${!dir_var}"
-        if [ "$dir_var" = "FACTORY_SKILLS_DIR" ] && { [ -L "$target" ] || [ -d "$target" ]; }; then
-            if [ -L "$target" ] && _symlink_points_to "$target" "${SCRIPT_DIR}/skills"; then
-                if [ "$DRY_RUN" = true ]; then
-                    echo -e "${BLUE}  Would remove: ${target}${NC}"
-                else
-                    rm "$target"
-                    echo -e "${GREEN}  ✓ Removed: ${target}${NC}"
-                fi
-            else
-                unlink_skills_nested "$target" "${SCRIPT_DIR}/skills"
-            fi
-            REMOVED+=("Factory $(basename "$target")")
-        elif [ -L "$target" ] || [ -d "$target" ]; then
-            if [ "$DRY_RUN" = true ]; then
-                echo -e "${BLUE}  Would remove: ${target}${NC}"
-            else
-                rm -rf "$target"
-                echo -e "${GREEN}  ✓ Removed: ${target}${NC}"
-            fi
-            REMOVED+=("Factory $(basename "$target")")
-        fi
-    done
-
-    if [ -f "${FACTORY_DIR}/settings.json" ]; then
-        if [ "$DRY_RUN" = true ]; then
-            echo -e "${BLUE}  Would archive: ${FACTORY_DIR}/settings.json${NC}"
-        else
-            ARCHIVE_TS=$(date +%Y%m%d-%H%M%S)
-            mv "${FACTORY_DIR}/settings.json" "${FACTORY_DIR}/settings.json.uninstalled.${ARCHIVE_TS}"
-            echo -e "${GREEN}  ✓ Archived ${FACTORY_DIR}/settings.json${NC}"
-        fi
-        REMOVED+=("Factory settings.json (archived)")
-    else
-        echo "  No ~/.factory/settings.json found. Nothing to archive."
-    fi
-
-    # Note: ~/.factory/config.toml is intentionally left untouched.
-    # Users may have other Factory configurations we did not write.
-
-    # Phase 3.10: Clean toolkit-owned Hermes skills mirror
-    echo ""
-    echo -e "${YELLOW}Cleaning Hermes skills mirror...${NC}"
-    if [ -d "$HERMES_SKILLS_DIR" ]; then
-        for item in "${SCRIPT_DIR}/skills/"*; do
-            [ -e "$item" ] || continue
-            target="${HERMES_SKILLS_DIR}/$(basename "$item")"
-            if [ -L "$target" ] || [ -e "$target" ]; then
-                if [ "$DRY_RUN" = true ]; then
-                    echo -e "${BLUE}  Would remove Hermes entry: ${target}${NC}"
-                else
-                    rm -rf "$target"
-                    echo -e "${GREEN}  ✓ Removed Hermes entry: ${target}${NC}"
-                fi
-                REMOVED+=("Hermes skill $(basename "$item")")
-            fi
-        done
-
-        if [ -d "${SCRIPT_DIR}/private-voices" ]; then
-            for voice_dir in "${SCRIPT_DIR}/private-voices/"*; do
-                [ -d "$voice_dir" ] || continue
-                skill_src="${voice_dir}/skill"
-                [ -d "$skill_src" ] || continue
-                voice_name=$(basename "$voice_dir")
-                target="${HERMES_SKILLS_DIR}/voice-${voice_name}"
-                if [ -L "$target" ] || [ -e "$target" ]; then
-                    if [ "$DRY_RUN" = true ]; then
-                        echo -e "${BLUE}  Would remove Hermes entry: ${target}${NC}"
-                    else
-                        rm -rf "$target"
-                        echo -e "${GREEN}  ✓ Removed Hermes entry: ${target}${NC}"
-                    fi
-                    REMOVED+=("Hermes skill voice-${voice_name}")
-                fi
-            done
-        fi
-
-        if [ -d "${SCRIPT_DIR}/private-skills" ]; then
-            for item in "${SCRIPT_DIR}/private-skills/"*; do
-                [ -e "$item" ] || continue
-                target="${HERMES_SKILLS_DIR}/$(basename "$item")"
-                if [ -L "$target" ] || [ -e "$target" ]; then
-                    if [ "$DRY_RUN" = true ]; then
-                        echo -e "${BLUE}  Would remove Hermes entry: ${target}${NC}"
-                    else
-                        rm -rf "$target"
-                        echo -e "${GREEN}  ✓ Removed Hermes entry: ${target}${NC}"
-                    fi
-                    REMOVED+=("Hermes skill $(basename "$item")")
-                fi
-            done
-        fi
-    else
-        echo "  No ~/.hermes/skills mirror found. Nothing to clean."
-    fi
-
-    echo ""
-    echo -e "${YELLOW}Cleaning Hermes scripts mirror...${NC}"
-    if [ -d "$HERMES_SCRIPTS_DIR" ]; then
-        if [ "$DRY_RUN" = true ]; then
-            echo -e "${BLUE}  Would remove: ${HERMES_SCRIPTS_DIR}${NC}"
-        else
-            rm -rf "$HERMES_SCRIPTS_DIR"
-            echo -e "${GREEN}  ✓ Removed ${HERMES_SCRIPTS_DIR}${NC}"
-        fi
-        REMOVED+=("Hermes scripts mirror directory")
-    else
-        echo "  No ~/.hermes/scripts mirror found. Nothing to clean."
-    fi
-
-    # Note: ~/.hermes/config.yaml is intentionally left untouched.
-    # Users may have other Hermes configurations we did not write.
-
-    # Phase 3.11: Clean toolkit-owned Reasonix mirror (skills + scripts + hooks + settings.json)
-    echo ""
-    echo -e "${YELLOW}Cleaning Reasonix skills mirror...${NC}"
-    # Remove ONLY the toolkit-owned flatten-copy output, recomputed from the repo so it
-    # matches what the install wrote (skills/<cat>/<name> + top-level skills + private-skills
-    # flattened to <name>, voice skills as voice-<name>, support dirs copied by name). Skills
-    # a USER added by hand (real dirs we never wrote) are left intact. Also sweep stale
-    # toolkit symlinks left by the pre-flatten installer. Finally drop the dir if now empty.
-    if [ -d "$REASONIX_SKILLS_DIR" ]; then
-        reasonix_uninstall_entry() {
-            [ -n "$1" ] || return 0
-            local target="${REASONIX_SKILLS_DIR}/$1"
-            [ -e "$target" ] || [ -L "$target" ] || return 0
-            if [ "$DRY_RUN" = true ]; then
-                echo -e "${BLUE}  Would remove Reasonix entry: ${target}${NC}"
-            else
-                rm -rf "$target"
-                echo -e "${GREEN}  ✓ Removed Reasonix entry: ${target}${NC}"
-            fi
-            REMOVED+=("Reasonix skill $1")
-        }
-
-        # Flattened skills + private skills (basename of each dir holding a SKILL.md).
-        while IFS= read -r skill_md; do
-            [ -n "$skill_md" ] || continue
-            reasonix_uninstall_entry "$(basename "$(dirname "$skill_md")")"
-        done < <(find "${SCRIPT_DIR}/skills" "${SCRIPT_DIR}/private-skills" -name SKILL.md 2>/dev/null)
-
-        # Voice skills (voice-<name>).
-        if [ -d "${SCRIPT_DIR}/private-voices" ]; then
-            for voice_dir in "${SCRIPT_DIR}/private-voices/"*; do
-                [ -f "${voice_dir}/skill/SKILL.md" ] || continue
-                reasonix_uninstall_entry "voice-$(basename "$voice_dir")"
-            done
-        fi
-
-        # Support dirs (no SKILL.md anywhere — shared-patterns, kb, voice-shared*).
-        for support_dir in "${SCRIPT_DIR}/skills/"*/; do
-            [ -d "$support_dir" ] || continue
-            [ -z "$(find "$support_dir" -name SKILL.md -print -quit)" ] || continue
-            reasonix_uninstall_entry "$(basename "$support_dir")"
-        done
-
-        # Stale toolkit symlinks — only entries whose target no longer exists
-        # (broken symlinks). Healthy toolkit symlinks in --symlink mode were
-        # already removed by the per-name loop above.
-        if [ "$DRY_RUN" != true ]; then
-            find "$REASONIX_SKILLS_DIR" -maxdepth 1 -mindepth 1 -type l ! -exec test -e {} \; -delete 2>/dev/null || true
-            rmdir "$REASONIX_SKILLS_DIR" 2>/dev/null && \
-                echo -e "${GREEN}  ✓ Removed empty ${REASONIX_SKILLS_DIR}${NC}" || true
-        fi
-    else
-        echo "  No ~/.reasonix/skills mirror found. Nothing to clean."
-    fi
-
-    echo ""
-    echo -e "${YELLOW}Cleaning Reasonix scripts mirror...${NC}"
-    if [ -d "$REASONIX_SCRIPTS_DIR" ]; then
-        if [ "$DRY_RUN" = true ]; then
-            echo -e "${BLUE}  Would remove: ${REASONIX_SCRIPTS_DIR}${NC}"
-        else
-            rm -rf "$REASONIX_SCRIPTS_DIR"
-            echo -e "${GREEN}  ✓ Removed ${REASONIX_SCRIPTS_DIR}${NC}"
-        fi
-        REMOVED+=("Reasonix scripts mirror directory")
-    else
-        echo "  No ~/.reasonix/scripts mirror found. Nothing to clean."
-    fi
-
-    echo ""
-    echo -e "${YELLOW}Cleaning Reasonix hooks mirror...${NC}"
-    if [ -d "$REASONIX_HOOKS_DIR" ]; then
-        if [ "$DRY_RUN" = true ]; then
-            echo -e "${BLUE}  Would remove: ${REASONIX_HOOKS_DIR}${NC}"
-        else
-            rm -rf "$REASONIX_HOOKS_DIR"
-            echo -e "${GREEN}  ✓ Removed ${REASONIX_HOOKS_DIR}${NC}"
-        fi
-        REMOVED+=("Reasonix hooks mirror directory")
-    else
-        echo "  No ~/.reasonix/hooks mirror found. Nothing to clean."
-    fi
-
-    # Archive the generated Reasonix settings.json (hooks key). config.json is
-    # user-owned and never touched.
-    if [ -f "${REASONIX_DIR}/settings.json" ]; then
-        if [ "$DRY_RUN" = true ]; then
-            echo -e "${BLUE}  Would archive: ${REASONIX_DIR}/settings.json${NC}"
-        else
-            ARCHIVE_TS=$(date +%Y%m%d-%H%M%S)
-            mv "${REASONIX_DIR}/settings.json" "${REASONIX_DIR}/settings.json.uninstalled.${ARCHIVE_TS}"
-            echo -e "${GREEN}  ✓ Archived ${REASONIX_DIR}/settings.json${NC}"
-        fi
-        REMOVED+=("Reasonix settings.json (archived)")
-    fi
-
-    # Note: ~/.reasonix/config.json is intentionally left untouched.
-    # Users own MCP/model/permissions config we did not write.
-
-    # Phase 4: Remove install manifest
-    echo ""
-    echo -e "${YELLOW}Cleaning up manifest...${NC}"
-    if [ -f "$MANIFEST_FILE" ]; then
-        if [ "$DRY_RUN" = true ]; then
-            echo -e "${BLUE}  Would remove: ${MANIFEST_FILE}${NC}"
-        else
-            rm "$MANIFEST_FILE"
-            echo -e "${GREEN}  ✓ Removed install manifest${NC}"
-        fi
-        REMOVED+=("install manifest")
-    else
-        echo "  No manifest to remove."
-    fi
-
-    # Summary
-    echo ""
-    echo -e "${GREEN}╔════════════════════════════════════════════════════════════════╗${NC}"
-    if [ "$DRY_RUN" = true ]; then
-        echo -e "${GREEN}║                    Dry Run Uninstall Summary                   ║${NC}"
-    else
-        echo -e "${GREEN}║                      Uninstall Complete                        ║${NC}"
-    fi
-    echo -e "${GREEN}╚════════════════════════════════════════════════════════════════╝${NC}"
-    echo ""
-
-    if [ ${#REMOVED[@]} -gt 0 ]; then
-        if [ "$DRY_RUN" = true ]; then
-            echo "Would remove:"
-        else
-            echo "Removed:"
-        fi
-        for r in "${REMOVED[@]}"; do
-            echo -e "  ${GREEN}✓${NC} ${r}"
-        done
-    else
-        echo "  Nothing to remove."
-    fi
-
-    echo ""
-    echo "Preserved (not touched):"
-    echo "  • ~/.claude/settings.json (all keys except hooks)"
-    echo "  • ~/.claude/projects/"
-    echo "  • ~/.claude/memory/"
-    echo "  • ~/.codex/config.toml (including [features] hooks flag)"
-    echo "  • ~/.factory/config.toml (if present, like Codex)"
-    echo "  • ~/.hermes/config.yaml (Hermes Agent configuration)"
-    echo "  • ~/.reasonix/config.json (Reasonix MCP/model/permissions, user-owned)"
-    echo "  • .local/ customizations in the toolkit repo"
-    echo "  • Python packages (remove manually if needed)"
-    if [ ${#PRESERVED[@]} -gt 0 ]; then
-        for p in "${PRESERVED[@]}"; do
-            echo "  • ${p}"
-        done
-    fi
-
-    echo ""
-    echo -e "${YELLOW}Tip:${NC} You can also run ${BLUE}./install.sh --rollback${NC} to restore"
-    echo "your previous settings.json from the most recent backup."
-    echo ""
-    exit 0
-}
-
-# Handle uninstall
-if [ "$MODE" = "uninstall" ]; then
-    uninstall
-fi
-
-# Handle rollback
-if [ "$MODE" = "rollback" ]; then
-    echo -e "${YELLOW}Rolling back settings.json...${NC}"
-    SETTINGS_FILE="${CLAUDE_DIR}/settings.json"
-    # Find the most recent backup
-    LATEST_BACKUP=$(ls -1t "${SETTINGS_FILE}.backup."* 2>/dev/null | head -1)
-    if [ -z "$LATEST_BACKUP" ]; then
-        echo -e "${RED}Error: No settings.json backup found in ${CLAUDE_DIR}${NC}"
+        echo -e "${RED}Error: VEXJOY_PYTHON=${VEXJOY_PYTHON} is not a runnable python 3.10+${NC}"
         exit 1
     fi
-    echo "  Restoring from: $(basename "$LATEST_BACKUP")"
-    cp "$LATEST_BACKUP" "$SETTINGS_FILE"
-    echo -e "${GREEN}✓ settings.json restored from $(basename "$LATEST_BACKUP")${NC}"
+    for cand in python3 /opt/homebrew/bin/python3 /usr/local/bin/python3 /usr/bin/python3 \
+        python3.14 python3.13 python3.12 python3.11 python3.10 python; do
+        command -v "$cand" &> /dev/null || continue
+        if "$cand" -c 'import sys; sys.exit(sys.version_info < (3, 10))' 2> /dev/null; then
+            PYTHON_CMD="$cand"
+            return
+        fi
+    done
+    echo -e "${RED}Error: Python 3.10+ not found (python3 is $(python3 -V 2>&1 || echo missing)); install it or set VEXJOY_PYTHON=/path/to/python3${NC}"
+    exit 1
+}
+
+vexinstall() {
+    PYTHONPATH="${SCRIPT_DIR}/scripts${PYTHONPATH:+:$PYTHONPATH}" "$PYTHON_CMD" -m vexinstall "$@" \
+        --source-root "$SCRIPT_DIR"
+}
+
+# The engine restores the rollback point that this script's last apply and prune (or uninstall)
+# recorded: every trash session of that run and the settings.json backup it took. The newest
+# trash session and backup on disk are often a later sync's, so they are never picked by date.
+# Undoing an uninstall also writes back the post-merge hook that the uninstall removed. The engine
+# prints its "[rollback] run <id> (...)" line only for a run it has rolled back and marked done, so
+# the hook comes back on exit 1 too (a trash session or backup was gone): no later --rollback could.
+rollback() {
+    local -a args=(rollback)
+    local out rc=0
+    [ "$DRY_RUN" = true ] && args+=(--dry-run)
+    out=$(vexinstall "${args[@]}") || rc=$?
+    [ -z "$out" ] || printf '%s\n' "$out"
+    # Only the first line: a later "skipped: <path>" line may hold any text.
+    if [ "$DRY_RUN" = false ] && [[ ${out%%$'\n'*} == "[rollback] run "*" (uninstall)" ]]; then
+        install_git_hooks
+    fi
+    return "$rc"
+}
+
+# A runtime whose CLI is on PATH gets its root dir, so `--target all` installs it.
+ensure_runtime_dirs() {
+    local rt
+    for rt in "${RUNTIMES[@]}"; do
+        if command -v "$rt" &> /dev/null && [ ! -d "${HOME}/.${rt}" ]; then
+            if [ "$DRY_RUN" = true ]; then
+                echo -e "${BLUE}  Would create ${HOME}/.${rt} (${rt} is on PATH)${NC}"
+            else
+                mkdir -p "${HOME}/.${rt}"
+            fi
+        fi
+    done
+    if { command -v agy &> /dev/null || command -v antigravity &> /dev/null; } && [ ! -d "${HOME}/.gemini" ]; then
+        if [ "$DRY_RUN" = true ]; then
+            echo -e "${BLUE}  Would create ${HOME}/.gemini (agy is on PATH)${NC}"
+        else
+            mkdir -p "${HOME}/.gemini"
+        fi
+    fi
+}
+
+_write_git_hook() {
+    local name=$1 hook="${SCRIPT_DIR}/.git/hooks/$1" body
+    body=$(cat)
+    if [ -e "$hook" ] && ! grep -q "Written by vexjoy-agent" "$hook" 2>/dev/null; then
+        echo -e "${YELLOW}  Existing ${name} hook found; not overwriting: ${hook}${NC}"
+        return 0
+    fi
+    # A failed write warns and lets the install go on: the hooks run before apply.
+    if mkdir -p "${SCRIPT_DIR}/.git/hooks" && printf '%s\n' "$body" > "$hook" && chmod +x "$hook"; then
+        echo -e "${GREEN}  ✓ Installed ${name} hook${NC}"
+    else
+        echo -e "${YELLOW}  ⚠ Could not write ${name} hook: ${hook}${NC}"
+    fi
+}
+
+# post-merge: engine sync after git pull. pre-commit: private-leak gate (spec 7.5).
+install_git_hooks() {
+    [ "${VEXJOY_NO_GIT_HOOKS:-0}" = "1" ] && return 0
+    if [ -f "${SCRIPT_DIR}/.git" ]; then
+        echo -e "${YELLOW}  Git hooks skipped: ${SCRIPT_DIR}/.git is a file (worktree or submodule); ./install.sh in the main checkout writes them${NC}"
+        return 0
+    fi
+    [ -d "${SCRIPT_DIR}/.git" ] || return 0
+    _write_git_hook post-merge << 'HOOK'
+#!/usr/bin/env bash
+# Written by vexjoy-agent install.sh: syncs runtime installs after git pull.
+# Never links anything itself (installer spec 5.1). Always exits 0.
+REPO_DIR="$(cd "$(dirname "$0")/../.." && pwd)"
+command -v python3 >/dev/null 2>&1 || exit 0
+PYTHONPATH="$REPO_DIR/scripts${PYTHONPATH:+:$PYTHONPATH}" \
+  python3 -m vexinstall sync --target all --source-root "$REPO_DIR" </dev/null || true
+exit 0
+HOOK
+    _write_git_hook pre-commit << 'HOOK'
+#!/usr/bin/env bash
+# Written by vexjoy-agent install.sh: private-leak gate (installer spec 7.5).
+# Blocks a commit when a tracked file carries a private overlay skill name or
+# overlay file content. Reports paths and matched names only, never contents.
+# Exit 2 from the checker (bad overlays.json) warns and allows the commit.
+REPO_DIR="$(git rev-parse --show-toplevel 2>/dev/null)" || exit 0
+[ -f "$REPO_DIR/scripts/check-private-leak.py" ] || exit 0
+command -v python3 >/dev/null 2>&1 || exit 0
+python3 "$REPO_DIR/scripts/check-private-leak.py" --repo "$REPO_DIR"
+rc=$?
+if [ "$rc" -eq 1 ]; then
+  echo "[vexjoy-agent] commit blocked: private overlay data in tracked files (see LEAK lines above)" >&2
+  exit 1
+fi
+[ "$rc" -eq 0 ] || echo "[vexjoy-agent] check-private-leak exited $rc; commit allowed" >&2
+exit 0
+HOOK
+}
+
+# main_hooks_dir: the dir install.sh writes hooks to, <main checkout>/.git/hooks. From a linked worktree
+# it asks git for the main .git, since git runs the main checkout's hooks for merges in every worktree.
+# Prints nothing without .git or for a submodule (install.sh never writes hooks there). Fails when
+# .git is a file git cannot read.
+main_hooks_dir() {
+    local common
+    if [ -d "${SCRIPT_DIR}/.git" ]; then
+        printf '%s\n' "${SCRIPT_DIR}/.git/hooks"
+    elif [ -f "${SCRIPT_DIR}/.git" ]; then
+        common=$(git -C "$SCRIPT_DIR" rev-parse --git-common-dir 2> /dev/null) && [ -n "$common" ] \
+            && common=$(cd "$SCRIPT_DIR" && cd "$common" && pwd) || return 1
+        [ "${common##*/}" != ".git" ] || printf '%s\n' "${common}/hooks"
+    fi
+}
+
+# Uninstall without --target (or with --target claude) renames our post-merge to
+# post-merge.vexjoy-removed.<UTC time>, which git never runs. The engine records uninstalled targets and
+# `sync` skips them, but a pre-engine hook's `ln -s` loop, or an engine from a clone older than that
+# record, would re-install everything on the next pull. Another --target uninstall keeps it: its sync
+# skips the uninstalled target and keeps claude and the rest current.
+# The pre-commit private-leak gate stays: it installs nothing.
+# When a marked post-merge may still run, GIT_HOOK_PROBLEM says why, and the uninstall exits 1.
+uninstall_git_hooks() {
+    local dir name hook ts
+    if [ "${VEXJOY_NO_GIT_HOOKS:-0}" = "1" ]; then
+        echo -e "${YELLOW}  Git hooks skipped (VEXJOY_NO_GIT_HOOKS=1)${NC}"
+        return 0
+    fi
+    if ! dir=$(main_hooks_dir); then
+        GIT_HOOK_PROBLEM="Git hooks not checked: git cannot read ${SCRIPT_DIR}/.git; run ./install.sh --uninstall in the main checkout too"
+        echo -e "${YELLOW}  ⚠ ${GIT_HOOK_PROBLEM}${NC}"
+        return 0
+    fi
+    ts=$(date -u +%Y%m%dT%H%M%SZ)
+    [ -n "$dir" ] || return 0
+    for name in post-merge pre-commit; do
+        hook="${dir}/${name}"
+        [ -e "$hook" ] || continue
+        if ! grep -q "Written by vexjoy-agent" "$hook" 2> /dev/null; then
+            echo -e "  Keeping ${name} hook (not written by vexjoy-agent): ${hook}"
+        elif [ "$name" = pre-commit ]; then
+            echo -e "  Keeping pre-commit hook (the private-leak gate installs nothing; delete it to stop the check): ${hook}"
+        elif [ "$TARGET" != all ] && [ "$TARGET" != claude ]; then
+            echo -e "${YELLOW}  Keeping post-merge hook (a --target uninstall keeps it; its sync skips the uninstalled target and updates the rest): ${hook}${NC}"
+        elif [ "$DRY_RUN" = true ]; then
+            echo -e "${BLUE}  Would rename post-merge hook to ${hook}.vexjoy-removed.${ts}${NC}"
+        elif mv -f "$hook" "${hook}.vexjoy-removed.${ts}"; then
+            echo -e "${GREEN}  ✓ Renamed post-merge hook to ${hook}.vexjoy-removed.${ts}; git does not run it${NC}"
+        else
+            GIT_HOOK_PROBLEM="${hook} is still in place: delete it, or the next pull re-installs everything"
+            echo -e "${YELLOW}  ⚠ Could not rename post-merge hook: ${hook}${NC}"
+        fi
+    done
+}
+
+# pip_requirements PYTHON: install requirements.txt into PYTHON; --break-system-packages when pip knows
+# it, then --user as a fallback. Prints the manual command on failure.
+pip_requirements() {
+    local -a pip=("$1" -m pip) args=(install -r "${SCRIPT_DIR}/requirements.txt" --quiet)
+    if "${pip[@]}" install --help 2>/dev/null | grep -q -- "--break-system-packages"; then
+        args+=(--break-system-packages)
+    fi
+    if "${pip[@]}" "${args[@]}" 2>/dev/null || "${pip[@]}" "${args[@]}" --user 2>/dev/null; then
+        echo -e "${GREEN}  ✓ Python dependencies installed for $1${NC}"
+    else
+        echo -e "${YELLOW}  ⚠ Could not install Python dependencies for $1. Hooks and scripts need them. Run: ${pip[*]} ${args[*]}${NC}"
+    fi
+}
+
+# Hooks run under the interpreter linked at ~/.claude/vexjoy/bin/python3 (chosen by the engine during
+# apply), which can differ from PYTHON_CMD. Install deps there too, so call this after apply.
+install_deps() {
+    [ "${VEXJOY_NO_DEPS:-0}" = "1" ] && return 0
+    pip_requirements "$PYTHON_CMD"
+    local linked="${HOME}/.claude/vexjoy/bin/python3" real_linked real_cmd
+    if [ -x "$linked" ]; then
+        real_linked=$("$linked" -I -c 'import os, sys; print(os.path.realpath(sys.executable))' 2>/dev/null) || real_linked=""
+        real_cmd=$("$PYTHON_CMD" -I -c 'import os, sys; print(os.path.realpath(sys.executable))' 2>/dev/null) || real_cmd=""
+        if [ -z "$real_linked" ]; then
+            echo -e "${YELLOW}  ⚠ Hook python ${linked} does not run; rerun ./install.sh after fixing it${NC}"
+        elif [ "$real_linked" != "$real_cmd" ]; then
+            pip_requirements "$linked"
+        fi
+    fi
+    # Vercel Jev gateway: the repo plus every real (copied) scripts dir. A sync that replaces a
+    # copy moves its node_modules into the new one (docs/installer-layout.md, npm dependencies).
+    command -v npm &> /dev/null || { echo -e "${YELLOW}  ⚠ npm unavailable; /d falls back to /do${NC}"; return 0; }
+    local dir real seen=" "
+    for dir in "${SCRIPT_DIR}/scripts" "${CLAUDE_DIR}/scripts" "${HOME}/.codex/scripts" "${HOME}/.factory/scripts" \
+        "${HOME}/.hermes/scripts" "${HOME}/.reasonix/scripts"; do
+        dir="${dir}/jev_gateway"
+        [ -f "$dir/package-lock.json" ] || continue
+        real=$(cd "$dir" && pwd -P)
+        [[ $seen == *" $real "* ]] && continue
+        seen="${seen}${real} "
+        (cd "$dir" && npm ci --ignore-scripts --no-audit --no-fund --silent) \
+            && echo -e "${GREEN}  ✓ Gateway dependencies in ${dir}${NC}" \
+            || echo -e "${YELLOW}  ⚠ Gateway dependencies failed in ${dir}; /d falls back to /do${NC}"
+    done
+}
+
+# ADR-122: runtime state readable by the owner only.
+harden_permissions() {
+    chmod 700 "${CLAUDE_DIR}" "${CLAUDE_DIR}/learning" 2>/dev/null || true
+    chmod 600 "${CLAUDE_DIR}/settings.json" "${CLAUDE_DIR}/history.jsonl" 2>/dev/null || true
+    chmod 600 "${HOME}/.factory/settings.json" "${HOME}/.reasonix/settings.json" "${HOME}/.gemini/config/hooks.json" 2>/dev/null || true
+}
+
+# no-agent-summary: Bun preload that suppresses Claude Code's agent_summary side-query.
+# Deploys the JS file to a space-free path (BUN_OPTIONS splits on whitespace) and keeps
+# one managed block in ~/.bashrc exporting BUN_OPTIONS.
+# MIT: Flamerix AI (upstream), declanbx (fork). Vendored in hooks/no-agent-summary/.
+NAS_DEST="$HOME/.local/share/no-agent-summary"
+NAS_HOOK="$NAS_DEST/no-agent-summary.js"
+NAS_BEGIN="# >>> no-agent-summary >>>"
+NAS_END="# <<< no-agent-summary <<<"
+NAS_RC="$HOME/.bashrc"
+
+nas_block() {
+    cat <<NASEOF
+${NAS_BEGIN}
+# Bun preload that stops Claude Code's agent_summary side-query (status-line labels
+# for background agents, each a full-transcript model call every 30 s).
+# Installed from: ${SCRIPT_DIR}
+case " \${BUN_OPTIONS-} " in
+  *" --preload=${NAS_HOOK} "*) ;;
+  *) export BUN_OPTIONS="\${BUN_OPTIONS:+\$BUN_OPTIONS }--preload=${NAS_HOOK}" ;;
+esac
+${NAS_END}
+NASEOF
+}
+
+# nas_shellrc set|remove: scripts/vexinstall/shellrc.py edits only the block, in place, writes
+# nothing when it is current, keeps a symlinked rc a link, backs the old file up first, and leaves
+# the file alone when a marker line is missing.
+nas_shellrc() {
+    PYTHONPATH="${SCRIPT_DIR}/scripts${PYTHONPATH:+:$PYTHONPATH}" "$PYTHON_CMD" -m vexinstall.shellrc "$1" \
+        "$NAS_RC" "$NAS_BEGIN" "$NAS_END" --backup-dir "${STATE_DIR}/backups" --label no-agent-summary
+}
+
+install_no_agent_summary() {
+    local src="$SCRIPT_DIR/hooks/no-agent-summary/no-agent-summary.js"
+    if [ ! -f "$src" ]; then
+        echo -e "${YELLOW}  no-agent-summary: source not found at ${src}; skipping${NC}"
+        return 0
+    fi
+    mkdir -p "$NAS_DEST"
+    cp "$src" "$NAS_HOOK"
+    cp "$SCRIPT_DIR/hooks/no-agent-summary/status.sh" "$NAS_DEST/status.sh"
+    echo -e "${GREEN}  ✓ no-agent-summary: deployed ${NAS_HOOK}${NC}"
+    nas_block | nas_shellrc set || echo -e "${YELLOW}  ⚠ no-agent-summary: ${NAS_RC} not updated (see above)${NC}"
+}
+
+uninstall_no_agent_summary() {
+    nas_shellrc remove || echo -e "${YELLOW}  ⚠ no-agent-summary: ${NAS_RC} not updated (see above)${NC}"
+    # Remove the deployed JS file and status script.
+    rm -f "$NAS_HOOK" "$NAS_DEST/status.sh"
+    echo -e "${GREEN}  ✓ no-agent-summary: removed ${NAS_HOOK}${NC}"
+}
+
+# Git hooks first, so neither a missing python nor a failed engine run leaves the wrong post-merge:
+# apply replaces a pre-engine one, which links repo items into runtime roots on every pull, and
+# uninstall renames ours, since its sync would re-install everything on the next pull.
+GIT_HOOK_PROBLEM=""
+if [ "$ACTION" = "apply" ] && [ "$DRY_RUN" = false ] && [ "$CONFIGURE_ONLY" = false ]; then
+    install_git_hooks
+elif [ "$ACTION" = "uninstall" ]; then
+    uninstall_git_hooks
+fi
+
+check_python
+
+if [ "$ACTION" = "migrate-overlays" ]; then
+    args=(migrate-overlays)
+    [ "$DRY_RUN" = true ] && args+=(--dry-run)
+    vexinstall "${args[@]}"
+    exit $?
+fi
+
+if [ "$ACTION" = "uninstall" ]; then
+    args=(uninstall --target "$TARGET" --run-id "$RUN_ID")
+    [ "$DRY_RUN" = true ] && args+=(--dry-run)
+    vexinstall "${args[@]}"
+    [ "$DRY_RUN" = true ] || uninstall_no_agent_summary
+    if [ -n "$GIT_HOOK_PROBLEM" ]; then
+        echo -e "${RED}⚠ ${GIT_HOOK_PROBLEM}${NC}"
+        exit 1
+    fi
     exit 0
 fi
 
-# Interactive mode selection
-if [ -z "$MODE" ]; then
-    echo "How would you like to install?"
-    echo ""
-    echo "  1) Symlink (recommended for development)"
-    echo "     - Changes to this repo appear immediately in Claude Code"
-    echo "     - Easy to update with git pull"
-    echo ""
-    echo "  2) Copy (recommended for stability)"
-    echo "     - Independent copy in ~/.claude"
-    echo "     - Re-run install.sh to update"
-    echo ""
-    read -p "Choose [1/2]: " choice
-
-    case $choice in
-        1) MODE="symlink" ;;
-        2) MODE="copy" ;;
-        *)
-            echo -e "${RED}Invalid choice${NC}"
-            exit 1
-            ;;
-    esac
+if [ "$ACTION" = "rollback" ]; then
+    rollback
+    exit $?
 fi
-
-# Verify requirements
-check_python
-detect_pip_command
-
-# Create ~/.claude if needed
-echo ""
-echo -e "${YELLOW}Setting up ~/.claude directory...${NC}"
-if [ "$DRY_RUN" = true ]; then
-    echo -e "${BLUE}  Would create: ${CLAUDE_DIR}${NC}"
-else
-    mkdir -p "${CLAUDE_DIR}"
-fi
-echo -e "${GREEN}✓ ${CLAUDE_DIR} ready${NC}"
-
-echo ""
-echo -e "${YELLOW}Setting up ~/.codex skills directory...${NC}"
-if [ "$DRY_RUN" = true ]; then
-    echo -e "${BLUE}  Would create: ${CODEX_SKILLS_DIR}${NC}"
-else
-    mkdir -p "${CODEX_SKILLS_DIR}"
-fi
-echo -e "${GREEN}✓ ${CODEX_SKILLS_DIR} ready${NC}"
-
-echo ""
-echo -e "${YELLOW}Setting up ~/.codex agents directory...${NC}"
-if [ "$DRY_RUN" = true ]; then
-    echo -e "${BLUE}  Would create: ${CODEX_AGENTS_DIR}${NC}"
-else
-    mkdir -p "${CODEX_AGENTS_DIR}"
-fi
-echo -e "${GREEN}✓ ${CODEX_AGENTS_DIR} ready${NC}"
-
-
-echo ""
-echo -e "${YELLOW}Setting up ~/.factory directory...${NC}"
-if [ "$DRY_RUN" = true ]; then
-    echo -e "${BLUE}  Would create: ${FACTORY_DIR}${NC}"
-else
-    mkdir -p "${FACTORY_DIR}"
-fi
-echo -e "${GREEN}✓ ${FACTORY_DIR} ready${NC}"
-
-echo ""
-echo -e "${YELLOW}Setting up ~/.hermes/skills directory...${NC}"
-if [ "$DRY_RUN" = true ]; then
-    echo -e "${BLUE}  Would create: ${HERMES_SKILLS_DIR}${NC}"
-else
-    mkdir -p "${HERMES_SKILLS_DIR}"
-fi
-echo -e "${GREEN}✓ ${HERMES_SKILLS_DIR} ready${NC}"
-
-echo ""
-echo -e "${YELLOW}Setting up ~/.reasonix/skills directory...${NC}"
-if [ "$DRY_RUN" = true ]; then
-    echo -e "${BLUE}  Would create: ${REASONIX_SKILLS_DIR}${NC}"
-else
-    mkdir -p "${REASONIX_SKILLS_DIR}"
-fi
-echo -e "${GREEN}✓ ${REASONIX_SKILLS_DIR} ready${NC}"
-
-# detect_conflicts — scans all runtime dirs × all component types.
-# Populates parallel arrays conflict_keys[] and conflict_vals[] (bash 3.2 compatible).
-conflict_keys=()
-conflict_vals=()
-
-_conflict_set() {
-    conflict_keys+=("$1")
-    conflict_vals+=("$2")
-}
-
-_conflict_get() {
-    local _k _i
-    _k="$1"
-    for _i in "${!conflict_keys[@]}"; do
-        [ "${conflict_keys[$_i]}" = "$_k" ] && { printf '%s' "${conflict_vals[$_i]}"; return 0; }
-    done
-    return 1
-}
-
-_conflict_has() {
-    _conflict_get "$1" > /dev/null 2>&1
-}
-
-detect_conflicts() {
-    local runtime_dir component target src count items item name
-    for runtime_dir in "$CLAUDE_DIR" "$CODEX_DIR" \
-                       "$FACTORY_DIR" "$HERMES_DIR" "$REASONIX_DIR"; do
-        [ -d "$runtime_dir" ] || continue
-        for component in agents skills hooks commands scripts; do
-            target="$runtime_dir/$component"
-            src="$SCRIPT_DIR/$component"
-            [ -d "$src" ] || continue
-            [ -d "$target" ] || [ -L "$target" ] || continue
-            if [ -L "$target" ]; then
-                if _symlink_points_to "$target" "$src"; then
-                    # Whole-dir symlink pointing at our source (e.g. a prior
-                    # --force install). Per-item mode will convert it to a real
-                    # dir so external siblings can coexist; surface it here so
-                    # the conversion is not silent.
-                    _conflict_set "$runtime_dir/$component" "whole-dir symlink (will convert to per-item)"
-                else
-                    # Whole-dir symlink pointing elsewhere (external content lives there).
-                    _conflict_set "$runtime_dir/$component" "symlink→$(readlink "$target")"
-                fi
-                continue
-            fi
-            # Count items (files and dirs) in target not present in src
-            count=0; items=""
-            for item in "$target"/*; do
-                [ -e "$item" ] || [ -L "$item" ] || continue
-                name=$(basename "$item")
-                [ -e "$src/$name" ] || { count=$((count+1)); items="$items $name"; }
-            done
-            if [ "$count" -gt 0 ]; then
-                _conflict_set "$runtime_dir/$component" "$count external:$items"
-            fi
-        done
-    done
-    return 0
-}
-
-print_conflict_table() {
-    local _i
-    echo ""
-    echo "Found existing content in the following locations:"
-    for _i in "${!conflict_keys[@]}"; do
-        echo "  ${conflict_keys[$_i]}  (${conflict_vals[$_i]})"
-    done
-    echo ""
-    echo "Choose install mode for all conflicting locations:"
-    echo "  [1] per-item  — symlink each vexjoy item individually; preserve external content (recommended)"
-    echo "  [2] replace   — rm -rf and replace with whole-dir symlink (destroys external content)"
-    echo "  [3] skip      — leave conflicting locations unchanged; install only conflict-free locations"
-    echo ""
-}
-
-# Install components
-echo ""
-echo -e "${YELLOW}Installing components (mode: ${MODE})...${NC}"
-
-install_component() {
-    local name=$1
-    local base_dir=${2:-$CLAUDE_DIR}
-    local target_name=${3:-$name}
-    local source="${SCRIPT_DIR}/${name}"
-    local target="${base_dir}/${target_name}"
-
-    local component_key="$base_dir/$target_name"
-
-    # Profile filtering active for this component? Whole-dir symlinks cannot
-    # exclude items, so a filtered component is always installed per-item.
-    local filtered=false
-    case $name in
-        skills|agents|hooks) _category_filtered "$name" && filtered=true ;;
-    esac
-
-    # Skip mode: leave conflicting locations untouched; install conflict-free ones normally.
-    if [ "$CONFLICT_MODE" = "skip" ] && [ "$MODE" = "symlink" ] && _conflict_has "$component_key"; then
-        echo -e "${YELLOW}  Skipping ${target} (kept existing — skip mode)${NC}"
-        return
-    fi
-
-    # Per-item mode: symlink each item (file or dir) individually; preserve external content.
-    if [ "$MODE" = "symlink" ] && \
-       { [ "$filtered" = true ] || { [ "$CONFLICT_MODE" = "per-item" ] && \
-       { _conflict_has "$component_key" || [ -d "$target" ] || [ -L "$target" ]; }; }; }; then
-        if [ "$DRY_RUN" = true ]; then
-            if [ -L "$target" ] && _symlink_points_to "$target" "$source"; then
-                echo -e "${BLUE}  Would convert whole-dir symlink to per-item dir: ${target}${NC}"
-            else
-                echo -e "${BLUE}  Would per-item symlink into: ${target}${NC}"
-            fi
-        else
-            # A prior --force install may have left a whole-dir symlink into the
-            # repo. Convert only toolkit-owned symlinks; external symlinks are
-            # preserved and receive add-only per-item links through the symlink.
-            if [ -L "$target" ] && _symlink_points_to "$target" "$source"; then
-                echo "  Converting whole-dir symlink to per-item dir: $target"
-                rm "$target"
-            fi
-            mkdir -p "$target"
-            local item item_name
-            for item in "$source"/*; do
-                [ -e "$item" ] || [ -L "$item" ] || continue
-                item_name=$(basename "$item")
-                if [ "$filtered" = true ] && _profile_disabled "$name" "$item_name"; then
-                    echo -e "${YELLOW}  Skipping ${item_name} (disabled by profile)${NC}"
-                    continue
-                fi
-                if [ -e "$target/$item_name" ]; then
-                    echo -e "${YELLOW}  WARNING: $target/$item_name already exists — skipping (kept existing)${NC}"
-                    continue
-                fi
-                ln -s "$item" "$target/$item_name"
-                echo -e "${GREEN}  ✓ Per-item linked ${item_name}${NC}"
-            done
-        fi
-        return
-    fi
-
-    # Check if target exists
-    if [ -e "$target" ] || [ -L "$target" ]; then
-        if [ -L "$target" ]; then
-            if [ "$DRY_RUN" = true ]; then
-                echo -e "${BLUE}  Would remove existing symlink: $target${NC}"
-            else
-                echo "  Removing existing symlink: $target"
-                rm "$target"
-            fi
-        else
-            echo -e "${YELLOW}  Warning: $target exists and is not a symlink${NC}"
-            if [ "$DRY_RUN" = true ]; then
-                echo -e "${BLUE}  Would replace existing directory${NC}"
-            elif [ "$FORCE" = true ]; then
-                echo "  Replacing existing directory (--force): $target"
-                rm -rf "$target"
-            else
-                read -p "  Overwrite? [y/N]: " confirm
-                if [ "$confirm" != "y" ] && [ "$confirm" != "Y" ]; then
-                    echo "  Skipping $name"
-                    return
-                fi
-                rm -rf "$target"
-            fi
-        fi
-    fi
-
-    if [ "$MODE" = "symlink" ]; then
-        if [ "$DRY_RUN" = true ]; then
-            echo -e "${BLUE}  Would symlink: ${source} -> ${target}${NC}"
-        else
-            ln -s "$source" "$target"
-            echo -e "${GREEN}  ✓ Symlinked ${name}${NC}"
-        fi
-    else
-        if [ "$DRY_RUN" = true ]; then
-            echo -e "${BLUE}  Would copy: ${source} -> ${target}${NC}"
-        else
-            cp -r "$source" "$target"
-            echo -e "${GREEN}  ✓ Copied ${name}${NC}"
-            # Copy mode: prune profile-disabled items from the fresh copy.
-            if [ "$filtered" = true ]; then
-                local copied copied_name
-                for copied in "$target"/*; do
-                    [ -e "$copied" ] || continue
-                    copied_name=$(basename "$copied")
-                    if _profile_disabled "$name" "$copied_name"; then
-                        rm -rf "$copied"
-                        echo -e "${YELLOW}  Removed ${copied_name} (disabled by profile)${NC}"
-                    fi
-                done
-            fi
-        fi
-    fi
-}
-
-# link_skills_nested SOURCE TARGET — build a nested skills tree (symlink mode).
-#
-# The repo skills/ tree is category/skill (e.g. skills/business/csuite), plus a
-# few top-level entries that are skills themselves (a dir holding SKILL.md) or
-# loose files (INDEX.json). To let users drop their own skills alongside ours at
-# any level, we mirror it the same way ~/.codex does: each category
-# is a REAL directory containing per-skill symlinks, while top-level skill dirs
-# and files are symlinked directly. This is add-only — existing external entries
-# are preserved, never overwritten.
-link_skills_nested() {
-    local source=$1
-    local target=$2
-    local entry entry_name child child_name
-
-    if [ "$DRY_RUN" = true ]; then
-        if [ -L "$target" ]; then
-            echo -e "${BLUE}  Would convert whole-dir symlink to nested skills dir: ${target}${NC}"
-        else
-            echo -e "${BLUE}  Would nest per-skill symlinks into: ${target}${NC}"
-        fi
-        return
-    fi
-
-    # A prior install may have left ~/.../skills as a whole-dir symlink into the
-    # repo; replace only that toolkit-owned symlink with a real dir so per-skill
-    # links can live inside. External symlinks are preserved and populated add-only.
-    if [ -L "$target" ] && _symlink_points_to "$target" "$source"; then
-        echo "  Converting whole-dir symlink to nested skills dir: $target"
-        rm "$target"
-    fi
-    mkdir -p "$target"
-
-    for entry in "$source"/*; do
-        [ -e "$entry" ] || [ -L "$entry" ] || continue
-        entry_name=$(basename "$entry")
-
-        # Top-level file (e.g. INDEX.json) or a top-level skill dir (has SKILL.md):
-        # link the whole thing at the top level.
-        if [ ! -d "$entry" ] || [ -f "$entry/SKILL.md" ]; then
-            if [ -d "$entry" ] && _profile_disabled skills "$entry_name"; then
-                echo -e "${YELLOW}  Skipping ${entry_name} (disabled by profile)${NC}"
-                continue
-            fi
-            if [ -e "$target/$entry_name" ] || [ -L "$target/$entry_name" ]; then
-                continue  # external/existing entry; keep it
-            fi
-            ln -s "$entry" "$target/$entry_name"
-            echo -e "${GREEN}  ✓ Linked ${entry_name}${NC}"
-            continue
-        fi
-
-        # Category / support dir (no SKILL.md at this level): make a real dir and
-        # link each child individually so external skills can coexist.
-        # If a prior install left this category as a whole-dir symlink into the
-        # repo, convert it. Preserve category symlinks pointing elsewhere.
-        if [ -L "$target/$entry_name" ] && _symlink_points_to "$target/$entry_name" "$entry"; then
-            rm "$target/$entry_name"
-        fi
-        mkdir -p "$target/$entry_name"
-        for child in "$entry"/*; do
-            [ -e "$child" ] || [ -L "$child" ] || continue
-            child_name=$(basename "$child")
-            if [ -d "$child" ] && _profile_disabled skills "$child_name"; then
-                echo -e "${YELLOW}  Skipping ${entry_name}/${child_name} (disabled by profile)${NC}"
-                continue
-            fi
-            if [ -e "$target/$entry_name/$child_name" ] || [ -L "$target/$entry_name/$child_name" ]; then
-                continue  # external/existing entry; keep it
-            fi
-            ln -s "$child" "$target/$entry_name/$child_name"
-        done
-        echo -e "${GREEN}  ✓ Nested ${entry_name}/${NC}"
-    done
-}
-
-sync_mirror_entry() {
-    local source=$1
-    local target=$2
-    local label=${3:-Mirror}
-    local name
-    name=$(basename "$source")
-
-    # Per-item mode: add-only symlink for each item (file or dir); skip existing entries
-    if [ "$CONFLICT_MODE" = "per-item" ] && [ "$MODE" = "symlink" ] && [ -d "$source" ]; then
-        if [ "$DRY_RUN" = true ]; then
-            if [ -L "$target" ] && _symlink_points_to "$target" "$source"; then
-                echo -e "${BLUE}  Would convert whole-dir symlink to per-item ${label} dir: ${target}${NC}"
-            else
-                echo -e "${BLUE}  Would per-item sync ${label} entry: ${source} -> ${target}/${NC}"
-            fi
-        else
-            # Convert only toolkit-owned whole-dir symlinks. External symlinks
-            # remain the user's chosen active path and get add-only entries.
-            if [ -L "$target" ] && _symlink_points_to "$target" "$source"; then
-                echo -e "${GREEN}  ✓ ${label} converting whole-dir symlink to per-item dir${NC}"
-                rm "$target"
-            fi
-            mkdir -p "$target"
-            local item item_name
-            for item in "$source"/*; do
-                [ -e "$item" ] || [ -L "$item" ] || continue
-                item_name=$(basename "$item")
-                if [ -e "$target/$item_name" ]; then
-                    continue  # already present; skip silently
-                fi
-                ln -s "$item" "$target/$item_name"
-                echo -e "${GREEN}  ✓ ${label} per-item linked ${item_name}${NC}"
-            done
-        fi
-        return
-    fi
-
-    if [ -e "$target" ] || [ -L "$target" ]; then
-        if [ "$DRY_RUN" = true ]; then
-            echo -e "${BLUE}  Would replace ${label} entry: ${target}${NC}"
-        else
-            rm -rf "$target"
-        fi
-    fi
-
-    if [ "$MODE" = "symlink" ]; then
-        if [ "$DRY_RUN" = true ]; then
-            echo -e "${BLUE}  Would symlink ${label} entry: ${source} -> ${target}${NC}"
-        else
-            ln -s "$source" "$target"
-            echo -e "${GREEN}  ✓ ${label} symlinked ${name}${NC}"
-        fi
-    else
-        if [ "$DRY_RUN" = true ]; then
-            echo -e "${BLUE}  Would copy ${label} entry: ${source} -> ${target}${NC}"
-        else
-            if [ -d "$source" ]; then
-                cp -r "$source" "$target"
-            else
-                cp "$source" "$target"
-            fi
-            echo -e "${GREEN}  ✓ ${label} copied ${name}${NC}"
-        fi
-    fi
-}
-
-# Backward-compatible wrapper for existing call sites
-sync_codex_entry() {
-    sync_mirror_entry "$1" "$2" "Codex"
-}
-
-# install_git_hook — writes .git/hooks/post-merge to auto-sync new items after git pull.
-# Add-only, never removes, never overwrites existing entries.
-install_git_hook() {
-    local hook=".git/hooks/post-merge"
-    [ -d ".git" ] || return 0  # no-op outside a git repo clone
-    # Never clobber a pre-existing hook we did not write.
-    if [ -e "$hook" ] && ! grep -q "Written by vexjoy-agent" "$hook" 2>/dev/null; then
-        echo -e "${YELLOW}  Existing post-merge hook found — not overwriting: ${hook}${NC}"
-        return 0
-    fi
-    if [ "$DRY_RUN" = true ]; then
-        echo -e "${BLUE}  Would install post-merge hook: ${hook}${NC}"
-        return 0
-    fi
-    mkdir -p ".git/hooks"
-    cat > "$hook" << 'HOOK'
-#!/usr/bin/env bash
-# Written by vexjoy-agent install.sh — auto-syncs new items after git pull.
-# Add-only: skips items already present; never removes or overwrites.
-REPO_DIR="$(cd "$(dirname "$0")/../.." && pwd)"
-for runtime_dir in     "$HOME/.claude" "$HOME/.codex"     "$HOME/.factory" "$HOME/.hermes" "$HOME/.reasonix"; do
-  [ -d "$runtime_dir" ] || continue
-  for component in agents skills hooks commands scripts; do
-    src="$REPO_DIR/$component"
-    dst="$runtime_dir/$component"
-    [ -d "$src" ] || continue
-    [ -d "$dst" ] || continue  # only sync if component dir already installed
-    for item in "$src"/*; do
-      [ -e "$item" ] || [ -L "$item" ] || continue
-      name=$(basename "$item")
-      [ -e "$dst/$name" ] && continue  # already present; skip
-      ln -s "$item" "$dst/$name"
-      echo "[vexjoy-agent] auto-synced: $dst/$name"
-    done
-  done
-done
-
-# Deploy-staleness notice (warn-only): the sync above is add-only, so an EDITED
-# hook/script stays stale in ~/.claude until sync-to-user-claude.py runs. If this
-# merge touched hooks/ or scripts/, tell the user to redeploy. Guarded so it can
-# never fail the merge; the hook always exits 0.
-if git rev-parse --verify -q ORIG_HEAD >/dev/null 2>&1 && git rev-parse --verify -q HEAD >/dev/null 2>&1; then
-  changed="$(git diff-tree -r --name-only --no-commit-id ORIG_HEAD HEAD 2>/dev/null | grep -E '^(hooks|scripts)/' || true)"
-  if [ -n "$changed" ]; then
-    echo "[vexjoy-agent] hook/script changes merged — run:"
-    echo "  python3 ~/.claude/hooks/sync-to-user-claude.py"
-    echo "to deploy live (or restart the session)."
-  fi
-fi
-exit 0
-HOOK
-    chmod +x "$hook"
-    echo -e "${GREEN}  ✓ Installed post-merge hook: ${hook}${NC}"
-}
-
-# ---------------------------------------------------------------------------
-# Opt-in install profile (.local/profile.yaml) — credit: @thomasvan.
-# Absent profile = no filtering; install behaves exactly as without this block.
-# VEXJOY_INSTALL_PROFILE overrides the path (used by tests).
-# ---------------------------------------------------------------------------
-PROFILE_FILE="${VEXJOY_INSTALL_PROFILE:-${SCRIPT_DIR}/.local/profile.yaml}"
-DISABLED_SKILLS=""
-DISABLED_AGENTS=""
-DISABLED_HOOKS=""
 
 if [ "$CONFIGURE" = true ] || [ "$CONFIGURE_ONLY" = true ]; then
+    PROFILE_FILE="${VEXJOY_INSTALL_PROFILE:-${SCRIPT_DIR}/.local/profile.yaml}"
     if [ "$DRY_RUN" = true ]; then
-        echo -e "${BLUE}  Would run interactive profile picker (scripts/configure-profile.py)${NC}"
+        echo -e "${BLUE}Would run the profile picker (scripts/configure-profile.py)${NC}"
     else
-        $PYTHON_CMD "${SCRIPT_DIR}/scripts/configure-profile.py" --output "$PROFILE_FILE"
+        "$PYTHON_CMD" "${SCRIPT_DIR}/scripts/configure-profile.py" --output "$PROFILE_FILE"
     fi
     if [ "$CONFIGURE_ONLY" = true ]; then
         echo "Profile written. Run ./install.sh to apply it."
@@ -1399,996 +430,40 @@ if [ "$CONFIGURE" = true ] || [ "$CONFIGURE_ONLY" = true ]; then
     fi
 fi
 
-if [ -f "$PROFILE_FILE" ]; then
-    DISABLED_SKILLS=$($PYTHON_CMD "${SCRIPT_DIR}/scripts/load-profile.py" --list skills --profile "$PROFILE_FILE") || DISABLED_SKILLS=""
-    DISABLED_AGENTS=$($PYTHON_CMD "${SCRIPT_DIR}/scripts/load-profile.py" --list agents --profile "$PROFILE_FILE") || DISABLED_AGENTS=""
-    DISABLED_HOOKS=$($PYTHON_CMD "${SCRIPT_DIR}/scripts/load-profile.py" --list hooks --profile "$PROFILE_FILE") || DISABLED_HOOKS=""
-    _ns=$(printf '%s' "$DISABLED_SKILLS" | grep -c . || true)
-    _na=$(printf '%s' "$DISABLED_AGENTS" | grep -c . || true)
-    _nh=$(printf '%s' "$DISABLED_HOOKS" | grep -c . || true)
-    echo -e "${YELLOW}Install profile: ${PROFILE_FILE} (disabled: ${_ns} skills, ${_na} agents, ${_nh} hooks)${NC}"
-fi
-
-# _profile_disabled CATEGORY NAME — 0 when NAME is disabled by the profile.
-# Agents match by stem (foo.md and foo/ both match "foo"); skills and hooks
-# match the basename as-is (skill dir name, hook filename like foo.py).
-_profile_disabled() {
-    local list name=$2
-    case $1 in
-        skills) list="$DISABLED_SKILLS" ;;
-        agents) list="$DISABLED_AGENTS"; name="${name%.md}" ;;
-        hooks)  list="$DISABLED_HOOKS" ;;
-        *) return 1 ;;
-    esac
-    [ -n "$list" ] || return 1
-    printf '%s\n' "$list" | grep -Fxq -- "$name"
-}
-
-# _category_filtered CATEGORY — 0 when the profile disables anything in CATEGORY.
-_category_filtered() {
-    case $1 in
-        skills) [ -n "$DISABLED_SKILLS" ] ;;
-        agents) [ -n "$DISABLED_AGENTS" ] ;;
-        hooks)  [ -n "$DISABLED_HOOKS" ] ;;
-        *) return 1 ;;
-    esac
-}
-
-# Scan for conflicts before first install_component call
-if [ "$MODE" = "symlink" ]; then
-    detect_conflicts
-    if [ ${#conflict_keys[@]} -gt 0 ]; then
-        if [ "$DRY_RUN" = true ]; then
-            print_conflict_table
-            _default_mode="${CONFLICT_MODE:-per-item}"
-            echo -e "${BLUE}  DRY RUN: Would prompt for conflict mode. Default would be: ${_default_mode}${NC}"
-            echo -e "${BLUE}  Would use mode: ${_default_mode}${NC}"
-            [ -z "$CONFLICT_MODE" ] && CONFLICT_MODE="per-item"
-        elif [ -z "$CONFLICT_MODE" ]; then
-            print_conflict_table
-            # `read` returns non-zero on EOF (e.g. stdin from /dev/null in CI or
-            # any non-interactive run). Guard it so that does not trip `set -e`;
-            # an empty answer falls through to the documented default below.
-            if ! read -r -p "Choice [1/2/3, default=1]: " _ans; then
-                _ans=""
-            fi
-            case "${_ans:-1}" in
-                1) CONFLICT_MODE="per-item" ;;
-                2) CONFLICT_MODE="replace"  ;;
-                3) CONFLICT_MODE="skip"     ;;
-                *) CONFLICT_MODE="per-item" ;;
-            esac
-            echo ""
-        fi
-    fi
-fi
-
-# Install main components
-for component in agents skills hooks commands scripts; do
-    if [ -d "${SCRIPT_DIR}/${component}" ]; then
-        # Skills get a nested layout (real category dirs + per-skill symlinks),
-        # matching ~/.codex, so users can drop their own skills
-        # into any category. Only in symlink mode, and not when explicitly
-        # replacing or skipping conflicting locations.
-        if [ "$component" = "skills" ] && [ "$MODE" = "symlink" ] && \
-           [ "$CONFLICT_MODE" != "replace" ] && [ "$CONFLICT_MODE" != "skip" ]; then
-            link_skills_nested "${SCRIPT_DIR}/skills" "${CLAUDE_DIR}/skills"
-        else
-            install_component "$component"
-        fi
-    fi
-done
-
-# Install private components (if they exist, gitignored)
-for private_dir in private-agents private-skills private-hooks; do
-    public_name="${private_dir#private-}"  # strips "private-" prefix
-    if [ -d "${SCRIPT_DIR}/${private_dir}" ]; then
-        echo ""
-        echo -e "${YELLOW}Installing private ${public_name}...${NC}"
-        # Copy/link private components into the same ~/.claude target
-        # Private overrides public when same name exists
-        if [ "$MODE" = "symlink" ]; then
-            for item in "${SCRIPT_DIR}/${private_dir}/"*; do
-                [ -e "$item" ] || continue
-                item_name=$(basename "$item")
-                target="${CLAUDE_DIR}/${public_name}/${item_name}"
-                if [ "$DRY_RUN" = true ]; then
-                    echo -e "${BLUE}  Would link private: ${item_name}${NC}"
-                else
-                    rm -rf "$target" 2>/dev/null
-                    ln -sf "$item" "$target"
-                    echo -e "${GREEN}  ✓ Linked private ${item_name}${NC}"
-                fi
-            done
-        else
-            for item in "${SCRIPT_DIR}/${private_dir}/"*; do
-                [ -e "$item" ] || continue
-                item_name=$(basename "$item")
-                target="${CLAUDE_DIR}/${public_name}/${item_name}"
-                if [ "$DRY_RUN" = true ]; then
-                    echo -e "${BLUE}  Would copy private: ${item_name}${NC}"
-                else
-                    rm -rf "$target" 2>/dev/null
-                    cp -r "$item" "$target"
-                    echo -e "${GREEN}  ✓ Copied private ${item_name}${NC}"
-                fi
-            done
-        fi
-    fi
-done
-
-# Install private-voices into Claude skills (goes through symlink into repo/skills/)
-if [ -d "${SCRIPT_DIR}/private-voices" ]; then
-    echo ""
-    echo -e "${YELLOW}Installing private voices (Claude)...${NC}"
-    for voice_dir in "${SCRIPT_DIR}/private-voices/"*; do
-        [ -d "$voice_dir" ] || continue
-        skill_src="${voice_dir}/skill"
-        [ -d "$skill_src" ] || continue
-        voice_name=$(basename "$voice_dir")
-        target="${CLAUDE_DIR}/skills/voice-${voice_name}"
-        if [ "$DRY_RUN" = true ]; then
-            echo -e "${BLUE}  Would link voice: voice-${voice_name}${NC}"
-        else
-            rm -rf "$target" 2>/dev/null
-            if [ "$MODE" = "symlink" ]; then
-                ln -sf "$skill_src" "$target"
-                echo -e "${GREEN}  ✓ Linked voice-${voice_name}${NC}"
-            else
-                cp -r "$skill_src" "$target"
-                echo -e "${GREEN}  ✓ Copied voice-${voice_name}${NC}"
-            fi
-        fi
-    done
-fi
-
-# Install git post-merge hook for automatic sync on git pull
-echo ""
-echo -e "${YELLOW}Installing post-merge git hook...${NC}"
-install_git_hook
-
-echo ""
-echo -e "${YELLOW}Syncing Codex skills mirror...${NC}"
-CODEX_ENTRY_COUNT=0
-for item in "${SCRIPT_DIR}/skills/"*; do
-    [ -e "$item" ] || continue
-    if [ -d "$item" ] && [ -f "$item/SKILL.md" ] && _profile_disabled skills "$(basename "$item")"; then
-        echo -e "${YELLOW}  Skipping $(basename "$item") (disabled by profile)${NC}"
-        continue
-    fi
-    target="${CODEX_SKILLS_DIR}/$(basename "$item")"
-    sync_codex_entry "$item" "$target"
-    CODEX_ENTRY_COUNT=$((CODEX_ENTRY_COUNT + 1))
-done
-
-if [ -d "${SCRIPT_DIR}/private-voices" ]; then
-    for voice_dir in "${SCRIPT_DIR}/private-voices/"*; do
-        [ -d "$voice_dir" ] || continue
-        skill_src="${voice_dir}/skill"
-        [ -d "$skill_src" ] || continue
-        voice_name=$(basename "$voice_dir")
-        target="${CODEX_SKILLS_DIR}/voice-${voice_name}"
-        sync_codex_entry "$skill_src" "$target"
-        CODEX_ENTRY_COUNT=$((CODEX_ENTRY_COUNT + 1))
-    done
-fi
-
-if [ -d "${SCRIPT_DIR}/private-skills" ]; then
-    for item in "${SCRIPT_DIR}/private-skills/"*; do
-        [ -e "$item" ] || continue
-        target="${CODEX_SKILLS_DIR}/$(basename "$item")"
-        sync_codex_entry "$item" "$target"
-        CODEX_ENTRY_COUNT=$((CODEX_ENTRY_COUNT + 1))
-    done
-fi
-
-echo ""
-echo -e "${YELLOW}Syncing Codex agents mirror...${NC}"
-CODEX_AGENT_COUNT=0
-for item in "${SCRIPT_DIR}/agents/"*; do
-    [ -e "$item" ] || continue
-    if _profile_disabled agents "$(basename "$item")"; then
-        echo -e "${YELLOW}  Skipping $(basename "$item") (disabled by profile)${NC}"
-        continue
-    fi
-    target="${CODEX_AGENTS_DIR}/$(basename "$item")"
-    sync_codex_entry "$item" "$target"
-    CODEX_AGENT_COUNT=$((CODEX_AGENT_COUNT + 1))
-done
-
-if [ -d "${SCRIPT_DIR}/private-agents" ]; then
-    for item in "${SCRIPT_DIR}/private-agents/"*; do
-        [ -e "$item" ] || continue
-        target="${CODEX_AGENTS_DIR}/$(basename "$item")"
-        sync_codex_entry "$item" "$target"
-        CODEX_AGENT_COUNT=$((CODEX_AGENT_COUNT + 1))
-    done
-fi
-
-# Sync Codex hooks mirror (ADR-182)
-echo ""
-echo -e "${YELLOW}Syncing Codex hooks mirror...${NC}"
-CODEX_HOOK_COUNT=0
-CODEX_HOOKS_ALLOWLIST="${SCRIPT_DIR}/scripts/codex-hooks-allowlist.txt"
-
-if [ -f "$CODEX_HOOKS_ALLOWLIST" ]; then
-    clean_codex_hooks_mirror_if_looped "$CODEX_HOOKS_DIR" "${SCRIPT_DIR}/hooks"
-
-    # Ensure hooks directory exists
+# First install with ~/private-skills or ~/pgh/private-skills present: write
+# overlays.json so private skills deploy from there, never from the repo.
+if [ ! -f "${STATE_DIR}/overlays.json" ] && { [ -d "${HOME}/private-skills" ] || [ -d "${HOME}/pgh/private-skills" ]; }; then
     if [ "$DRY_RUN" = true ]; then
-        echo -e "${BLUE}  Would create: ${CODEX_HOOKS_DIR}${NC}"
+        vexinstall migrate-overlays --dry-run
     else
-        mkdir -p "$CODEX_HOOKS_DIR"
-    fi
-
-    # Parse allowlist and mirror each allowlisted hook file.
-    # Format per line: EVENT:filename [matcher]
-    # Comments (#) and blank lines are ignored.
-    while IFS= read -r line || [ -n "$line" ]; do
-        # Strip leading/trailing whitespace for the blank check.
-        trimmed="${line#"${line%%[![:space:]]*}"}"
-        trimmed="${trimmed%"${trimmed##*[![:space:]]}"}"
-        [ -z "$trimmed" ] && continue
-        [ "${trimmed#\#}" != "$trimmed" ] && continue
-
-        # Extract filename: everything between the first colon and the first space (or EOL)
-        rest="${trimmed#*:}"
-        filename="${rest%% *}"
-
-        if _profile_disabled hooks "$filename"; then
-            echo -e "${YELLOW}  Skipping ${filename} (disabled by profile)${NC}"
-            continue
-        fi
-
-        source_file="${SCRIPT_DIR}/hooks/${filename}"
-        if [ ! -f "$source_file" ]; then
-            echo -e "${RED}  ✗ Allowlisted hook missing: ${filename}${NC}"
-            continue
-        fi
-
-        target_file="${CODEX_HOOKS_DIR}/${filename}"
-        sync_codex_entry "$source_file" "$target_file"
-        CODEX_HOOK_COUNT=$((CODEX_HOOK_COUNT + 1))
-    done < "$CODEX_HOOKS_ALLOWLIST"
-
-    # Also mirror the hooks/lib directory so intra-hook imports resolve
-    # (hook_utils, injection_patterns, stdin_timeout, usage_db, etc.).
-    if [ -d "${SCRIPT_DIR}/hooks/lib" ]; then
-        lib_target="${CODEX_HOOKS_DIR}/lib"
-        sync_codex_entry "${SCRIPT_DIR}/hooks/lib" "$lib_target"
-    fi
-
-    # Generate hooks.json via the dedicated script.
-    CODEX_HOOKS_JSON="${CODEX_DIR}/hooks.json"
-    if [ "$DRY_RUN" = true ]; then
-        echo -e "${BLUE}  Would generate: ${CODEX_HOOKS_JSON}${NC}"
-    else
-        # Profile filtering: generate from a filtered allowlist copy so
-        # hooks.json never references hooks we did not mirror.
-        EFFECTIVE_ALLOWLIST="$CODEX_HOOKS_ALLOWLIST"
-        if [ -n "$DISABLED_HOOKS" ]; then
-            EFFECTIVE_ALLOWLIST=$(mktemp)
-            printf '%s\n' "$DISABLED_HOOKS" | $PYTHON_CMD "${SCRIPT_DIR}/scripts/filter-codex-allowlist.py" \
-                --input "$CODEX_HOOKS_ALLOWLIST" --disabled /dev/stdin --output "$EFFECTIVE_ALLOWLIST"
-        fi
-        if $PYTHON_CMD "${SCRIPT_DIR}/scripts/generate-codex-hooks-json.py" \
-            --allowlist "$EFFECTIVE_ALLOWLIST" \
-            --output "$CODEX_HOOKS_JSON" \
-            --codex-hooks-dir "$CODEX_HOOKS_DIR" 2>&1; then
-            echo -e "${GREEN}  ✓ Generated ${CODEX_HOOKS_JSON}${NC}"
-        else
-            echo -e "${RED}  ✗ Failed to generate hooks.json${NC}"
-        fi
-        if [ "$EFFECTIVE_ALLOWLIST" != "$CODEX_HOOKS_ALLOWLIST" ]; then
-            rm -f "$EFFECTIVE_ALLOWLIST"
-        fi
-    fi
-
-    # Ensure hooks feature flag is enabled in ~/.codex/config.toml.
-    CODEX_CONFIG="${CODEX_DIR}/config.toml"
-    if [ "$DRY_RUN" = true ]; then
-        echo -e "${BLUE}  Would ensure ${CODEX_CONFIG} has [features] hooks = true${NC}"
-    else
-        codex_flag_action=$($PYTHON_CMD "${SCRIPT_DIR}/scripts/ensure-codex-feature-flag.py" \
-            --config "$CODEX_CONFIG" 2>&1)
-        codex_flag_status=$?
-        if [ "$codex_flag_status" -eq 0 ]; then
-            echo -e "${GREEN}  ✓ Codex config feature flag: ${codex_flag_action}${NC}"
-        else
-            echo "$codex_flag_action"
-            echo -e "${YELLOW}  ⚠ Could not update ${CODEX_CONFIG} (see error above). Codex hooks may not activate.${NC}"
-        fi
-    fi
-
-    # Warn if installed Codex CLI is below the hook-support minimum (v0.114.0).
-    if command -v codex >/dev/null 2>&1; then
-        cx_ver=$(codex --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)
-        if [ -n "$cx_ver" ]; then
-            min_major=0; min_minor=114; min_patch=0
-            IFS='.' read -r cx_maj cx_min cx_pat <<< "$cx_ver"
-            if [ "$cx_maj" -lt "$min_major" ] || \
-               { [ "$cx_maj" -eq "$min_major" ] && [ "$cx_min" -lt "$min_minor" ]; } || \
-               { [ "$cx_maj" -eq "$min_major" ] && [ "$cx_min" -eq "$min_minor" ] && [ "$cx_pat" -lt "$min_patch" ]; }; then
-                echo -e "${YELLOW}  ⚠ Codex CLI version ${cx_ver} is below 0.114.0. Hooks may not work. See openai/codex#14754.${NC}"
-            fi
-        fi
-    else
-        echo -e "${BLUE}  (codex CLI not installed; hooks will activate when Codex is installed)${NC}"
-    fi
-else
-    echo -e "${YELLOW}  ⚠ Codex hooks allowlist not found at ${CODEX_HOOKS_ALLOWLIST}; skipping hooks mirror${NC}"
-fi
-
-echo ""
-echo -e "${YELLOW}Syncing Codex scripts mirror...${NC}"
-if [ -d "${SCRIPT_DIR}/scripts" ]; then
-    if [ "$DRY_RUN" = true ]; then
-        echo -e "${BLUE}  Would mirror scripts to: ${CODEX_SCRIPTS_DIR}${NC}"
-    else
-        mkdir -p "$CODEX_SCRIPTS_DIR"
-    fi
-    sync_codex_entry "${SCRIPT_DIR}/scripts" "$CODEX_SCRIPTS_DIR"
-    CODEX_SCRIPT_COUNT=$(ls -1 "${SCRIPT_DIR}/scripts/"*.py 2>/dev/null | grep -cv '__init__')
-    echo -e "${GREEN}  ✓ Scripts mirrored to ${CODEX_SCRIPTS_DIR}${NC}"
-else
-    CODEX_SCRIPT_COUNT=0
-fi
-
-echo ""
-echo -e "${YELLOW}Installing Factory components (mode: ${MODE})...${NC}"
-# Factory uses the same top-level symlink/copy pattern as Claude.
-# Only difference: 'agents' is named 'droids' under ~/.factory.
-for component in agents skills hooks commands scripts; do
-    if [ -d "${SCRIPT_DIR}/${component}" ]; then
-        target_name="$component"
-        [ "$component" = "agents" ] && target_name="droids"
-        # Skills get the same nested layout as Claude/Codex.
-        if [ "$component" = "skills" ] && [ "$MODE" = "symlink" ] && \
-           [ "$CONFLICT_MODE" != "replace" ] && [ "$CONFLICT_MODE" != "skip" ]; then
-            link_skills_nested "${SCRIPT_DIR}/skills" "${FACTORY_SKILLS_DIR}"
-        else
-            install_component "$component" "$FACTORY_DIR" "$target_name"
-        fi
-    fi
-done
-
-# Install private Factory components (mirrors Claude private overlay logic)
-for private_dir in private-agents private-skills private-hooks; do
-    public_name="${private_dir#private-}"
-    [ "$public_name" = "agents" ] && public_name="droids"
-    if [ -d "${SCRIPT_DIR}/${private_dir}" ]; then
-        echo ""
-        echo -e "${YELLOW}Installing Factory private ${public_name}...${NC}"
-        for item in "${SCRIPT_DIR}/${private_dir}/"*; do
-            [ -e "$item" ] || continue
-            item_name=$(basename "$item")
-            target="${FACTORY_DIR}/${public_name}/${item_name}"
-            if [ "$DRY_RUN" = true ]; then
-                echo -e "${BLUE}  Would install Factory private: ${item_name}${NC}"
-            else
-                rm -rf "$target" 2>/dev/null
-                if [ "$MODE" = "symlink" ]; then
-                    ln -sf "$item" "$target"
-                    echo -e "${GREEN}  ✓ Linked Factory private ${item_name}${NC}"
-                else
-                    cp -r "$item" "$target"
-                    echo -e "${GREEN}  ✓ Copied Factory private ${item_name}${NC}"
-                fi
-            fi
-        done
-    fi
-done
-
-# Install private-voices into Factory skills (goes through symlink into repo/skills/)
-if [ -d "${SCRIPT_DIR}/private-voices" ]; then
-    echo ""
-    echo -e "${YELLOW}Installing Factory private voices...${NC}"
-    for voice_dir in "${SCRIPT_DIR}/private-voices/"*; do
-        [ -d "$voice_dir" ] || continue
-        skill_src="${voice_dir}/skill"
-        [ -d "$skill_src" ] || continue
-        voice_name=$(basename "$voice_dir")
-        target="${FACTORY_DIR}/skills/voice-${voice_name}"
-        if [ "$DRY_RUN" = true ]; then
-            echo -e "${BLUE}  Would install Factory voice: voice-${voice_name}${NC}"
-        else
-            rm -rf "$target" 2>/dev/null
-            if [ "$MODE" = "symlink" ]; then
-                ln -sf "$skill_src" "$target"
-                echo -e "${GREEN}  ✓ Linked Factory voice-${voice_name}${NC}"
-            else
-                cp -r "$skill_src" "$target"
-                echo -e "${GREEN}  ✓ Copied Factory voice-${voice_name}${NC}"
-            fi
-        fi
-    done
-fi
-
-# Component counts for the install summary (count source dirs, not per-entry)
-FACTORY_SKILL_COUNT=$(ls -1 "${SCRIPT_DIR}/skills/"*/SKILL.md 2>/dev/null | wc -l)
-FACTORY_DROID_COUNT=$(ls -1 "${SCRIPT_DIR}/agents/"*.md 2>/dev/null | grep -v README | wc -l)
-FACTORY_HOOK_COUNT=$(ls -1 "${SCRIPT_DIR}/hooks/"*.py 2>/dev/null | grep -cv '__init__')
-
-# Generate ~/.factory/settings.json
-if [ "$DRY_RUN" = true ]; then
-    echo -e "${BLUE}  Would sync hooks from ${SCRIPT_DIR}/.claude/settings.json to ${FACTORY_DIR}/settings.json (with path rewrite)${NC}"
-elif [ -f "${SCRIPT_DIR}/.claude/settings.json" ]; then
-    FACTORY_SETTINGS="${FACTORY_DIR}/settings.json"
-    if [ ! -f "$FACTORY_SETTINGS" ]; then
-        echo '{}' > "$FACTORY_SETTINGS"
-    fi
-    BACKUP_TS=$(date +%Y%m%d-%H%M%S)
-    cp "$FACTORY_SETTINGS" "${FACTORY_SETTINGS}.backup.${BACKUP_TS}"
-    $PYTHON_CMD -c "
-import json, os
-repo = json.load(open('${SCRIPT_DIR}/.claude/settings.json'))
-dst = '${FACTORY_SETTINGS}'
-try:
-    merged = json.load(open(dst, encoding='utf-8'))
-except (FileNotFoundError, json.JSONDecodeError):
-    merged = {}
-hooks_json = json.dumps(repo.get('hooks', {}))
-hooks_json = hooks_json.replace('\$HOME/.claude/', '\$HOME/.factory/')
-hooks_json = hooks_json.replace('\${HOME}/.claude/', '\${HOME}/.factory/')
-merged['hooks'] = json.loads(hooks_json)
-merged.setdefault('attribution', repo.get('attribution', {'commit': '', 'pr': ''}))
-tmp = dst + '.tmp'
-with open(tmp, 'w', encoding='utf-8') as f:
-    json.dump(merged, f, indent=2)
-    f.flush()
-    os.fsync(f.fileno())
-os.rename(tmp, dst)
-print('  Factory hooks configured from .claude/settings.json')
-"
-else
-    echo -e "${YELLOW}  Warning: ${SCRIPT_DIR}/.claude/settings.json not found, skipping Factory hook sync${NC}"
-fi
-
-
-echo ""
-echo -e "${YELLOW}Syncing Hermes skills mirror...${NC}"
-HERMES_ENTRY_COUNT=0
-for item in "${SCRIPT_DIR}/skills/"*; do
-    [ -e "$item" ] || continue
-    target="${HERMES_SKILLS_DIR}/$(basename "$item")"
-    sync_mirror_entry "$item" "$target" "Hermes"
-    HERMES_ENTRY_COUNT=$((HERMES_ENTRY_COUNT + 1))
-done
-
-if [ -d "${SCRIPT_DIR}/private-voices" ]; then
-    for voice_dir in "${SCRIPT_DIR}/private-voices/"*; do
-        [ -d "$voice_dir" ] || continue
-        skill_src="${voice_dir}/skill"
-        [ -d "$skill_src" ] || continue
-        voice_name=$(basename "$voice_dir")
-        target="${HERMES_SKILLS_DIR}/voice-${voice_name}"
-        sync_mirror_entry "$skill_src" "$target" "Hermes"
-        HERMES_ENTRY_COUNT=$((HERMES_ENTRY_COUNT + 1))
-    done
-fi
-
-if [ -d "${SCRIPT_DIR}/private-skills" ]; then
-    for item in "${SCRIPT_DIR}/private-skills/"*; do
-        [ -e "$item" ] || continue
-        target="${HERMES_SKILLS_DIR}/$(basename "$item")"
-        sync_mirror_entry "$item" "$target" "Hermes"
-        HERMES_ENTRY_COUNT=$((HERMES_ENTRY_COUNT + 1))
-    done
-fi
-
-echo ""
-echo -e "${YELLOW}Syncing Hermes scripts mirror...${NC}"
-if [ -d "${SCRIPT_DIR}/scripts" ]; then
-    if [ "$DRY_RUN" = true ]; then
-        echo -e "${BLUE}  Would mirror scripts to: ${HERMES_SCRIPTS_DIR}${NC}"
-    else
-        mkdir -p "$HERMES_SCRIPTS_DIR"
-    fi
-    sync_mirror_entry "${SCRIPT_DIR}/scripts" "$HERMES_SCRIPTS_DIR" "Hermes"
-    HERMES_SCRIPT_COUNT=$(ls -1 "${SCRIPT_DIR}/scripts/"*.py 2>/dev/null | grep -cv '__init__')
-    echo -e "${GREEN}  ✓ Scripts mirrored to ${HERMES_SCRIPTS_DIR}${NC}"
-else
-    HERMES_SCRIPT_COUNT=0
-fi
-
-# ── Reasonix mirror (skills + scripts + hooks; Claude-Code-compatible extension layer) ──
-# Reasonix natively reads ~/.reasonix/skills, shells out to scripts via the SDIR chain,
-# and runs hooks declared in ~/.reasonix/settings.json (hooks key only; MCP/model/permissions
-# live in user-owned ~/.reasonix/config.json, which we never touch).
-#
-# Reasonix scans skill roots EXACTLY ONE LEVEL DEEP (src/skills.ts): a dir entry <X> is a
-# skill only when <X>/SKILL.md exists, and it never recurses. vexjoy skills live at
-# skills/<category>/<name>/SKILL.md (two levels), so we FLATTEN every skill to
-# ~/.reasonix/skills/<name>/SKILL.md (one level deep). Each entry is a per-entry symlink
-# in --symlink mode (Reasonix v0.52+ follows symlinked skill dirs) and a real-dir copy in
-# --copy mode.
-echo ""
-echo -e "${YELLOW}Syncing Reasonix skills mirror (flatten + per-entry symlink/copy)...${NC}"
-REASONIX_ENTRY_COUNT=0
-REASONIX_SEEN_NAMES=" "  # space-delimited set of flat names claimed this run (collision guard)
-if [ "$DRY_RUN" != true ]; then
-    mkdir -p "$REASONIX_SKILLS_DIR"
-    # Sweep broken symlinks before installing. A symlink whose target vanished is stale
-    # toolkit output: a skill removed/renamed in the repo, or mode-switch residue (a prior
-    # --symlink install whose source moved, now re-running --copy). reasonix_install_skill
-    # only refreshes entries for skills that STILL exist, so dead links would otherwise
-    # linger until uninstall. Healthy symlinks (valid --symlink install) and user-added
-    # real dirs are left untouched. Matches the uninstall sweep below.
-    find "$REASONIX_SKILLS_DIR" -maxdepth 1 -mindepth 1 -type l ! -exec test -e {} \; -delete 2>/dev/null || true
-fi
-
-reasonix_install_skill() {
-    # $1 = skill source dir (the dir containing SKILL.md); $2 = flat skill name
-    local skill_dir=$1
-    local name=$2
-    local target="${REASONIX_SKILLS_DIR}/${name}"
-
-    # Within-run collision guard: basenames are verified unique, but never clobber a name
-    # already claimed by this run. (A target left from a PRIOR run is refreshed below.)
-    case "$REASONIX_SEEN_NAMES" in
-        *" ${name} "*)
-            echo -e "${YELLOW}  Warning: duplicate Reasonix skill name '${name}', skipping ${skill_dir}${NC}"
-            return 0
-            ;;
-    esac
-    REASONIX_SEEN_NAMES="${REASONIX_SEEN_NAMES}${name} "
-
-    if [ "$DRY_RUN" = true ]; then
-        if [ "$MODE" = "symlink" ]; then
-            echo -e "${BLUE}  Would symlink Reasonix skill: ${skill_dir} -> ${target}/${NC}"
-        else
-            echo -e "${BLUE}  Would copy Reasonix skill: ${skill_dir} -> ${target}/${NC}"
-        fi
-    else
-        rm -rf "$target"            # idempotent re-run: refresh content like the other mirrors
-        if [ "$MODE" = "symlink" ]; then
-            ln -s "$skill_dir" "$target"
-            echo -e "${GREEN}  ✓ Reasonix symlinked ${name}${NC}"
-        else
-            mkdir -p "$target"
-            cp -r "${skill_dir}/." "$target/"
-            echo -e "${GREEN}  ✓ Reasonix copied ${name}${NC}"
-        fi
-    fi
-    REASONIX_ENTRY_COUNT=$((REASONIX_ENTRY_COUNT + 1))
-}
-
-# Private skills FIRST so they claim canonical names; matching public-skill names then
-# trip the within-run collision guard and yield to the private override (parity with the
-# Claude install: private overrides public).
-if [ -d "${SCRIPT_DIR}/private-skills" ]; then
-    while IFS= read -r skill_md; do
-        [ -n "$skill_md" ] || continue
-        skill_dir=$(dirname "$skill_md")
-        reasonix_install_skill "$skill_dir" "$(basename "$skill_dir")"
-    done < <(find "${SCRIPT_DIR}/private-skills" -name SKILL.md | sort)
-fi
-
-# Voice skills: private-voices/<name>/skill/SKILL.md -> ~/.reasonix/skills/voice-<name>/
-if [ -d "${SCRIPT_DIR}/private-voices" ]; then
-    for voice_dir in "${SCRIPT_DIR}/private-voices/"*; do
-        [ -d "$voice_dir" ] || continue
-        skill_src="${voice_dir}/skill"
-        [ -f "${skill_src}/SKILL.md" ] || continue
-        voice_name=$(basename "$voice_dir")
-        reasonix_install_skill "$skill_src" "voice-${voice_name}"
-    done
-fi
-
-# Public skills last: same-name entries are skipped by the collision guard (private wins).
-while IFS= read -r skill_md; do
-    [ -n "$skill_md" ] || continue
-    skill_dir=$(dirname "$skill_md")
-    reasonix_install_skill "$skill_dir" "$(basename "$skill_dir")"
-done < <(find "${SCRIPT_DIR}/skills" -name SKILL.md | sort)
-
-# Support dirs (no SKILL.md anywhere — e.g. shared-patterns, kb): copy as real top-level
-# dirs so flattened skills' sibling references like ../shared-patterns/*.md resolve, and so
-# the downstream voice shared-references deploy (which targets ${REASONIX_SKILLS_DIR}/shared-patterns)
-# keeps working. These are not skills (reasonix ignores them: no SKILL.md) so they are not counted.
-for support_dir in "${SCRIPT_DIR}/skills/"*/; do
-    [ -d "$support_dir" ] || continue
-    [ -z "$(find "$support_dir" -name SKILL.md -print -quit)" ] || continue  # skip dirs that hold skills
-    support_name=$(basename "$support_dir")
-    support_target="${REASONIX_SKILLS_DIR}/${support_name}"
-    if [ "$DRY_RUN" = true ]; then
-        echo -e "${BLUE}  Would copy Reasonix support dir: ${support_dir} -> ${support_target}/${NC}"
-    else
-        rm -rf "$support_target"
-        cp -r "$support_dir" "$support_target"
-        echo -e "${GREEN}  ✓ Reasonix copied support dir ${support_name}${NC}"
-    fi
-done
-
-echo ""
-echo -e "${YELLOW}Syncing Reasonix scripts mirror...${NC}"
-if [ -d "${SCRIPT_DIR}/scripts" ]; then
-    if [ "$DRY_RUN" = true ]; then
-        echo -e "${BLUE}  Would mirror scripts to: ${REASONIX_SCRIPTS_DIR}${NC}"
-    else
-        mkdir -p "$REASONIX_SCRIPTS_DIR"
-    fi
-    sync_mirror_entry "${SCRIPT_DIR}/scripts" "$REASONIX_SCRIPTS_DIR" "Reasonix"
-    REASONIX_SCRIPT_COUNT=$(ls -1 "${SCRIPT_DIR}/scripts/"*.py 2>/dev/null | grep -cv '__init__')
-    echo -e "${GREEN}  ✓ Scripts mirrored to ${REASONIX_SCRIPTS_DIR}${NC}"
-else
-    REASONIX_SCRIPT_COUNT=0
-fi
-
-# Reasonix hooks mirror — allowlist-driven, like Codex.
-# Mirrors only the hook files listed in the allowlist (so Reasonix only ships hooks that
-# can actually fire under its 4 supported events) and uses an allowlist-aware generator to
-# produce ~/.reasonix/settings.json in Reasonix's native flat shape.
-echo ""
-echo -e "${YELLOW}Syncing Reasonix hooks mirror (allowlist-driven)...${NC}"
-REASONIX_HOOK_COUNT=0
-REASONIX_HOOK_MISSING=0          # allowlisted hooks whose source file is absent
-REASONIX_HOOK_MISSING_LIST=""    # space-delimited names, for the summary
-REASONIX_HOOK_FAILED=false       # settings.json generator failed → hooks never wire in
-REASONIX_HOOKS_ALLOWLIST="${SCRIPT_DIR}/scripts/reasonix-hooks-allowlist.txt"
-
-if [ -f "$REASONIX_HOOKS_ALLOWLIST" ]; then
-    if [ "$DRY_RUN" = true ]; then
-        echo -e "${BLUE}  Would create: ${REASONIX_HOOKS_DIR}${NC}"
-    else
-        mkdir -p "$REASONIX_HOOKS_DIR"
-    fi
-
-    # Parse allowlist and mirror each allowlisted hook file.
-    while IFS= read -r line || [ -n "$line" ]; do
-        trimmed="${line#"${line%%[![:space:]]*}"}"
-        trimmed="${trimmed%"${trimmed##*[![:space:]]}"}"
-        [ -z "$trimmed" ] && continue
-        [ "${trimmed#\#}" != "$trimmed" ] && continue
-
-        rest="${trimmed#*:}"
-        filename="${rest%% *}"
-
-        source_file="${SCRIPT_DIR}/hooks/${filename}"
-        if [ ! -f "$source_file" ]; then
-            echo -e "${RED}  ✗ Allowlisted hook missing: ${filename}${NC}"
-            REASONIX_HOOK_MISSING=$((REASONIX_HOOK_MISSING + 1))
-            REASONIX_HOOK_MISSING_LIST="${REASONIX_HOOK_MISSING_LIST}${filename} "
-            continue
-        fi
-
-        target_file="${REASONIX_HOOKS_DIR}/${filename}"
-        sync_mirror_entry "$source_file" "$target_file" "Reasonix"
-        REASONIX_HOOK_COUNT=$((REASONIX_HOOK_COUNT + 1))
-    done < "$REASONIX_HOOKS_ALLOWLIST"
-
-    # Surface an incomplete mirror loudly. The generator below reads the same allowlist,
-    # so it would otherwise emit settings.json entries pointing at files we did not mirror.
-    if [ "$REASONIX_HOOK_MISSING" -gt 0 ]; then
-        echo -e "${RED}  ⚠ ${REASONIX_HOOK_MISSING} allowlisted Reasonix hook(s) missing from hooks/: ${REASONIX_HOOK_MISSING_LIST}${NC}"
-        echo -e "${RED}    Their settings.json entries will reference absent files. Fix scripts/reasonix-hooks-allowlist.txt or restore the hook.${NC}"
-    fi
-
-    # Mirror hooks/lib so intra-hook imports resolve.
-    if [ -d "${SCRIPT_DIR}/hooks/lib" ]; then
-        lib_target="${REASONIX_HOOKS_DIR}/lib"
-        sync_mirror_entry "${SCRIPT_DIR}/hooks/lib" "$lib_target" "Reasonix"
-    fi
-
-    # Generate ~/.reasonix/settings.json from the allowlist (Reasonix-native flat shape).
-    # On failure the OLD settings.json is left untouched (or none exists on a fresh install),
-    # so hooks are mirrored but NEVER wired into Reasonix. Fail loud — do not let the final
-    # summary report a hookless install as success.
-    REASONIX_SETTINGS="${REASONIX_DIR}/settings.json"
-    if [ "$DRY_RUN" = true ]; then
-        echo -e "${BLUE}  Would generate: ${REASONIX_SETTINGS}${NC}"
-    else
-        gen_err=$($PYTHON_CMD "${SCRIPT_DIR}/scripts/generate-reasonix-settings-hooks.py" \
-            --allowlist "$REASONIX_HOOKS_ALLOWLIST" \
-            --output "$REASONIX_SETTINGS" \
-            --reasonix-hooks-dir "$REASONIX_HOOKS_DIR" 2>&1)
-        if [ $? -eq 0 ]; then
-            echo -e "${GREEN}  ✓ Generated ${REASONIX_SETTINGS}${NC}"
-        else
-            REASONIX_HOOK_FAILED=true
-            echo -e "${RED}  ✗ Failed to generate ${REASONIX_SETTINGS} — Reasonix hooks are NOT wired in.${NC}"
-            echo -e "${RED}${gen_err}${NC}"
-        fi
-    fi
-else
-    echo -e "${YELLOW}  ⚠ Reasonix hooks allowlist not found at ${REASONIX_HOOKS_ALLOWLIST}; skipping hooks mirror${NC}"
-fi
-
-# Deploy private-voices shared references into skills/shared-patterns/
-# These files were removed from the public repo and live in private-voices/shared-references/
-# (gitignored). They must be deployed at install time into every runtime's shared-patterns dir.
-if [ -d "${SCRIPT_DIR}/private-voices/shared-references" ]; then
-    echo ""
-    echo -e "${YELLOW}Installing voice shared references...${NC}"
-    SHARED_REF_COUNT=0
-    for ref_file in "${SCRIPT_DIR}/private-voices/shared-references/"*.md; do
-        [ -f "$ref_file" ] || continue
-        ref_name=$(basename "$ref_file")
-        for target_dir in "${CLAUDE_DIR}/skills/shared-patterns" "${CODEX_SKILLS_DIR}/shared-patterns" "${FACTORY_SKILLS_DIR}/shared-patterns" "${HERMES_SKILLS_DIR}/shared-patterns" "${REASONIX_SKILLS_DIR}/shared-patterns"; do
-            # Resolve symlinks so we write into the actual directory
-            resolved_dir="$target_dir"
-            [ -L "$target_dir" ] && resolved_dir="$(readlink -f "$target_dir")"
-            if [ -d "$resolved_dir" ]; then
-                target="${resolved_dir}/${ref_name}"
-                if [ "$DRY_RUN" = true ]; then
-                    echo -e "${BLUE}  Would install: ${ref_name} -> ${target_dir}${NC}"
-                else
-                    if [ "$MODE" = "symlink" ]; then
-                        ln -sf "$ref_file" "$target"
-                    else
-                        cp -f "$ref_file" "$target"
-                    fi
-                fi
-            fi
-        done
-        SHARED_REF_COUNT=$((SHARED_REF_COUNT + 1))
-    done
-    if [ "$SHARED_REF_COUNT" -gt 0 ]; then
-        echo -e "${GREEN}  ✓ ${SHARED_REF_COUNT} voice shared references installed${NC}"
+        vexinstall migrate-overlays
     fi
 fi
 
-# Set up local overlay
-echo ""
-echo -e "${YELLOW}Setting up local overlay...${NC}"
-if [ ! -d "${SCRIPT_DIR}/.local" ]; then
-    if [ "$DRY_RUN" = true ]; then
-        echo -e "${BLUE}  Would create: ${SCRIPT_DIR}/.local/agents${NC}"
-        echo -e "${BLUE}  Would create: ${SCRIPT_DIR}/.local/skills${NC}"
-    else
-        mkdir -p "${SCRIPT_DIR}/.local/agents"
-        mkdir -p "${SCRIPT_DIR}/.local/skills"
-    fi
-fi
-
-# Copy example overlay if .local is empty (only has .gitkeep)
-if [ -d "${SCRIPT_DIR}/.local.example" ]; then
-    LOCAL_FILES=$(find "${SCRIPT_DIR}/.local" -type f ! -name '.gitkeep' 2>/dev/null | wc -l)
-    if [ "$LOCAL_FILES" -eq 0 ]; then
-        if [ "$DRY_RUN" = true ]; then
-            echo -e "${BLUE}  Would copy overlay templates from .local.example/ to .local/${NC}"
-        else
-            echo "  Copying overlay templates to .local/"
-            cp -r "${SCRIPT_DIR}/.local.example/"* "${SCRIPT_DIR}/.local/" 2>/dev/null || true
-            echo -e "${GREEN}  ✓ Local overlay templates installed${NC}"
-            echo -e "${YELLOW}  Edit files in .local/ with your personal configurations${NC}"
-        fi
-    else
-        echo -e "${GREEN}  ✓ Local overlay already configured${NC}"
-    fi
-fi
-
-# Configure hooks in settings.json
-echo ""
-echo -e "${YELLOW}Configuring hooks...${NC}"
-
-SETTINGS_FILE="${CLAUDE_DIR}/settings.json"
-HOOKS_DIR="${CLAUDE_DIR}/hooks"
-
-# Create settings.json if it doesn't exist
-if [ ! -f "$SETTINGS_FILE" ]; then
-    if [ "$DRY_RUN" = true ]; then
-        echo -e "${BLUE}  Would create: ${SETTINGS_FILE}${NC}"
-    else
-        echo '{}' > "$SETTINGS_FILE"
-    fi
-fi
-
-# Sync hooks from repo's .claude/settings.json (authoritative source)
-if [ "$DRY_RUN" = true ]; then
-    echo -e "${BLUE}  Would sync hooks from ${SCRIPT_DIR}/.claude/settings.json${NC}"
-elif [ -f "${SCRIPT_DIR}/.claude/settings.json" ]; then
-    # Create a timestamped backup before modifying
-    BACKUP_TS=$(date +%Y%m%d-%H%M%S)
-    cp "$SETTINGS_FILE" "${SETTINGS_FILE}.backup.${BACKUP_TS}"
-
-    # Sync hooks and attribution from repo settings — repo is authoritative
-    $PYTHON_CMD -c "
-import json, os
-repo = json.load(open('${SCRIPT_DIR}/.claude/settings.json'))
-dst = '${SETTINGS_FILE}'
-try:
-    glob = json.load(open(dst, encoding='utf-8'))
-except (FileNotFoundError, json.JSONDecodeError):
-    glob = {}
-glob['hooks'] = repo.get('hooks', {})
-glob.setdefault('attribution', repo.get('attribution', {'commit': '', 'pr': ''}))
-tmp = dst + '.tmp'
-with open(tmp, 'w', encoding='utf-8') as f:
-    json.dump(glob, f, indent=2)
-    f.flush()
-    os.fsync(f.fileno())
-os.rename(tmp, dst)
-print('  Hooks configured from .claude/settings.json')
-"
-    # Profile filtering: drop disabled hooks from the freshly synced block.
-    if [ -n "$DISABLED_HOOKS" ]; then
-        printf '%s\n' "$DISABLED_HOOKS" | $PYTHON_CMD "${SCRIPT_DIR}/scripts/filter-settings-hooks.py" \
-            --input "$SETTINGS_FILE" --disabled /dev/stdin --output "$SETTINGS_FILE"
-        echo -e "${YELLOW}  Filtered profile-disabled hooks from settings.json${NC}"
-    fi
-else
-    echo -e "${YELLOW}  Warning: ${SCRIPT_DIR}/.claude/settings.json not found, skipping hook sync${NC}"
-fi
-
-# Install Python dependencies
-echo ""
-echo -e "${YELLOW}Installing Python dependencies...${NC}"
-if [ "$DRY_RUN" = true ]; then
-    echo -e "${BLUE}  Would install: dependencies from requirements.txt${NC}"
-else
-    USE_BREAK_SYSTEM_PACKAGES=false
-    PIP_INSTALL_ARGS=(-r "${SCRIPT_DIR}/requirements.txt" --quiet)
-    if pip_supports_break_system_packages; then
-        PIP_INSTALL_ARGS+=(--break-system-packages)
-        USE_BREAK_SYSTEM_PACKAGES=true
-        echo -e "${YELLOW}  Note: Enabling --break-system-packages because the selected pip supports it${NC}"
-    fi
-
-    # Try pip install with --user fallback
-    if "${PIP_CMD[@]}" install "${PIP_INSTALL_ARGS[@]}" 2>/dev/null; then
-        echo -e "${GREEN}  ✓ Python dependencies installed${NC}"
-    elif "${PIP_CMD[@]}" install "${PIP_INSTALL_ARGS[@]}" --user 2>/dev/null; then
-        echo -e "${GREEN}  ✓ Python dependencies installed (user mode)${NC}"
-    else
-        echo -e "${YELLOW}  ⚠ Could not auto-install Python dependencies${NC}"
-        print_manual_pip_command "$USE_BREAK_SYSTEM_PACKAGES"
-    fi
-fi
-
-# Set permissions
-echo ""
-echo -e "${YELLOW}Setting permissions...${NC}"
-if [ "$DRY_RUN" = true ]; then
-    echo -e "${BLUE}  Would set 644 on docs/*.md${NC}"
-    echo -e "${BLUE}  Would set 755 on mirrored hooks/scripts *.py under runtime directories${NC}"
-    echo -e "${BLUE}    - ~/.claude/hooks, ~/.claude/scripts${NC}"
-    echo -e "${BLUE}    - ~/.codex/hooks, ~/.codex/scripts${NC}"
-    echo -e "${BLUE}    - ~/.factory/hooks, ~/.factory/scripts${NC}"
-    echo -e "${BLUE}    - ~/.hermes/scripts${NC}"
-    echo -e "${BLUE}    - ~/.reasonix/hooks, ~/.reasonix/scripts${NC}"
-    echo -e "${BLUE}  Would set 600 on ~/.claude/settings.json${NC}"
-    echo -e "${BLUE}  Would set 700 on ~/.claude/ and ~/.claude/learning/${NC}"
-    echo -e "${BLUE}  Would set 600 on ~/.claude/history.jsonl (if it exists)${NC}"
-    echo -e "${BLUE}  Would set 600 on ~/.factory/settings.json${NC}"
-    echo -e "${BLUE}  Would set 600 on ~/.reasonix/settings.json${NC}"
-else
-    set_mirror_python_permissions() {
-        local target_dir="$1"
-        local path
-        [ -d "$target_dir" ] || return 0
-        while IFS= read -r -d '' path; do
-            chmod 755 "$path" 2>/dev/null || true
-        done < <(find "$target_dir" -type f -name "*.py" -print0 2>/dev/null)
-    }
-
-    # NOTE: Mirror-runtime paths only to avoid mutating checked-out sources.
-    set_mirror_python_permissions "$CLAUDE_DIR/hooks"
-    set_mirror_python_permissions "$CLAUDE_DIR/scripts"
-    set_mirror_python_permissions "$CODEX_HOOKS_DIR"
-    set_mirror_python_permissions "$CODEX_SCRIPTS_DIR"
-    set_mirror_python_permissions "$FACTORY_HOOKS_DIR"
-    set_mirror_python_permissions "$FACTORY_SCRIPTS_DIR"
-    set_mirror_python_permissions "$HERMES_SCRIPTS_DIR"
-    set_mirror_python_permissions "$REASONIX_HOOKS_DIR"
-    set_mirror_python_permissions "$REASONIX_SCRIPTS_DIR"
-
-    chmod 644 "${SCRIPT_DIR}/docs/"*.md 2>/dev/null || true
-    # Harden ~/.claude/ sensitive files (ADR-122)
-    chmod 700 "${CLAUDE_DIR}" 2>/dev/null || true
-    chmod 600 "${SETTINGS_FILE}" 2>/dev/null || true
-    chmod 600 "$(ls -1t "${SETTINGS_FILE}.backup."* 2>/dev/null | head -1)" 2>/dev/null || true
-    chmod 700 "${CLAUDE_DIR}/learning" 2>/dev/null || true
-    chmod 600 "${CLAUDE_DIR}/history.jsonl" 2>/dev/null || true
-    chmod 600 "${FACTORY_DIR}/settings.json" 2>/dev/null || true
-    chmod 600 "$(ls -1t "${FACTORY_DIR}/settings.json.backup."* 2>/dev/null | head -1)" 2>/dev/null || true
-    chmod 600 "${REASONIX_DIR}/settings.json" 2>/dev/null || true
-    chmod 600 "$(ls -1t "${REASONIX_DIR}/settings.json.backup."* 2>/dev/null | head -1)" 2>/dev/null || true
-fi
-echo -e "${GREEN}✓ Permissions set${NC}"
-
-# Summary
-echo ""
-# Regenerate INDEX.json files with private components included
-echo ""
-echo -e "${YELLOW}Regenerating indexes (including private components)...${NC}"
-if [ "$DRY_RUN" = true ]; then
-    echo -e "${BLUE}  Would regenerate skills/INDEX.json with ${NC}"
-    echo -e "${BLUE}  Would regenerate agents/INDEX.json with ${NC}"
-else
-    python3 "${SCRIPT_DIR}/scripts/generate-skill-index.py"  >/dev/null 2>&1 && \
-        echo -e "${GREEN}  ✓ Skills index regenerated${NC}" || \
-        echo -e "${YELLOW}  ⚠ Skills index generation failed (non-critical)${NC}"
-    python3 "${SCRIPT_DIR}/scripts/generate-agent-index.py"  >/dev/null 2>&1 && \
-        echo -e "${GREEN}  ✓ Agents index regenerated${NC}" || \
-        echo -e "${YELLOW}  ⚠ Agents index generation failed (non-critical)${NC}"
-fi
-
-# Write install manifest
-if [ "$DRY_RUN" = true ]; then
-    echo -e "${BLUE}  Would write: ${CLAUDE_DIR}/.install-manifest.json${NC}"
-else
-    $PYTHON_CMD -c "
-import json, datetime, subprocess, sys
-try:
-    commit = subprocess.check_output(['git', '-C', '${SCRIPT_DIR}', 'rev-parse', '--short', 'HEAD'], text=True, stderr=subprocess.DEVNULL).strip()
-except Exception:
-    commit = 'unknown'
-manifest = {
-    'installed_at': datetime.datetime.now(datetime.timezone.utc).isoformat(),
-    'toolkit_commit': commit,
-    'toolkit_path': '${SCRIPT_DIR}',
-    'mode': '${MODE}',
-    'components': ['agents', 'skills', 'hooks', 'commands', 'scripts'],
-    'codex_components': ['skills', 'agents', 'hooks', 'scripts'],
-    'factory_components': ['skills', 'droids', 'hooks'],
-    'hermes_components': ['skills', 'scripts'],
-    'reasonix_components': ['skills', 'scripts', 'hooks'],
-    'reasonix_hooks_allowlist': 'scripts/reasonix-hooks-allowlist.txt',
-}
-json.dump(manifest, open('${CLAUDE_DIR}/.install-manifest.json', 'w'), indent=2)
-print('  Install manifest written to ~/.claude/.install-manifest.json')
-" && echo -e "${GREEN}  ✓ Install manifest written${NC}" || echo -e "${YELLOW}  ⚠ Install manifest write failed (non-critical)${NC}"
-fi
+ensure_runtime_dirs
+args=(--target "$TARGET")
+[ -n "$MODE" ] && args+=(--mode "$MODE")
+[ "$TAKEOVER" = true ] && args+=(--takeover)
+args+=(${EXTRA[@]+"${EXTRA[@]}"})
 
 if [ "$DRY_RUN" = true ]; then
-    echo -e "${YELLOW}╔════════════════════════════════════════════════════════════════╗${NC}"
-    echo -e "${YELLOW}║                       Dry Run Complete!                        ║${NC}"
-    echo -e "${YELLOW}║           Re-run without --dry-run to apply changes            ║${NC}"
-    echo -e "${YELLOW}╚════════════════════════════════════════════════════════════════╝${NC}"
-else
-    echo -e "${GREEN}╔════════════════════════════════════════════════════════════════╗${NC}"
-    echo -e "${GREEN}║                     Installation Complete!                     ║${NC}"
-    echo -e "${GREEN}╚════════════════════════════════════════════════════════════════╝${NC}"
+    echo -e "${YELLOW}vexinstall plan (dry run; nothing is written)${NC}"
+    vexinstall plan --dry-run "${args[@]}"
+    exit $?
 fi
-# Count components dynamically (excluding README files)
-AGENT_COUNT=$(ls -1 "${SCRIPT_DIR}/agents/"*.md 2>/dev/null | grep -v README | wc -l)
-SKILL_COUNT=$(ls -1 "${SCRIPT_DIR}/skills/"*/SKILL.md 2>/dev/null | wc -l)
-HOOK_COUNT=$(ls -1 "${SCRIPT_DIR}/hooks/"*.py 2>/dev/null | grep -cv '__init__')
-COMMAND_COUNT=$(ls -1 "${SCRIPT_DIR}/commands/"*.md 2>/dev/null | grep -v README | wc -l)
-SCRIPT_COUNT=$(ls -1 "${SCRIPT_DIR}/scripts/"*.py 2>/dev/null | grep -cv '__init__')
-INVOCABLE_COUNT=$(grep -rl 'user-invocable: true' "${SCRIPT_DIR}/skills/"*/SKILL.md 2>/dev/null | wc -l)
 
-echo ""
-echo "Installed components:"
-echo "  • Agents: ${AGENT_COUNT} specialized domain experts"
-echo "  • Skills: ${SKILL_COUNT} workflow methodologies (${INVOCABLE_COUNT} user-invocable)"
-echo "  • Codex skills: ${CODEX_ENTRY_COUNT} mirrored entries in ~/.codex/skills"
-echo "  • Codex agents: ${CODEX_AGENT_COUNT} mirrored entries in ~/.codex/agents"
-echo "  • Codex hooks: ${CODEX_HOOK_COUNT} mirrored entries in ~/.codex/hooks"
-echo "  • Codex scripts: ${CODEX_SCRIPT_COUNT} mirrored scripts in ~/.codex/scripts"
-echo "  • Factory skills: ${FACTORY_SKILL_COUNT} mirrored entries in ~/.factory/skills"
-echo "  • Factory droids: ${FACTORY_DROID_COUNT} mirrored entries in ~/.factory/droids"
-echo "  • Factory hooks: ${FACTORY_HOOK_COUNT} mirrored entries in ~/.factory/hooks"
-echo "  • Hermes skills: ${HERMES_ENTRY_COUNT} mirrored entries in ~/.hermes/skills"
-echo "  • Hermes scripts: ${HERMES_SCRIPT_COUNT} mirrored scripts in ~/.hermes/scripts"
-echo "  • Reasonix skills: ${REASONIX_ENTRY_COUNT} flattened skills (per-entry symlink in --symlink mode, copy in --copy mode) in ~/.reasonix/skills"
-echo "  • Reasonix scripts: ${REASONIX_SCRIPT_COUNT} mirrored scripts in ~/.reasonix/scripts"
-echo "  • Reasonix hooks: ${REASONIX_HOOK_COUNT} mirrored entries in ~/.reasonix/hooks"
-if [ "$REASONIX_HOOK_FAILED" = true ]; then
-    echo -e "${RED}  • FAILED: ~/.reasonix/settings.json was not generated — Reasonix hooks (gates + observers) will NOT fire. See the error above.${NC}"
+echo -e "${YELLOW}vexinstall apply ${args[*]}${NC}"
+rc=0
+vexinstall apply "${args[@]}" --run-id "$RUN_ID" || rc=$?
+if [ "$rc" -ne 0 ]; then
+    echo -e "${RED}vexinstall apply failed (exit ${rc}). Nothing was forced. Review:${NC}"
+    echo -e "${RED}  PYTHONPATH=${SCRIPT_DIR}/scripts python3 -m vexinstall plan --target ${TARGET} --takeover${NC}"
+    exit "$rc"
 fi
-if [ "${REASONIX_HOOK_MISSING:-0}" -gt 0 ]; then
-    echo -e "${RED}  • WARNING: ${REASONIX_HOOK_MISSING} allowlisted Reasonix hook(s) were missing and not mirrored: ${REASONIX_HOOK_MISSING_LIST}${NC}"
+if [ "$TAKEOVER" = true ]; then
+    vexinstall prune --unowned --confirm --target "$TARGET" --run-id "$RUN_ID" || true
 fi
-echo "  • Hooks: ${HOOK_COUNT} automation hooks"
-echo "  • Commands: ${COMMAND_COUNT} slash commands"
-echo "  • Scripts: ${SCRIPT_COUNT} utility scripts"
-echo ""
-echo "Next steps:"
-echo "  1. Customize .local/ with your personal configurations"
-echo "  2. Run 'claude' in any project directory"
-echo "  3. Open any project and run: claude"
-echo "  4. Try: /do what can you do?"
-echo ""
-echo "Documentation:"
-echo "  • Quick start: docs/QUICKSTART.md"
-echo "  • Full reference: docs/REFERENCE.md"
-echo "  • Voice system: docs/VOICE-SYSTEM.md"
-echo ""
-if [ "$MODE" = "symlink" ]; then
-    echo -e "${YELLOW}Note: Using symlink mode. Run 'git pull' in this repo to update.${NC}"
-else
-    echo -e "${YELLOW}Note: Using copy mode. Re-run install.sh to update.${NC}"
-fi
-echo ""
+install_deps
+install_no_agent_summary
+harden_permissions
+echo -e "${GREEN}✓ Installed. Check with: PYTHONPATH=${SCRIPT_DIR}/scripts python3 -m vexinstall doctor${NC}"

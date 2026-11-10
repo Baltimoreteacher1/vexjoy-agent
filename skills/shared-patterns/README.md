@@ -23,6 +23,7 @@ See [Anti-Rationalization](../skills/shared-patterns/anti-rationalization-core.m
 | Pattern | Purpose | Used By |
 |---------|---------|---------|
 | `anti-rationalization-core.md` | Prevent shortcut rationalizations | All implementation skills |
+| `jev-production-lessons.md` | Concrete rules for sending Jev requests: request size, run budget, screen-then-detail, parallel stages, retries by status, caching, logging, failure measurement | building-with-jev, grill-jev, browser-jev-automation, jev-design, d |
 | `anti-rationalization-review.md` | Review-specific rationalizations | Review skills/agents |
 | `anti-rationalization-testing.md` | Testing-specific rationalizations | TDD, testing skills |
 | `anti-rationalization-security.md` | Security-specific rationalizations | Security review agents |
@@ -30,10 +31,16 @@ See [Anti-Rationalization](../skills/shared-patterns/anti-rationalization-core.m
 | `gate-enforcement.md` | Phase transition rules | Workflow skills |
 | `verification-checklist.md` | Pre-completion checks | All skills |
 | `execution-report-format.md` | Structured output format | Review/analysis skills |
+| `report-self-review.md` | One revision pass that removes unsupported claims from a synthesized final report | /do Complex fan-in, research, assessment |
 | `severity-classification.md` | Issue severity definitions | Review skills |
 | `output-schemas.md` | Standardized agent output patterns | All agents |
 | `forbidden-patterns-template.md` | Template for domain-specific hard gates | Domain agents (Go, Python, etc.) |
 | `autonomous-repair.md` | Bounded self-repair with RETRY/DECOMPOSE/PRUNE/ESCALATE | Workflow orchestrator, pipeline skills |
+| `dense-complete-writing.md` | Universal writing standard: density rules plus completeness clause | All agents and skills |
+| `google-devdocs-style.md` | Construction rules for clear, active, reader-first prose | All agents and skills |
+| `llm-domain-failure-modes-base.md` | Universal LLM failure patterns extended by domain-specific references | Domain agents |
+| `local-only.md` | Prevents premature git operations during local-only work | /do routing |
+| `untrusted-content-handling.md` | Safe processing of external content through LLM classification | Content and research skills |
 
 ## Pattern vs Skill Distinction
 

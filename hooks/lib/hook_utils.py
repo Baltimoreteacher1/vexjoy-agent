@@ -10,19 +10,47 @@ Provides common functionality used across multiple hooks:
 Inspired by shared/lib patterns.
 """
 
-import hashlib
+from __future__ import annotations
+
 import json
 import os
-import subprocess
 import sys
-import tempfile
 import time
-from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, Optional, TypeVar
 
-T = TypeVar("T")
+# Every hook imports this module, so its import cost is paid on every event.
+# `hashlib`, `subprocess`, `tempfile`, `yaml`, `dataclasses`, and `typing`
+# together cost ~35 ms at startup; each is imported inside the function that
+# needs it. `__getattr__` below keeps `hook_utils.subprocess` and friends
+# resolvable for callers and test patches.
+TYPE_CHECKING = False
+if TYPE_CHECKING:
+    from typing import Any, Callable, Optional, TypeVar
+
+    T = TypeVar("T")
+
+_LAZY_MODULES = frozenset({"hashlib", "subprocess", "tempfile", "yaml"})
+
+
+def __getattr__(name: str) -> Any:
+    """Resolve lazily imported modules as module attributes."""
+    if name in _LAZY_MODULES:
+        import importlib
+
+        return importlib.import_module(name)
+    if name == "YAML_AVAILABLE":
+        return _yaml() is not None
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
+def _yaml():
+    """Return the PyYAML module, or None when it is not installed."""
+    try:
+        import yaml
+    except ImportError:
+        return None
+    return yaml
 
 
 # =============================================================================
@@ -51,10 +79,12 @@ def json_escape(text: str) -> str:
 # =============================================================================
 
 
-@dataclass
 class HookOutput:
     """
     Structured hook output with user message support.
+
+    A plain class, not a dataclass: importing `dataclasses` costs ~8 ms per
+    hook start. Constructor, equality, and repr match the dataclass form.
 
     Attributes:
         event_name: The hook event name (SessionStart, UserPromptSubmit, etc.)
@@ -63,10 +93,32 @@ class HookOutput:
         metadata: Additional key-value pairs for the output
     """
 
-    event_name: str
-    additional_context: Optional[str] = None
-    user_message: Optional[str] = None
-    metadata: dict[str, Any] = field(default_factory=dict)
+    def __init__(
+        self,
+        event_name: str,
+        additional_context: Optional[str] = None,
+        user_message: Optional[str] = None,
+        metadata: Optional[dict[str, Any]] = None,
+    ) -> None:
+        self.event_name = event_name
+        self.additional_context = additional_context
+        self.user_message = user_message
+        self.metadata = {} if metadata is None else metadata
+
+    def _astuple(self) -> tuple:
+        return (self.event_name, self.additional_context, self.user_message, self.metadata)
+
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, HookOutput):
+            return NotImplemented
+        return self._astuple() == other._astuple()
+
+    def __repr__(self) -> str:
+        return (
+            f"HookOutput(event_name={self.event_name!r}, "
+            f"additional_context={self.additional_context!r}, "
+            f"user_message={self.user_message!r}, metadata={self.metadata!r})"
+        )
 
     # Events that support hookSpecificOutput per Claude Code's schema.
     # All other events must emit top-level fields or an empty object.
@@ -232,13 +284,35 @@ def get_project_dir() -> Path:
     return Path(os.environ.get("CLAUDE_PROJECT_DIR", ".")).resolve()
 
 
-def get_session_id() -> str:
-    """Get session ID from environment or generate a unique fallback.
+def _usable_session_id(value: object) -> Optional[str]:
+    """Return *value* when it can safely name a per-session file, else None.
 
-    Falls back to PPID + timestamp hash if CLAUDE_SESSION_ID is not set.
-    This handles container scenarios where PPID might be 1 (init).
+    Session ids end up in file names (``/tmp/claude-<prefix>-<id>.state``), so
+    an id with a path separator, a control character, or the name ``.``/``..``
+    is not used.
     """
-    session_id = os.environ.get("CLAUDE_SESSION_ID")
+    if not isinstance(value, str) or not value or len(value) > 128 or value in (".", ".."):
+        return None
+    if "/" in value or "\\" in value or any(ord(c) < 32 or ord(c) == 127 for c in value):
+        return None
+    return value
+
+
+def get_session_id(event: Optional[dict] = None) -> str:
+    """Return the session id for per-session state.
+
+    Order: the ``session_id`` in the hook input *event* (Claude Code sends it
+    on every event and never sets ``CLAUDE_SESSION_ID``), then the
+    ``CLAUDE_SESSION_ID`` env var (set by the Codex and Antigravity adapters),
+    then a PPID + hour hash. The hash changes whenever the parent process does,
+    so state keyed on it does not survive across hook calls.
+    """
+    if isinstance(event, dict):
+        session_id = _usable_session_id(event.get("session_id"))
+        if session_id:
+            return session_id
+
+    session_id = _usable_session_id(os.environ.get("CLAUDE_SESSION_ID"))
     if session_id:
         return session_id
 
@@ -253,57 +327,19 @@ def get_session_id() -> str:
     return hashlib.md5(unique_str.encode()).hexdigest()[:12]
 
 
-def get_state_file(prefix: str) -> Path:
+def get_state_file(prefix: str, event: Optional[dict] = None) -> Path:
     """
     Get a session-specific state file path.
 
     Args:
         prefix: Prefix for the state file name
+        event: The parsed hook input, so the file is keyed on its session_id
 
     Returns:
         Path to state file in /tmp
     """
-    session_id = get_session_id()
+    session_id = get_session_id(event)
     return Path(f"/tmp/claude-{prefix}-{session_id}.state")
-
-
-def get_session_reads_file(event: Optional[dict[str, Any]] = None) -> Path:
-    """Path to this session's record of files the parent session has Read.
-
-    Written by posttool-session-reads.py, read by pretool-subagent-warmstart.py.
-    Both must agree, so the resolution lives here rather than in either hook.
-
-    Two bugs made this necessary. Both hooks used the *relative* path
-    ".claude/session-reads.txt":
-
-      1. The writer mkdir'd its parent, so every directory a session was ever
-         started in grew a stray `.claude/` - eighteen of them here, including
-         ~/Downloads, ~/.local/bin, ~/.codex and ~/.claude itself. An empty
-         `.claude/` also makes an ordinary folder look like a configured
-         project to Claude Code.
-      2. Resolution depended on the hook subprocess's CWD, and the file was
-         never truncated, so it accumulated across *every* session in a
-         directory. The warmstart hook then injected files read in unrelated
-         older sessions as "parent session context".
-
-    Keying on the session id from the hook payload fixes both: one file per
-    session, in a fixed location, regardless of CWD. /tmp is the same home the
-    file-backup hook uses, and it clears on reboot so nothing needs pruning.
-    The uid suffix and 0700 parent keep it private on a shared /tmp.
-    """
-    import tempfile
-
-    session_id = ""
-    if event:
-        session_id = str(event.get("session_id") or "").strip()
-    if not session_id:
-        session_id = get_session_id()
-    # Never let a crafted id escape the directory.
-    safe = "".join(c for c in session_id if c.isalnum() or c in "-_") or "unknown"
-
-    base = Path(tempfile.gettempdir()) / f".claude-session-reads-{os.getuid()}"
-    base.mkdir(mode=0o700, parents=True, exist_ok=True)
-    return base / f"{safe}.txt"
 
 
 # =============================================================================
@@ -369,21 +405,16 @@ def discover_files(
 # YAML Frontmatter Parsing (with fallback)
 # =============================================================================
 
-try:
-    import yaml
-
-    YAML_AVAILABLE = True
-except ImportError:
-    YAML_AVAILABLE = False
-
 
 def parse_frontmatter(content: str) -> Optional[dict[str, Any]]:
     """
     Parse YAML frontmatter from markdown content.
 
     Implements cascading fallback:
-    1. Try PyYAML if available
-    2. Fall back to regex parser
+    1. Try PyYAML if available (same block-scalar-aware behavior as
+       scripts/lib/frontmatter.py's parser; kept independent here so hooks
+       stay self-contained in hooks-only deployment mirrors).
+    2. Fall back to a simple regex parser for common fields.
 
     Args:
         content: Markdown file content
@@ -403,7 +434,8 @@ def parse_frontmatter(content: str) -> Optional[dict[str, Any]]:
     frontmatter = content[4:end_match].strip()
 
     # Try YAML parser first
-    if YAML_AVAILABLE:
+    yaml = _yaml()
+    if yaml is not None:
         try:
             return yaml.safe_load(frontmatter)
         except yaml.YAMLError:
@@ -455,6 +487,329 @@ def log_error(message: str) -> None:
     print(f"[error] {message}", file=sys.stderr)
 
 
+# =============================================================================
+# Loud Hook Error Helper
+# =============================================================================
+
+# JSONL log for hook errors — enables validate-hook-health to surface repeat
+# offenders without needing CLAUDE_HOOKS_DEBUG set.
+_DEFAULT_HOOK_ERRORS_PATH = Path.home() / ".claude" / "learning" / "hook-errors.jsonl"
+
+
+def _hook_errors_path() -> Path:
+    """Resolve the error log at call time so tests and operators can isolate it."""
+    override = os.environ.get("CLAUDE_HOOK_ERRORS_PATH")
+    return Path(override) if override else _DEFAULT_HOOK_ERRORS_PATH
+
+
+# Path components that mark a file as credential-adjacent. Matched against
+# whole path segments (never substrings), so "assh/" or "renv/" cannot match.
+_SENSITIVE_PATH_DIRS = frozenset({".ssh", ".gnupg", ".aws", ".azure", ".kube", ".gcloud"})
+
+# Basename patterns for credential-shaped files.
+_SENSITIVE_BASENAME_RE = None
+
+
+def _sensitive_basename_pattern():
+    """Lazy-compile the sensitive-basename regex."""
+    global _SENSITIVE_BASENAME_RE
+    if _SENSITIVE_BASENAME_RE is None:
+        import re
+
+        _SENSITIVE_BASENAME_RE = re.compile(
+            r"^(\.env(\..*)?|.*\.(pem|key|p12|pfx)|id_[a-z0-9]+(\.pub)?"
+            r"|.*credentials.*|.*secret.*|token\.json|\.tokens|\.netrc|\.npmrc|\.pypirc)$",
+            re.IGNORECASE,
+        )
+    return _SENSITIVE_BASENAME_RE
+
+
+def is_sensitive_path(path: str) -> bool:
+    """True when a file path looks credential- or secret-bearing.
+
+    Hooks that echo file paths into model-visible context (e.g. subagent
+    warmstart) must drop these entirely — surfacing even the *path* of a key
+    file to a subagent prompt leaks information and invites a follow-up read.
+
+    Args:
+        path: Absolute or relative file path string.
+
+    Returns:
+        True if any path segment is a credential directory (.ssh, .gnupg,
+        .aws, ...) or the basename is credential-shaped (.env*, *.pem, *.key,
+        id_*, *credentials*, *secret*, token.json, ...).
+    """
+    if not path:
+        return False
+    segments = [s for s in path.replace("\\", "/").split("/") if s]
+    if any(seg in _SENSITIVE_PATH_DIRS for seg in segments):
+        return True
+    return bool(segments and _sensitive_basename_pattern().match(segments[-1]))
+
+
+# Secrets pattern used to strip sensitive values from error messages.
+_SECRETS_RE = None
+
+
+def _secrets_pattern():
+    """Lazy-compile secrets regex (avoids import-time re.compile cost)."""
+    global _SECRETS_RE
+    if _SECRETS_RE is None:
+        import re
+
+        _SECRETS_RE = re.compile(
+            r"(Bearer\s+\S+|token[=:]\S+|key[=:]\S+|password[=:]\S+|secret[=:]\S+)",
+            re.IGNORECASE,
+        )
+    return _SECRETS_RE
+
+
+def _redact_secrets(text: str) -> str:
+    """Strip obvious secret patterns from error text."""
+    return _secrets_pattern().sub("<redacted>", text)
+
+
+def _tighten_if_owned(fd: int) -> None:
+    """Set an open file to 0600 when the current user owns it and it is group/other accessible.
+
+    A file owned by someone else is left alone. No-op where uid or fchmod is unavailable.
+    """
+    getuid = getattr(os, "getuid", None)
+    fchmod = getattr(os, "fchmod", None)
+    if getuid is None or fchmod is None:
+        return
+    try:
+        st = os.fstat(fd)
+        if st.st_uid == getuid() and st.st_mode & 0o077:
+            fchmod(fd, 0o600)
+    except OSError:
+        pass
+
+
+def ensure_owner_only_dir(path: Path) -> None:
+    """Create ``path`` (and parents) if missing; the directory itself is created 0700.
+
+    An existing directory is never chmodded.
+    """
+    path.mkdir(parents=True, exist_ok=True, mode=0o700)
+
+
+def ensure_owner_only_file(path: Path) -> None:
+    """Create ``path`` as an empty 0600 file if missing, or tighten it to 0600 if the current user owns it.
+
+    For files another library opens itself (SQLite databases): call before the
+    first connect so the database, and the -wal/-shm files SQLite gives the same
+    mode, never exist group- or world-readable. Best-effort: an OSError (read-only
+    file or directory) is left for the caller's own open to report.
+    """
+    try:
+        fd = os.open(str(path), os.O_RDONLY | os.O_CREAT, 0o600)
+    except OSError:
+        return
+    try:
+        _tighten_if_owned(fd)
+    finally:
+        os.close(fd)
+
+
+def open_owner_only_append(path: Path, follow_symlinks: bool = True):
+    """Open ``path`` for text append, creating it 0600; an existing file is tightened only if owned.
+
+    The mode is passed to os.open, so a new file is never briefly readable by
+    others, whatever the umask. ``follow_symlinks=False`` refuses a symlink at
+    ``path`` (OSError), for files in shared directories such as /tmp.
+    """
+    flags = os.O_WRONLY | os.O_APPEND | os.O_CREAT
+    if not follow_symlinks:
+        flags |= getattr(os, "O_NOFOLLOW", 0)
+    fd = os.open(str(path), flags, 0o600)
+    try:
+        _tighten_if_owned(fd)
+        return os.fdopen(fd, "a", encoding="utf-8")
+    except BaseException:
+        os.close(fd)
+        raise
+
+
+def hook_debug_enabled() -> bool:
+    """True when CLAUDE_HOOKS_DEBUG is set (the toolkit's hook debugging switch)."""
+    return bool(os.environ.get("CLAUDE_HOOKS_DEBUG"))
+
+
+def append_hook_debug_log(path: Path, line: str) -> None:
+    """Append one line to a hook debug log, only when hook debugging is on.
+
+    The log is created 0600. The log lives in a shared directory (/tmp), so a
+    file another account owns is never written to and a symlink is never
+    followed. Never raises.
+    """
+    if not hook_debug_enabled():
+        return
+    try:
+        with open_owner_only_append(path, follow_symlinks=False) as f:
+            getuid = getattr(os, "getuid", None)
+            if getuid is not None and os.fstat(f.fileno()).st_uid != getuid():
+                return
+            f.write(line + "\n")
+    except Exception:
+        pass
+
+
+def hook_error(hook_name: str, exc: BaseException) -> None:
+    """Unconditional one-liner to stderr + append to hook-errors.jsonl.
+
+    Always called. Full traceback only under CLAUDE_HOOKS_DEBUG.
+    Never raises — swallows all internal failures so hooks stay non-blocking.
+    """
+    exc_type = type(exc).__name__
+    exc_msg = _redact_secrets(str(exc))
+    # Unconditional one-liner — always visible.
+    try:
+        print(f"[{hook_name}] HOOK-ERROR: {exc_type}: {exc_msg}", file=sys.stderr)
+    except Exception:
+        pass
+
+    # Full traceback only when debugging.
+    if os.environ.get("CLAUDE_HOOKS_DEBUG"):
+        try:
+            import traceback
+
+            traceback.print_exc(file=sys.stderr)
+        except Exception:
+            pass
+
+    # Append to JSONL log (best-effort, never blocks).
+    try:
+        entry = json.dumps(
+            {
+                "ts": datetime.now(tz=timezone.utc).isoformat(),
+                "hook": hook_name,
+                "type": exc_type,
+                "msg": exc_msg[:500],
+            }
+        )
+        path = _hook_errors_path()
+        ensure_owner_only_dir(path.parent)
+        with open_owner_only_append(path) as f:
+            f.write(entry + "\n")
+    except Exception:
+        pass
+
+
+# =============================================================================
+# Governance Event Recording (enriched wrapper)
+# =============================================================================
+
+# Governance dedup window, in seconds. One event is kept per window for each
+# (session, event type, tool, hook, command head, blocked) combination.
+_GOV_DEDUP_WINDOW_S = 1.0
+
+# In-process fast path only. Each hook invocation is a new process, so the
+# dedup that works across processes is the deterministic event id below.
+_GOV_DEDUP: dict[str, float] = {}
+
+
+def _governance_event_id(window: int, *parts: object) -> str:
+    """The id every process derives for the same governance event in the same window.
+
+    ``governance_events.id`` is the primary key and the insert is ``INSERT OR
+    IGNORE``, so SQLite drops a second process's copy atomically. No extra query
+    runs, and no schema changes.
+    """
+    import hashlib  # lazy: only deny paths record governance events
+
+    digest = hashlib.sha256("\x1f".join(str(p) for p in parts).encode("utf-8", "replace")).hexdigest()[:16]
+    return f"gov-{int(window * _GOV_DEDUP_WINDOW_S * 1000)}-{digest}"
+
+
+def _redact_command_head(command: str, max_len: int = 80) -> str:
+    """First ~80 chars of a command with secrets stripped."""
+    head = command[:max_len]
+    return _redact_secrets(head)
+
+
+def record_governance(
+    event_type: str,
+    *,
+    hook_name: str = "",
+    tool_name: str = "",
+    hook_phase: str = "",
+    severity: str = "",
+    blocked: bool = False,
+    event: dict | None = None,
+    command: str = "",
+) -> str | None:
+    """Enriched governance event recording with dedup and payload.
+
+    Wraps learning_db_v2.record_governance_event with:
+    - session_id extracted from event or environment
+    - payload with hook name and redacted command head
+    - dedup across processes: an identical event (same session, event type, tool,
+      hook, command head, target file, and blocked flag) in the same
+      ``_GOV_DEDUP_WINDOW_S`` window maps to one row. A different session,
+      hook, command, or target file is a different event and is always
+      recorded. The target file comes from the event's ``tool_input``; without
+      it, two blocked edits of different files in one window were one row.
+
+    Never raises. Returns the event id, or None on failure. A duplicate caught
+    in this process returns None; one caught by the database returns the id of
+    the row already stored.
+    """
+    try:
+        # Extract session_id
+        session_id = None
+        if event and isinstance(event, dict):
+            session_id = event.get("session_id")
+        if not session_id:
+            session_id = os.environ.get("CLAUDE_SESSION_ID")
+
+        # Build payload
+        payload: dict[str, Any] = {}
+        if hook_name:
+            payload["hook"] = hook_name
+        if command:
+            payload["command_head"] = _redact_command_head(command)
+
+        # Edit-style tools carry no command: the file is what tells two apart.
+        target = ""
+        tool_input = event.get("tool_input") if isinstance(event, dict) else None
+        if isinstance(tool_input, dict):
+            target = str(tool_input.get("file_path") or tool_input.get("notebook_path") or "")
+
+        now = time.time()
+        window = int(now // _GOV_DEDUP_WINDOW_S)
+        event_id = _governance_event_id(
+            window,
+            session_id,
+            event_type,
+            tool_name,
+            hook_phase,
+            severity,
+            hook_name,
+            payload.get("command_head", ""),
+            target,
+            int(bool(blocked)),
+        )
+        if _GOV_DEDUP.get(event_id) is not None:
+            return None  # suppressed: this process already recorded it
+        _GOV_DEDUP[event_id] = now
+
+        from learning_db_v2 import record_governance_event
+
+        return record_governance_event(
+            event_type,
+            session_id=session_id,
+            tool_name=tool_name,
+            hook_phase=hook_phase,
+            severity=severity,
+            payload=payload if payload else None,
+            blocked=blocked,
+            event_id=event_id,
+        )
+    except Exception:
+        return None
+
+
 def deny_tool_use(event_name: str, reason: str) -> None:
     """Output a structured deny decision for PreToolUse/SubagentStop hooks.
 
@@ -484,20 +839,63 @@ def deny_tool_use(event_name: str, reason: str) -> None:
 # ===== Schema-Compatibility Helpers (PostToolUse) =====
 
 
-def get_tool_result(event: dict) -> dict:
-    """Return the tool result dict from a PostToolUse event.
+def get_tool_result(event: dict) -> object:
+    """Return the normalized tool result from a PostToolUse event.
 
     Handles both Claude/Codex ('tool_result') and Factory CLI
     ('tool_response') schemas. Returns {} if neither key is present.
+    When the value is a string (observed in production), wraps it as
+    {"output": value} so downstream callers like is_tool_error() and
+    get_tool_output() work without isinstance guards.
     """
-    if "tool_result" in event:
-        return event["tool_result"] or {}
-    if "tool_response" in event:
-        return event["tool_response"] or {}
+    for key in ("tool_result", "tool_response"):
+        if key in event:
+            val = event[key]
+            if isinstance(val, (dict, list)):
+                return val
+            if isinstance(val, str):
+                return {"output": val}
+            if val is None:
+                return {}
+            return {}
     return {}
 
 
-def get_tool_output(result: dict) -> str:
+def get_tool_input(event: dict) -> dict:
+    """Return the tool input as a dict from a hook event.
+
+    Handles three observed payload shapes:
+      1. dict  -- the normal case (returned as-is)
+      2. JSON string -- the string is parsed and returned as a dict
+      3. bare string -- returned as {"command": value} for Bash compat
+      4. missing/None/other -- returns {}
+
+    Callers can safely do ``get_tool_input(event).get("command", "")``
+    without an isinstance guard.
+    """
+    raw: object = None
+    for key in ("tool_input", "input"):
+        candidate = event.get(key)
+        if isinstance(candidate, (dict, str)):
+            raw = candidate
+            break
+    if isinstance(raw, dict):
+        return raw
+    if isinstance(raw, str):
+        if not raw:
+            return {}
+        try:
+            parsed = json.loads(raw)
+            if isinstance(parsed, dict):
+                return parsed
+        except (json.JSONDecodeError, ValueError):
+            pass
+        # Bare string (e.g. a command) -- wrap so .get("command") works
+        return {"command": raw}
+    return {}
+
+
+def get_tool_output(result: object) -> str:
     """Return the tool's stdout/output string.
 
     Claude/Codex use 'output'; Factory uses 'stdout'.
@@ -505,66 +903,35 @@ def get_tool_output(result: dict) -> str:
     Note: key presence, not truthiness, determines the field — an empty
     'output' key returns '' without falling through to 'stdout'.
     """
+    if isinstance(result, str):
+        return result
+    if isinstance(result, list):
+        return "\n".join(filter(None, (get_tool_output(item) for item in result)))
+    if not isinstance(result, dict):
+        return ""
     if "output" in result:
         return result["output"] or ""
     if "stdout" in result:
         return result["stdout"] or ""
+    if isinstance(result.get("text"), str):
+        return result["text"]
+    if "content" in result:
+        return get_tool_output(result["content"])
     return ""
 
 
-def get_tool_error(result: dict) -> str:
-    """Return the tool's error/stderr string when an error occurred.
-
-    Claude/Codex surface 'error'; Factory uses 'stderr' (and exitCode != 0
-    indicates failure). Returns empty string when no error.
-    """
-    if result.get("error"):
-        return result["error"]
-    if result.get("exitCode", 0) != 0:
-        return result.get("stderr", "") or result.get("stdout", "")
-    return ""
-
-
-def is_tool_error(result: dict) -> bool:
+def is_tool_error(result: object) -> bool:
     """Detect tool failure across schemas.
 
     Claude/Codex set is_error=True; Factory exposes exitCode (non-zero = error).
     """
+    if isinstance(result, list):
+        return any(is_tool_error(item) for item in result)
+    if not isinstance(result, dict):
+        return False
     if "is_error" in result:
         return bool(result["is_error"])
     return result.get("exitCode", 0) != 0
-
-
-# =============================================================================
-# Activation Recording
-# =============================================================================
-
-
-def record_activations_safe(
-    results: list[dict],
-    session_id: str | None = None,
-    *,
-    debug: bool = False,
-) -> None:
-    """Record activations for injected learnings. Never blocks.
-
-    Extracts (topic, key) pairs from result dicts and batch-records them.
-    Swallows all exceptions so hook execution is never interrupted.
-
-    Args:
-        results: List of learning dicts with "topic" and "key" keys.
-        session_id: Session identifier for activation tracking.
-        debug: If True, log failures to stderr.
-    """
-    try:
-        from learning_db_v2 import record_activations
-
-        entries = [(r["topic"], r["key"]) for r in results]
-        if entries:
-            record_activations(entries, session_id)
-    except Exception as e:
-        if debug:
-            print(f"[activation] Recording failed: {e}", file=sys.stderr)
 
 
 # =============================================================================
@@ -582,6 +949,8 @@ def working_tree_diff(cwd: Optional[str], timeout: int = 15) -> str:
     Fails closed to an empty string on any error (non-repo, git missing,
     timeout) so callers can treat "no diff" and "couldn't diff" the same way.
     """
+    import subprocess
+
     try:
         result = subprocess.run(
             ["git", "diff", "--no-color", "HEAD"],
@@ -628,8 +997,8 @@ def has_reviewable_content(diff: str, scannable_exts: frozenset[str]) -> bool:
     - Files whose extension is not in `scannable_exts` (docs/config) → ignored.
     - Mode-only / pure-rename diffs (no added content lines) → False.
 
-    An added line in a scannable file (e.g. a new ``eval(...)`` in a ``.py``)
-    MUST pass this gate — true positives are preserved.
+    An added line in a scannable file (e.g. a new dangerous-eval call in a
+    ``.py``) MUST pass this gate — true positives are preserved.
     """
     current_scannable = False  # is the file in the current diff block scannable?
     for line in diff.splitlines():
@@ -719,6 +1088,8 @@ class DiffDedup:
         from colliding. Fails open: if normalization ever raises, fall back to
         hashing the raw diff (the original byte-identical behavior).
         """
+        import hashlib
+
         try:
             normalized = normalize_diff_for_fingerprint(diff)
         except Exception:
@@ -766,6 +1137,8 @@ class DiffDedup:
             "cwd": cwd or "",
         }
         try:
+            import tempfile
+
             self.state_dir.mkdir(parents=True, exist_ok=True)
             fd, tmp = tempfile.mkstemp(dir=str(self.state_dir), suffix=".tmp")
             try:
@@ -781,6 +1154,33 @@ class DiffDedup:
         except Exception:
             # At worst we double-review on the next event — the existing behavior.
             pass
+
+
+PENDING_ADVISORY_DIR = Path.home() / ".claude" / "state" / "pending-advisories"
+
+
+def defer_advisory(session_id: str | None, source: str, message: str, summary: str) -> bool:
+    """Queue an advisory for the NEXT user prompt instead of rewaking the model.
+
+    A rewake (exit 2) forces a full-context generation to read an advisory the
+    model cannot act on until the user speaks again. Deferral delivers the same
+    text as additionalContext on the next UserPromptSubmit (see
+    hooks/pending-advisory-injector-userprompt.py) at zero generation cost.
+    Never raises. Returns True when the advisory was written.
+    """
+    if not session_id or not isinstance(session_id, str) or "/" in session_id or "\\" in session_id:
+        return False
+    if session_id in (".", ".."):
+        return False
+    try:
+        PENDING_ADVISORY_DIR.mkdir(parents=True, exist_ok=True)
+        path = PENDING_ADVISORY_DIR / f"{session_id}.jsonl"
+        row = {"ts": time.time(), "source": source, "summary": summary, "message": message}
+        with path.open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps(row) + "\n")
+        return True
+    except Exception:
+        return False
 
 
 def async_rewake(message: str, summary: str) -> None:

@@ -7,18 +7,51 @@ on ``PATH`` that returns a controlled CI-status result. This exercises the
 hook's real subprocess boundary without depending on the surrounding repo.
 """
 
+import ast
 import json
 import os
 import stat
 import subprocess
 import sys
+from pathlib import Path
 
 HOOK = os.path.join(os.path.dirname(__file__), "..", "ci-merge-gate.py")
+REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 
 # Deterministic CI-status payload the fake `gh pr checks` emits by default:
 # a single passing check. The hook treats this as "all checks passed", so no
 # CI-derived deny can fire and the --admin/--force bypass branches are isolated.
 _FAKE_GH_CHECKS_PASS = '[{"name": "ci", "state": "SUCCESS", "bucket": "pass"}]'
+
+
+def test_registered_timeout_exceeds_worst_subprocess_path():
+    """The host timeout must cover every subprocess on the longest hook path."""
+    settings = json.loads((REPO_ROOT / ".claude" / "settings.json").read_text())
+    registrations = [
+        hook
+        for group in settings["hooks"]["PreToolUse"]
+        for hook in group["hooks"]
+        if "ci-merge-gate.py" in hook["command"]
+    ]
+    assert len(registrations) == 1
+
+    tree = ast.parse(Path(HOOK).read_text())
+    subprocess_timeouts = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        if not isinstance(node.func, ast.Attribute) or node.func.attr != "run":
+            continue
+        if not isinstance(node.func.value, ast.Name) or node.func.value.id != "subprocess":
+            continue
+        timeout = next((kw.value for kw in node.keywords if kw.arg == "timeout"), None)
+        assert isinstance(timeout, ast.Constant) and isinstance(timeout.value, int)
+        subprocess_timeouts.append(timeout.value)
+
+    # With no PR number, both subprocess calls can run sequentially. Claude Code
+    # reads the registered timeout in seconds, the same unit as subprocess.run.
+    worst_path_s = sum(subprocess_timeouts)
+    assert registrations[0]["timeout"] > worst_path_s
 
 
 def _install_fake_gh(tmp_dir: str, checks_json: str) -> str:
@@ -151,19 +184,6 @@ class TestForceBlock:
 
 
 class TestPassthrough:
-    def test_normal_merge_passes(self, tmp_path):
-        """Normal merge should not be blocked by admin/force checks."""
-        r = run_hook("gh pr merge 55 --squash", tmp_path=tmp_path)
-        assert r.returncode == 0
-        # Should not have a deny from admin/force (CI check may still fire but that's separate)
-        for line in r.stdout.strip().split("\n"):
-            line = line.strip()
-            if line.startswith("{"):
-                data = json.loads(line)
-                reason = data.get("hookSpecificOutput", {}).get("permissionDecisionReason", "")
-                assert "--admin" not in reason
-                assert "--force" not in reason
-
     def test_non_merge_command_passes(self, tmp_path):
         """Non-merge commands should pass through completely."""
         r = run_hook("gh pr view 55", tmp_path=tmp_path)
@@ -221,6 +241,8 @@ class TestCIStatusGate:
         r = run_hook("gh pr merge 55 --squash", gh_checks_json=passing, tmp_path=tmp_path)
         assert r.returncode == 0
         assert _last_decision(r.stdout) is None, "Passing CI must not produce a deny"
+        assert r.stdout == "", "Allowed hooks must reserve stdout for protocol output"
+        assert "Merge allowed" in r.stderr
 
     def test_pr_number_resolved_via_view_fallback(self, tmp_path):
         """No PR number in command -> hook resolves it via `gh pr view`, then gates CI."""

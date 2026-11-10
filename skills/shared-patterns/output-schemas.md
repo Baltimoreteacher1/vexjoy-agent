@@ -53,7 +53,7 @@ Standardized output patterns for different agent types. Agents SHOULD use the ap
 - [ ] [Action item]
 ```
 
-**Used by:** performance-optimization-engineer, codebase-analyzer, research-coordinator-engineer
+**Used by:** performance-optimization-engineer, assessment, research-coordinator-engineer
 
 ---
 
@@ -95,7 +95,7 @@ Standardized output patterns for different agent types. Agents SHOULD use the ap
 - **NEEDS_CHANGES**: Issues found but not blocking, request changes
 - **BLOCK**: Critical issues, do not merge until resolved
 
-**Used by:** reviewer-security, reviewer-business-logic, systematic-code-review skill, all roaster agents
+**Used by:** reviewer-system, reviewer-domain, review skill, all roaster agents
 
 ---
 
@@ -158,7 +158,7 @@ Standardized output patterns for different agent types. Agents SHOULD use the ap
 - [Recommendation based on findings]
 ```
 
-**Used by:** codebase-overview skill, Explore agent
+**Used by:** assessment skill, Explore agent
 
 ---
 
@@ -183,6 +183,6 @@ Domain-specific agents may extend base schemas:
 [Additional content for this domain]
 ```
 
-For example, `reviewer-security` extends Reviewer Schema with:
+For example, `reviewer-system` extends Reviewer Schema with:
 - OWASP Top 10 Coverage
 - Compliance Status

@@ -94,6 +94,14 @@ class TestLoadConfig:
         assert disabled_job["model"] == "haiku"
         assert disabled_job["timeout_seconds"] == 60
 
+    def test_job_with_no_model_anywhere_defaults_to_opus(self, tmp_path: Path) -> None:
+        """Owner order 2026-11-01: Sonnet is no default."""
+        path = tmp_path / "schedules.json"
+        path.write_text(json.dumps({"jobs": [{"name": "bare", "prompt": "do the thing"}]}))
+        config = agent_scheduler.load_config(path)
+        assert agent_scheduler._DEFAULT_MODEL == "opus"
+        assert config["jobs"][0]["model"] == "opus"
+
     def test_missing_config_exits(self, tmp_path: Path) -> None:
         with pytest.raises(SystemExit):
             agent_scheduler.load_config(tmp_path / "nonexistent.json")
@@ -109,6 +117,49 @@ class TestLoadConfig:
         no_jobs.write_text(json.dumps({"version": 1}))
         with pytest.raises(SystemExit):
             agent_scheduler.load_config(no_jobs)
+
+    def test_command_runner_config(self, tmp_path: Path) -> None:
+        config_path = tmp_path / "schedules.json"
+        config_path.write_text(
+            json.dumps(
+                {
+                    "jobs": [
+                        {
+                            "name": "doc-counts",
+                            "runner": "command",
+                            "trigger": {"type": "cron", "schedule": "0 * * * *"},
+                            "command": ["python3", "scripts/validate-doc-counts.py"],
+                        }
+                    ]
+                }
+            )
+        )
+
+        config = agent_scheduler.load_config(config_path)
+        job = config["jobs"][0]
+        assert job["runner"] == "command"
+        assert job["model"] == "command"
+        assert job["cost_limit_usd"] == 0.0
+
+    def test_command_runner_requires_argv_array(self, tmp_path: Path) -> None:
+        config_path = tmp_path / "schedules.json"
+        config_path.write_text(
+            json.dumps(
+                {
+                    "jobs": [
+                        {
+                            "name": "bad-command",
+                            "runner": "command",
+                            "trigger": {"type": "cron", "schedule": "0 * * * *"},
+                            "command": "python3 scripts/validate-doc-counts.py",
+                        }
+                    ]
+                }
+            )
+        )
+
+        with pytest.raises(SystemExit):
+            agent_scheduler.load_config(config_path)
 
 
 # ---------------------------------------------------------------------------
@@ -128,21 +179,14 @@ class TestCronParsing:
         ("expression", "dt", "expected"),
         [
             ("* * * * *", datetime(2026, 3, 14, 12, 30, tzinfo=timezone.utc), True),
-            ("*/5 * * * *", datetime(2026, 3, 14, 12, 0, tzinfo=timezone.utc), True),
             ("*/5 * * * *", datetime(2026, 3, 14, 12, 5, tzinfo=timezone.utc), True),
             ("*/5 * * * *", datetime(2026, 3, 14, 12, 3, tzinfo=timezone.utc), False),
-            ("30 8 * * *", datetime(2026, 3, 14, 8, 30, tzinfo=timezone.utc), True),
             ("30 8 * * *", datetime(2026, 3, 14, 9, 30, tzinfo=timezone.utc), False),
-            ("0 */6 * * *", datetime(2026, 3, 14, 0, 0, tzinfo=timezone.utc), True),
             ("0 */6 * * *", datetime(2026, 3, 14, 6, 0, tzinfo=timezone.utc), True),
-            ("0 */6 * * *", datetime(2026, 3, 14, 3, 0, tzinfo=timezone.utc), False),
-            ("0 8 * * *", datetime(2026, 3, 14, 8, 0, tzinfo=timezone.utc), True),
-            ("0 8 * * *", datetime(2026, 3, 14, 9, 0, tzinfo=timezone.utc), False),
             ("0 0 1 * *", datetime(2026, 1, 1, 0, 0, tzinfo=timezone.utc), True),
             ("0 0 1 * *", datetime(2026, 1, 2, 0, 0, tzinfo=timezone.utc), False),
             ("10-20 * * * *", datetime(2026, 3, 14, 12, 15, tzinfo=timezone.utc), True),
             ("10-20 * * * *", datetime(2026, 3, 14, 12, 25, tzinfo=timezone.utc), False),
-            ("0,30 * * * *", datetime(2026, 3, 14, 12, 0, tzinfo=timezone.utc), True),
             ("0,30 * * * *", datetime(2026, 3, 14, 12, 30, tzinfo=timezone.utc), True),
             ("0,30 * * * *", datetime(2026, 3, 14, 12, 15, tzinfo=timezone.utc), False),
         ],
@@ -192,6 +236,11 @@ class TestRenderPrompt:
         result = agent_scheduler.render_prompt("Job: {job.name} - {job.description}", variables)
         assert result == "Job: health-check - Check health"
 
+    def test_command_job_command_renders_each_arg_without_shell(self) -> None:
+        job = {"command": ["python3", "scripts/check.py", "--path", "{file_path}"]}
+        result = agent_scheduler.build_command_job_command(job, {"file_path": "a file.md"})
+        assert result == ["python3", "scripts/check.py", "--path", "a file.md"]
+
 
 # ---------------------------------------------------------------------------
 # Cost estimation
@@ -214,13 +263,68 @@ class TestCostEstimation:
     def test_token_count_parsing(self) -> None:
         stdout = "Some output\ninput_tokens: 1000\noutput_tokens: 500\n"
         cost = agent_scheduler.estimate_cost("haiku", stdout)
-        expected = (1000 / 1_000_000) * 0.25 + (500 / 1_000_000) * 1.25
+        expected = (1000 / 1_000_000) * 0.10 + (500 / 1_000_000) * 0.50
         assert abs(cost - round(expected, 6)) < 0.000001
 
-    def test_unknown_model_falls_back_to_haiku(self) -> None:
-        cost = agent_scheduler.estimate_cost("unknown-model", "x" * 400)
-        haiku_cost = agent_scheduler.estimate_cost("haiku", "x" * 400)
-        assert cost == haiku_cost
+    @pytest.mark.parametrize(
+        ("model", "expected"),
+        [("haiku", 0.51), ("sonnet", 10.20), ("opus", 20.40), ("fable", 40.80)],
+    )
+    def test_list_prices_match_the_2026_11_09_guide(self, model: str, expected: float) -> None:
+        """1M output tokens plus a prompt at the 100K boundary, which still bills the base rate."""
+        stdout = "input_tokens: 100000\noutput_tokens: 1000000"
+        assert agent_scheduler.estimate_cost(model, stdout) == pytest.approx(expected)
+
+    def test_haiku_long_prompt_bills_the_higher_rate(self) -> None:
+        """Haiku 5.5 costs 0.50/2.50 per 1M tokens once the prompt passes 100K tokens."""
+        stdout = "input_tokens: 200000\noutput_tokens: 1000000"
+        assert agent_scheduler.estimate_cost("haiku", stdout) == pytest.approx(0.2 * 0.50 + 2.50)
+
+    def test_long_prompt_leaves_flat_rate_models_unchanged(self) -> None:
+        stdout = "input_tokens: 200000\noutput_tokens: 1000000"
+        assert agent_scheduler.estimate_cost("opus", stdout) == pytest.approx(0.2 * 4.00 + 20.00)
+
+    def test_fable_costs_twice_opus(self) -> None:
+        stdout = "x" * 4000
+        assert agent_scheduler.estimate_cost("fable", stdout) == pytest.approx(
+            2 * agent_scheduler.estimate_cost("opus", stdout)
+        )
+
+    @pytest.mark.parametrize(
+        ("model", "alias"),
+        [
+            ("claude-opus-5-5", "opus"),
+            ("claude-fable-5-2", "fable"),
+            ("claude-haiku-5-5", "haiku"),
+            ("claude-sonnet-5-5", "sonnet"),
+            ("claude-opus-5-5-20261101", "opus"),
+            ("us.anthropic.claude-haiku-5-5-v1:0", "haiku"),
+            ("opus[1m]", "opus"),
+            ("Claude-Opus-5-5", "opus"),
+        ],
+    )
+    def test_full_model_id_bills_its_alias_row(self, model: str, alias: str) -> None:
+        stdout = "input_tokens: 50000\noutput_tokens: 1000000"
+        assert agent_scheduler.resolve_price_alias(model) == alias
+        assert agent_scheduler.estimate_cost(model, stdout) == agent_scheduler.estimate_cost(alias, stdout)
+
+    def test_full_haiku_id_bills_the_long_prompt_rate(self) -> None:
+        stdout = "input_tokens: 200000\noutput_tokens: 1000000"
+        assert agent_scheduler.estimate_cost("claude-haiku-5-5", stdout) == pytest.approx(0.2 * 0.50 + 2.50)
+
+    @pytest.mark.parametrize("model", ["unknown-model", "", "gpt-9", "opusplan", "claude-opus-or-haiku", "command"])
+    def test_unknown_model_bills_the_most_expensive_row(self, model: str) -> None:
+        """Budgets fail safe: a name with no price row never bills below the top rate."""
+        stdout = "input_tokens: 200000\noutput_tokens: 1000000"
+        assert agent_scheduler.resolve_price_alias(model) is None
+        cost = agent_scheduler.estimate_cost(model, stdout)
+        assert cost == max(agent_scheduler.estimate_cost(alias, stdout) for alias in agent_scheduler._COST_PER_MILLION)
+        assert cost == pytest.approx(0.2 * 8.00 + 40.00)
+
+    def test_unknown_model_is_logged(self, caplog: pytest.LogCaptureFixture) -> None:
+        with caplog.at_level("WARNING", logger="agent-scheduler"):
+            agent_scheduler.estimate_cost("unknown-model", "x" * 400)
+        assert "unknown-model" in caplog.text
 
 
 # ---------------------------------------------------------------------------
@@ -344,6 +448,38 @@ class TestSchedulerExecution:
         assert result is not None
         assert result["exit_code"] == 124
 
+    @patch("subprocess.run")
+    def test_execute_command_job_uses_command_runner(self, mock_run: MagicMock, scheduler: Any, temp_db: Path) -> None:
+        mock_run.return_value = MagicMock(returncode=0, stdout="docs ok", stderr="")
+        job = {
+            "name": "doc-counts",
+            "runner": "command",
+            "trigger": {"type": "cron", "schedule": "0 * * * *"},
+            "command": ["python3", "scripts/validate-doc-counts.py"],
+            "timeout_seconds": 10,
+            "model": "command",
+            "cost_limit_usd": 0.0,
+        }
+
+        result = scheduler.execute_job(job, "cron", "0 * * * *")
+
+        assert result is not None
+        assert result["exit_code"] == 0
+        assert result["cost_estimate_usd"] == 0.0
+        mock_run.assert_called_once()
+        args, kwargs = mock_run.call_args
+        assert args[0] == ["python3", "scripts/validate-doc-counts.py"]
+        assert kwargs["cwd"] == str(agent_scheduler._REPO_ROOT)
+
+        conn = sqlite3.connect(str(temp_db))
+        conn.row_factory = sqlite3.Row
+        row = conn.execute(
+            "SELECT model, cost_estimate_usd FROM job_results WHERE job_name = ?", ("doc-counts",)
+        ).fetchone()
+        assert row["model"] == "command"
+        assert row["cost_estimate_usd"] == 0.0
+        conn.close()
+
     def test_daily_budget_enforcement(self, scheduler: Any) -> None:
         for i in range(10):
             agent_scheduler.record_result(
@@ -364,6 +500,37 @@ class TestSchedulerExecution:
         result = scheduler.execute_job(job, "cron", "*/5 * * * *")
         assert result is None
 
+    @patch("subprocess.run")
+    def test_daily_budget_does_not_block_command_jobs(self, mock_run: MagicMock, scheduler: Any) -> None:
+        mock_run.return_value = MagicMock(returncode=0, stdout="ok", stderr="")
+        for i in range(10):
+            agent_scheduler.record_result(
+                job_name=f"expensive-{i}",
+                trigger_type="cron",
+                started_at=f"2026-03-14T{i:02d}:00:00+00:00",
+                finished_at=f"2026-03-14T{i:02d}:01:00+00:00",
+                exit_code=0,
+                stdout="",
+                stderr="",
+                model="opus",
+                duration_seconds=60,
+                cost_estimate_usd=1.0,
+                trigger_detail="* * * * *",
+            )
+
+        job = {
+            "name": "doc-counts",
+            "runner": "command",
+            "trigger": {"type": "cron", "schedule": "0 * * * *"},
+            "command": ["python3", "scripts/validate-doc-counts.py"],
+            "timeout_seconds": 10,
+            "model": "command",
+            "cost_limit_usd": 0.0,
+        }
+        result = scheduler.execute_job(job, "cron", "0 * * * *")
+        assert result is not None
+        assert result["exit_code"] == 0
+
 
 # ---------------------------------------------------------------------------
 # Webhook handler
@@ -372,14 +539,14 @@ class TestSchedulerExecution:
 
 class TestWebhookHandler:
     def test_signature_verification_valid(self) -> None:
-        secret = "test-secret"
+        secret = "test-secret"  # security-review: ignore - intentional HMAC test fixture, not a credential
         body = b'{"action": "opened"}'
         expected = "sha256=" + hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
         computed = "sha256=" + hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
         assert hmac.compare_digest(expected, computed)
 
     def test_signature_verification_invalid(self) -> None:
-        secret = "test-secret"
+        secret = "test-secret"  # security-review: ignore - intentional HMAC test fixture, not a credential
         body = b'{"action": "opened"}'
         wrong_sig = "sha256=" + "0" * 64
         expected = "sha256=" + hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()

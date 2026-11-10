@@ -1,0 +1,1665 @@
+#!/usr/bin/env python3
+"""Tests for scripts/build-dispatch.py (ADR: router-improvement-program, C4).
+
+Covers:
+- Marker round-trip against the REAL recorder parser
+  (hooks/routing-decision-recorder.py) on 9 marker variants: agent/skill,
+  complexity, model, health gate inputs (numeric and `health=-`), alts, stack.
+- Model enforcement: required for medium/complex, optional for trivial/simple.
+- Preamble completeness and block order: marker first, exact Skill-tool calls,
+  then thinking directive, token line, Task Specification, the 6 mandatory injections,
+  optional worktree/local-only blocks.
+- Thinking directive by complexity + slow/fast overrides.
+- Graceful degradation: missing optional fields omit their block only.
+- Token budget: explicit value, settings.json read, 500000 default.
+- CLI: --json / --json-file / stdin; exit 2 + empty stdout on bad input.
+- task_spec.files: missing paths rejected by name, `new:` allowed, sensitive skipped.
+- Repo state block: present by default, absent with --no-gather, capped, degrades
+  to `unavailable` lines outside a repo, deterministic, under 300 ms end to end.
+
+Run with: python3 -m pytest scripts/tests/test_build_dispatch.py -v
+"""
+
+import functools
+import importlib.util
+import json
+import os
+import subprocess
+import sys
+import time
+from pathlib import Path
+from unittest.mock import patch
+
+import pytest
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+SCRIPT_PATH = REPO_ROOT / "scripts" / "build-dispatch.py"
+RECORDER_PATH = REPO_ROOT / "hooks" / "routing-decision-recorder.py"
+
+
+def _load(path: Path, name: str):
+    spec = importlib.util.spec_from_file_location(name, path)
+    mod = importlib.util.module_from_spec(spec)
+    with patch("sys.exit"):
+        spec.loader.exec_module(mod)
+    return mod
+
+
+# build-dispatch validates agents and skill calls against the index. The
+# checkout's INDEX.json is generated and gitignored, so read a tmp build.
+pytestmark = pytest.mark.usefixtures("use_public_index")
+
+bd = _load(SCRIPT_PATH, "build_dispatch")
+recorder = _load(RECORDER_PATH, "routing_decision_recorder")
+
+# Existing-behaviour tests must stay byte-stable across repo edits, so they
+# skip the repo-state block. Gather tests call bd.build_preamble directly.
+_preamble = functools.partial(bd.build_preamble, gather=False)
+
+
+def _decision(**overrides):
+    """A complete, valid routing decision; overrides replace top-level keys."""
+    base = {
+        "agent": "python-general-engineer",
+        "skill": "testing",
+        "complexity": "medium",
+        "model": "opus",
+        "health": {"confidence": 0.72, "n": 6, "failure": 0, "action": "keep"},
+        "stack": ["testing"],
+        "task_spec": {
+            "intent": "Fix the flaky retry test.",
+            "constraints": "Branch from main; no force-push.",
+            "acceptance": "pytest green; CI green.",
+            "files": "scripts/build-dispatch.py, scripts/tests/test_build_dispatch.py",
+            "operator_context": "personal profile, full autonomy",
+        },
+        "flags": {"worktree": False, "local_only": False, "thinking_override": None},
+        "token_remaining": 480000,
+    }
+    base.update(overrides)
+    return base
+
+
+# ---------------------------------------------------------------------------
+# Marker round-trip: build with the script, parse with the REAL recorder.
+# Each case: (decision overrides, expected recorder reads).
+# ---------------------------------------------------------------------------
+
+ROUND_TRIP_CASES = [
+    pytest.param(  # V1: everything — numeric health, all gate inputs, alts, stack, model
+        {
+            "agent": "golang-general-engineer",
+            "skill": "programming",
+            "complexity": "complex",
+            "model": "opus",
+            "manual_model_override": True,
+            "health": {
+                "confidence": 0.72,
+                "n": 6,
+                "failure": 1,
+                "action": "keep",
+                "alts": ["claude:quick", "python-general-engineer:tdd"],
+            },
+            "stack": ["testing"],
+        },
+        {
+            "agent": "golang-general-engineer",
+            "skill": "programming",
+            "complexity": "complex",
+            "model": "opus",
+            "health": 0.72,
+            "n": 6,
+            "failure": 1,
+            "action": "keep",
+            "alternates": ["claude:quick", "python-general-engineer:tdd"],
+            "gate_inputs_present": True,
+            "stack": ["testing"],
+        },
+        id="full-gate-inputs-alts-stack-model",
+    ),
+    pytest.param(  # V2: no weight row (health=-) with a stack
+        {"health": {}, "stack": ["quick"]},
+        {
+            "agent": "python-general-engineer",
+            "skill": "testing",
+            "complexity": "medium",
+            "model": "opus",
+            "health": None,
+            "n": None,
+            "failure": None,
+            "action": None,
+            "alternates": None,
+            "gate_inputs_present": True,
+            "stack": ["quick"],
+        },
+        id="health-dash-with-stack",
+    ),
+    pytest.param(  # V3: agent-only routing => skill=-, recorder reads ""
+        # Trivial only: simple/medium/complex now hard-fail on a missing skill.
+        {"skill": "", "complexity": "trivial", "health": None, "stack": []},
+        {
+            "agent": "python-general-engineer",
+            "skill": "",
+            "complexity": "trivial",
+            "model": "opus",
+            "health": None,
+            "gate_inputs_present": True,
+            "stack": None,
+        },
+        id="agent-only-skill-dash",
+    ),
+    pytest.param(  # V4: numeric health alone — no n/fail/action/alts tokens
+        {"health": {"confidence": 0.5}, "stack": []},
+        {
+            "agent": "python-general-engineer",
+            "skill": "testing",
+            "complexity": "medium",
+            "model": "opus",
+            "health": 0.5,
+            "n": None,
+            "failure": None,
+            "action": None,
+            "alternates": None,
+            "gate_inputs_present": True,
+            "stack": None,
+        },
+        id="numeric-health-alone",
+    ),
+    pytest.param(  # V5: simple complexity, model omitted => model=-
+        {"complexity": "simple", "health": None, "stack": [], "model": None},
+        {
+            "agent": "python-general-engineer",
+            "skill": "testing",
+            "complexity": "simple",
+            "model": None,
+            "health": None,
+            "gate_inputs_present": True,
+            "stack": None,
+        },
+        id="simple-no-model-no-health",
+    ),
+    pytest.param(  # V6: confidence 1.0 formats as integer '1'; tiebreak action
+        {"health": {"confidence": 1.0, "n": 12, "failure": 0, "action": "tiebreak"}, "stack": []},
+        {
+            "agent": "python-general-engineer",
+            "skill": "testing",
+            "complexity": "medium",
+            "model": "opus",
+            "health": 1.0,
+            "n": 12,
+            "failure": 0,
+            "action": "tiebreak",
+            "gate_inputs_present": True,
+            "stack": None,
+        },
+        id="confidence-one-tiebreak",
+    ),
+    pytest.param(  # V7: trivial complexity, uppercase input normalized, model omitted
+        {"complexity": "Trivial", "agent": "CLAUDE", "skill": "quick", "health": None, "stack": [], "model": None},
+        {
+            "agent": "claude",
+            "skill": "quick",
+            "complexity": "trivial",
+            "model": None,
+            "health": None,
+            "gate_inputs_present": True,
+            "stack": None,
+        },
+        id="case-normalized-trivial-no-model",
+    ),
+    pytest.param(  # V8: legacy GPT-5.5 remains a manual-only compatibility lane.
+        {"model": "gpt-5.5", "model_effort": "high", "manual_model_override": True},
+        {
+            "agent": "python-general-engineer",
+            "skill": "testing",
+            "complexity": "medium",
+            "model": "gpt-5.5",
+            "health": 0.72,
+            "n": 6,
+            "failure": 0,
+            "action": "keep",
+            "alternates": None,
+            "gate_inputs_present": True,
+            "stack": ["testing"],
+        },
+        id="gpt-5.5-manual-compatibility-model",
+    ),
+]
+
+
+@pytest.mark.parametrize(("overrides", "expected"), ROUND_TRIP_CASES)
+def test_marker_round_trip_with_real_recorder(overrides, expected):
+    """Every emitted marker parses with the shipped recorder, field for field."""
+    preamble = _preamble(_decision(**overrides))
+
+    routed = recorder.parse_do_route_marker(preamble)
+    assert routed == (expected["agent"], expected["skill"])
+
+    complexity, invalid = recorder.parse_marker_complexity(preamble)
+    assert (complexity, invalid) == (expected["complexity"], "")
+
+    assert recorder.parse_stack(preamble) == expected["stack"]
+    assert recorder.parse_model(preamble) == expected["model"]
+
+    health = recorder.parse_health_inputs(preamble)
+    assert health["health"] == expected["health"]
+    assert health["gate_inputs_present"] == expected["gate_inputs_present"]
+    for key in ("n", "failure", "action", "alternates"):
+        assert health[key] == expected.get(key), key
+
+
+def test_marker_is_first_line_at_line_start():
+    """The recorder anchors ^\\s*\\[do-route\\]; the marker must open line 1."""
+    preamble = _preamble(_decision())
+    assert preamble.splitlines()[0].startswith("[do-route] agent=")
+
+
+# ---------------------------------------------------------------------------
+# Preamble completeness and order.
+# ---------------------------------------------------------------------------
+
+
+def test_preamble_contains_every_mandatory_block_in_order():
+    preamble = _preamble(_decision(complexity="complex"))
+    ordered = [
+        "[do-route] agent=python-general-engineer skill=testing complexity=complex model=opus",
+        "Call the Skill tool with `testing`.",
+        bd.THINKING_SLOW,
+        "~480000 tokens available for this task; prioritize accordingly.",
+        "## Task Specification (auto-extracted)",
+        "**Intent:** Fix the flaky retry test.",
+        "**Constraints:** Branch from main; no force-push.",
+        "**Acceptance criteria:** pytest green; CI green.",
+        "**Relevant file locations:** scripts/build-dispatch.py, scripts/tests/test_build_dispatch.py",
+        "**Operator context:** personal profile, full autonomy",
+        bd.INJ_REFERENCE_LOADING,
+        bd.INJ_COMPLETENESS,
+        bd.INJ_DENSE_COMPLETE,
+        bd.INJ_BASE_INSTRUCTIONS,
+        bd.INJ_ROUTE_FIT,
+    ]
+    pos = -1
+    for piece in ordered:
+        found = preamble.find(piece)
+        assert found > pos, f"missing or out of order: {piece[:60]!r}"
+        pos = found
+
+
+def test_worktree_and_local_only_blocks_follow_flags():
+    both = _preamble(_decision(flags={"worktree": True, "local_only": True}))
+    assert bd.WORKTREE_RULES in both
+    assert bd.LOCAL_ONLY_BLOCK in both
+    neither = _preamble(_decision())
+    assert bd.WORKTREE_RULES not in neither
+    assert bd.LOCAL_ONLY_BLOCK not in neither
+
+
+def test_skill_calls_are_primary_first_ordered_and_deduplicated():
+    decision = _decision(
+        skill="testing",
+        stack=["testing", "quick"],
+    )
+    calls = bd.render_skill_calls(decision).splitlines()
+    assert calls == [
+        "Call the Skill tool with `testing`.",
+        "Call the Skill tool with `quick`.",
+    ]
+
+
+@pytest.mark.parametrize("provider", ("google", "antigravity"))
+def test_skill_calls_for_google_antigravity_emit_read_skill_directive(provider):
+    decision = _decision(
+        skill="review",
+        stack=["review", "quick"],
+        provider=provider,
+    )
+    rendered = bd.render_skill_calls(decision)
+    assert "Read and follow ~/.gemini/skills/review/SKILL.md before starting work." in rendered
+    assert "Operational Summary (review):" in rendered
+    assert "Read and follow ~/.gemini/skills/quick/SKILL.md before starting work." in rendered
+
+
+def test_render_skill_calls_without_summary_falls_back_to_reference(monkeypatch):
+    monkeypatch.setattr(bd, "get_skill_operational_summary", lambda _name: "")
+    decision = _decision(skill="pr-workflow", stack=[], provider="google")
+    calls = bd.render_skill_calls(decision)
+    assert calls == "Read and follow ~/.gemini/skills/pr-workflow/SKILL.md before starting work."
+
+
+def _review_only_alias() -> str:
+    """A one-word trigger or category of the public index that only review claims."""
+    return next(
+        a
+        for a, owners in bd._trigger_claims().items()
+        if owners == ("review",) and a != "review" and a.replace("-", "").isalnum()
+    )
+
+
+def test_trigger_phrase_and_category_alias_coerce_to_canonical_skill():
+    alias = _review_only_alias()
+    calls = bd.render_skill_calls(_decision(skill=alias, stack=[]))
+    assert calls == "Call the Skill tool with `review`."
+
+
+def test_marker_records_the_canonical_skill_for_a_coerced_alias():
+    alias = _review_only_alias()
+    first_line = _preamble(_decision(skill=alias, stack=[])).splitlines()[0]
+    assert " skill=review " in first_line + " "
+
+
+def test_coerced_alias_is_deduplicated_against_its_canonical_skill():
+    alias = _review_only_alias()
+    calls = bd.render_skill_calls(_decision(skill="review", stack=[alias]))
+    assert calls == "Call the Skill tool with `review`."
+
+
+def test_alias_to_unknown_skill_still_fails_closed():
+    with pytest.raises(bd.InputError, match="absent from"):
+        _preamble(_decision(skill="zz-no-such-trigger", stack=[]))
+
+
+# Categories several skills share, as the installed index on the owner's machine
+# carries them. "quuxcorp-ui-modding" stands in for a private overlay skill.
+SHARED_ALIAS_SKILLS = {
+    "programming": {"category": "language", "triggers": ["go test"]},
+    "quuxcorp-ui-modding": {"category": "language", "triggers": ["quuxcorp ui"]},
+    "browser-jev-automation": {"category": "infrastructure", "triggers": ["drive the browser"]},
+    "deploy": {"category": "infrastructure", "triggers": ["deploy website"]},
+    "architecture-deepening": {"category": "analysis", "triggers": ["deepen the architecture"]},
+    "assessment": {"category": "analysis", "triggers": ["explain the codebase"]},
+    "data": {"category": "analysis", "triggers": ["etl job"]},
+    "review": {"category": "code-review", "triggers": ["pr-review"]},
+}
+
+
+@pytest.fixture
+def shared_alias_index(tmp_path, monkeypatch):
+    """An installed index where three categories belong to more than one skill."""
+    index = tmp_path / "index"
+    index.mkdir()
+    (index / "skills.json").write_text(json.dumps({"skills": SHARED_ALIAS_SKILLS}), encoding="utf-8")
+    (index / "agents.json").write_text(
+        json.dumps({"agents": {"python-general-engineer": {"short_description": "Python."}}}), encoding="utf-8"
+    )
+    monkeypatch.setenv("VEXJOY_INDEX_DIR", str(index))
+    bd._trigger_claims.cache_clear()
+    yield index
+    bd._trigger_claims.cache_clear()
+
+
+@pytest.mark.parametrize(
+    ("alias", "candidates"),
+    [
+        ("language", ["programming", "quuxcorp-ui-modding"]),
+        ("infrastructure", ["browser-jev-automation", "deploy"]),
+        ("analysis", ["architecture-deepening", "assessment", "data"]),
+    ],
+)
+def test_alias_several_skills_share_is_an_error_naming_them(shared_alias_index, alias, candidates):
+    # Coercing to the first claimant loaded an unrelated skill: "language"
+    # became a private modding skill and "infrastructure" the browser driver.
+    with pytest.raises(bd.InputError) as raised:
+        bd.render_skill_calls(_decision(skill=alias, stack=[]))
+    message = str(raised.value)
+    assert f"{alias!r}" in message
+    assert ", ".join(candidates) in message
+
+
+def test_shared_alias_in_the_stack_is_an_error_too(shared_alias_index):
+    with pytest.raises(bd.InputError, match="browser-jev-automation, deploy"):
+        bd.render_skill_calls(_decision(skill="review", stack=["infrastructure"]))
+
+
+@pytest.mark.parametrize("alias", ["pr-review", "code-review"])
+def test_alias_one_skill_claims_still_coerces(shared_alias_index, alias):
+    assert bd.render_skill_calls(_decision(skill=alias, stack=[])) == "Call the Skill tool with `review`."
+
+
+def test_cli_shared_alias_exits_2_naming_the_candidates(shared_alias_index):
+    decision = _decision(skill="infrastructure", stack=[], complexity="simple")
+    result = _run_cli("--json", json.dumps(decision), "--no-gather", "--no-record")
+    assert result.returncode == 2
+    assert result.stdout == ""
+    assert "browser-jev-automation, deploy" in result.stderr
+
+
+@pytest.mark.parametrize(("skill", "stack"), [("do", []), ("d", []), ("testing", ["do"])])
+def test_router_entry_points_are_not_skill_calls(skill, stack):
+    # "Call the Skill tool with `do`" re-enters the router on the same request.
+    with pytest.raises(bd.InputError, match="router entry point"):
+        bd.render_skill_calls(_decision(skill=skill, stack=stack))
+
+
+def test_shared_pattern_stack_entry_is_not_a_skill_call():
+    decision = _decision(stack=["anti-rationalization-core", "testing"])
+    calls = bd.render_skill_calls(decision)
+    assert "anti-rationalization-core" not in calls
+    assert calls.endswith("Call the Skill tool with `testing`.")
+
+
+def test_render_skill_calls_renders_antigravity_instruction_for_google_provider():
+    decision = _decision(skill="pr-workflow", stack=[], provider="google")
+    calls = bd.render_skill_calls(decision)
+    assert "Read and follow ~/.gemini/skills/pr-workflow/SKILL.md before starting work." in calls
+    assert "Operational Summary (pr-workflow):" in calls
+
+
+@pytest.mark.parametrize("name", ["reviewer-code", "agent-upgrade", "not-a-real-component"])
+def test_non_skill_stack_names_fail_closed(name):
+    with pytest.raises(bd.InputError, match="skill call"):
+        _preamble(_decision(stack=[name]))
+
+
+def test_pipeline_is_validated_and_marked_but_never_called_as_a_skill():
+    preamble = _preamble(_decision(pipeline="agent-upgrade"))
+    assert " pipeline=agent-upgrade " in preamble.splitlines()[0] + " "
+    assert "Call the Skill tool with `agent-upgrade`." not in preamble
+
+
+def test_unknown_pipeline_fails_closed():
+    with pytest.raises(bd.InputError, match="pipeline-index"):
+        _preamble(_decision(pipeline="not-a-pipeline"))
+
+
+@pytest.mark.parametrize(
+    ("complexity", "override", "expected"),
+    [
+        ("simple", None, "THINKING_FAST"),
+        ("medium", None, ""),
+        ("trivial", None, ""),
+        ("complex", None, "THINKING_SLOW"),
+        ("simple", "slow", "THINKING_SLOW"),  # category override beats complexity
+        ("complex", "fast", "THINKING_FAST"),
+    ],
+)
+def test_thinking_directive_by_complexity_and_override(complexity, override, expected):
+    decision = _decision(complexity=complexity, flags={"thinking_override": override})
+    directive = bd.build_thinking(decision)
+    assert directive == (getattr(bd, expected) if expected else "")
+    if expected:
+        assert getattr(bd, expected) in _preamble(decision)
+    else:
+        assert bd.THINKING_FAST not in _preamble(decision)
+        assert bd.THINKING_SLOW not in _preamble(decision)
+
+
+# ---------------------------------------------------------------------------
+# Graceful degradation and token budget.
+# ---------------------------------------------------------------------------
+
+
+def test_missing_optional_fields_omit_their_blocks_only():
+    # Trivial is the only complexity that may omit the skill (the
+    # skill-greediness gate is HARD for simple/medium/complex).
+    minimal = {"agent": "claude", "complexity": "trivial", "model": "opus"}
+    preamble = _preamble(minimal)
+    assert preamble.startswith("[do-route] agent=claude skill=- complexity=trivial model=opus health=-\n")
+    assert "## Task Specification" not in preamble
+    assert "Call the Skill tool" not in preamble
+    assert "stack={" not in preamble
+    # Mandatory blocks survive the minimal input.
+    for injection in (bd.INJ_REFERENCE_LOADING, bd.INJ_COMPLETENESS, bd.INJ_DENSE_COMPLETE, bd.INJ_BASE_INSTRUCTIONS):
+        assert injection in preamble
+    assert "tokens available for this task" in preamble
+
+
+def test_partial_task_spec_emits_only_given_fields():
+    preamble = _preamble(_decision(task_spec={"intent": "Do the thing."}))
+    assert "**Intent:** Do the thing." in preamble
+    assert "**Constraints:**" not in preamble
+    assert "**Acceptance criteria:**" not in preamble
+
+
+def test_request_verbatim_is_first_task_spec_line_with_exact_label():
+    preamble = _preamble(_decision(task_spec={"intent": "x", "request_verbatim": "hello world"}))
+    block = preamble.split("## Task Specification (auto-extracted)\n\n", 1)[1]
+    lines = block.split("\n")
+    assert lines[0] == "**Request (verbatim):** hello world"
+    assert lines[1] == "**Intent:** x"
+
+
+def test_request_verbatim_absent_leaves_output_unchanged():
+    with_none = _preamble(_decision(task_spec={"intent": "x"}))
+    with_empty = _preamble(_decision(task_spec={"intent": "x", "request_verbatim": "  "}))
+    assert "Request (verbatim)" not in with_none
+    assert with_empty == with_none
+
+
+@pytest.mark.parametrize(
+    ("complexity", "task_spec"),
+    [("medium", None), ("complex", {}), ("medium", {"intent": ""}), ("complex", {"intent": "   ", "files": None})],
+)
+def test_empty_task_spec_rejected_for_medium_and_complex(complexity, task_spec):
+    """A thin handoff must fail closed, not pass as exit 0 with no spec block."""
+    with pytest.raises(bd.InputError, match="'task_spec' required for medium/complex"):
+        _preamble(_decision(complexity=complexity, task_spec=task_spec))
+
+
+@pytest.mark.parametrize(("complexity", "task_spec"), [("trivial", None), ("simple", {}), ("simple", {"intent": ""})])
+def test_empty_task_spec_allowed_for_trivial_and_simple(complexity, task_spec):
+    preamble = _preamble(_decision(complexity=complexity, task_spec=task_spec))
+    assert "## Task Specification" not in preamble
+
+
+def test_any_single_field_satisfies_task_spec_gate():
+    preamble = _preamble(_decision(task_spec={"files": "new:scripts/x.py"}))
+    assert "**Relevant file locations:** new:scripts/x.py" in preamble
+
+
+def test_empty_task_spec_on_medium_exits_2_via_cli():
+    decision = _decision(task_spec={})
+    result = subprocess.run(
+        [sys.executable, str(SCRIPT_PATH), "--json", json.dumps(decision)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 2
+    assert result.stdout == ""
+    assert "task_spec" in result.stderr
+
+
+def test_token_budget_reads_settings_and_defaults(tmp_path):
+    settings = tmp_path / "settings.json"
+    settings.write_text(json.dumps({"orchestration": {"token_budget": 250000}}))
+    decision = _decision(token_remaining=None)
+    line = bd.build_token_line(decision, settings_path=settings)
+    assert line == "~250000 tokens available for this task; prioritize accordingly."
+    # Missing file => documented default 500000.
+    line = bd.build_token_line(decision, settings_path=tmp_path / "absent.json")
+    assert line == "~500000 tokens available for this task; prioritize accordingly."
+
+
+# ---------------------------------------------------------------------------
+# Validation errors.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"agent": ""},
+        {"agent": "Bad Agent!"},
+        {"complexity": "low"},  # the audit's real-world invalid value
+        {"complexity": ""},
+        {"model": "haiku-3"},  # unknown model — not in VALID_MODELS
+        {"health": {"confidence": 1.5}},
+        {"health": {"confidence": 0.5, "action": "boost"}},
+        {"health": {"confidence": 0.5, "n": -1}},
+        {"stack": ["has space"]},
+        {"flags": {"thinking_override": "deep"}},
+        {"token_remaining": -5},
+    ],
+)
+def test_invalid_input_raises(overrides):
+    with pytest.raises(bd.InputError):
+        _preamble(_decision(**overrides))
+
+
+# ---------------------------------------------------------------------------
+# Model enforcement: missing model on medium/complex must error.
+# ---------------------------------------------------------------------------
+
+
+def test_model_required_for_medium_errors_on_omission():
+    """Medium complexity with no model must fail — the live incident this fixes."""
+    with pytest.raises(bd.InputError, match="'model' is required"):
+        _preamble(_decision(model=None))
+
+
+def test_model_required_for_complex_errors_on_omission():
+    with pytest.raises(bd.InputError, match="'model' is required"):
+        _preamble(_decision(complexity="complex", model=None))
+
+
+# ---------------------------------------------------------------------------
+# Route-fit injection (D): every dispatch asks for the closing banner, and the
+# banner the injection names is the one the recorder parses.
+# ---------------------------------------------------------------------------
+
+
+def test_route_fit_injection_present_on_every_dispatch():
+    for complexity in ("trivial", "simple", "medium", "complex"):
+        preamble = _preamble(_decision(complexity=complexity, model="opus"))
+        assert bd.INJ_ROUTE_FIT in preamble, complexity
+        assert "route-fit:" in preamble
+
+
+@pytest.mark.parametrize("verdict", ["ok", "wrong-agent", "wrong-skill", "needs-coordinator", "underspecified"])
+def test_every_injected_verdict_parses_with_the_real_recorder(verdict):
+    """The enum the injection advertises must be exactly what the recorder reads."""
+    assert verdict in bd.INJ_ROUTE_FIT
+    assert recorder.parse_route_fit(f"work done.\nroute-fit: {verdict}") == verdict
+
+
+# ---------------------------------------------------------------------------
+# Agent validation: unknown agent coerces (never raises); general-purpose needs
+# a reason; the fallback token survives the recorder's parser.
+# ---------------------------------------------------------------------------
+
+
+def test_unknown_agent_coerces_to_general_purpose_with_a_reason():
+    """An exception mid-session would stall real work, so this must NOT raise."""
+    marker = bd.build_marker(_decision(agent="python-hook-wizard"))
+    assert "agent=general-purpose" in marker
+    assert "fallback=invalid-agent:python-hook-wizard" in marker
+    # The coerced marker still parses field-for-field with the shipped recorder.
+    assert recorder.parse_do_route_marker(marker) == ("general-purpose", "testing")
+    assert recorder.parse_marker_complexity(marker) == ("medium", "")
+    assert recorder.parse_model(marker) == "opus"
+    assert recorder.parse_health_inputs(marker)["health"] == 0.72
+    assert recorder.parse_fallback_reason(marker) == "invalid-agent:python-hook-wizard"
+
+
+def test_known_agent_and_builtins_are_not_coerced():
+    for agent in ("python-general-engineer", "hook-development-engineer", "claude"):
+        marker = bd.build_marker(_decision(agent=agent))
+        assert f"agent={agent}" in marker
+        assert "fallback=" not in marker
+
+
+def test_unreadable_agent_index_fails_open(tmp_path):
+    """No index => cannot validate => keep the agent. Never manufacture a fallback."""
+    assert bd.load_known_agents(tmp_path / "nope.json") == frozenset()
+
+
+def test_general_purpose_requires_a_fallback_reason():
+    with pytest.raises(bd.InputError, match="fallback_reason"):
+        _preamble(_decision(agent="general-purpose"))
+
+
+def test_general_purpose_with_a_reason_emits_the_token():
+    marker = bd.build_marker(_decision(agent="general-purpose", fallback_reason="No specialist matches!"))
+    assert marker.endswith("fallback=no-specialist-matches")
+    assert recorder.parse_fallback_reason(marker) == "no-specialist-matches"
+
+
+def test_fallback_token_never_shifts_an_existing_marker_field():
+    """`fallback=` is appended last; every other parsed field is byte-identical."""
+    plain = bd.build_marker(_decision(agent="python-general-engineer"))
+    fallen = bd.build_marker(_decision(agent="general-purpose", fallback_reason="no-specialist-match"))
+    assert fallen == plain.replace("agent=python-general-engineer", "agent=general-purpose", 1) + (
+        " fallback=no-specialist-match"
+    )
+    for parse in (recorder.parse_marker_complexity, recorder.parse_stack, recorder.parse_model):
+        assert parse(fallen) == parse(plain)
+    assert recorder.parse_health_inputs(fallen) == recorder.parse_health_inputs(plain)
+
+
+def test_reason_without_a_letter_or_digit_raises():
+    with pytest.raises(bd.InputError, match="fallback_reason"):
+        bd.build_marker(_decision(agent="general-purpose", fallback_reason="!!!"))
+
+
+# ---------------------------------------------------------------------------
+# Skill enforcement: the skill-greediness gate, HARD for simple/medium/complex.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(("complexity", "skill"), [("simple", None), ("medium", ""), ("complex", "-")])
+def test_missing_skill_raises_for_simple_and_above(complexity, skill):
+    with pytest.raises(bd.InputError, match="'skill' is required"):
+        _preamble(_decision(complexity=complexity, skill=skill, model="opus"))
+
+
+def test_missing_skill_allowed_for_trivial():
+    assert "skill=-" in bd.build_marker(_decision(complexity="trivial", skill=None))
+
+
+def test_model_optional_for_trivial_and_simple():
+    """Trivial/simple may omit model — inheritance risk is acceptable."""
+    for complexity in ("trivial", "simple"):
+        preamble = _preamble(_decision(complexity=complexity, model=None))
+        assert "model=-" in preamble.splitlines()[0]
+
+
+# ---------------------------------------------------------------------------
+# GPT-5.6 model policy: benchmark-backed automatic defaults and manual lanes.
+# ---------------------------------------------------------------------------
+
+SUPPLIED_GPT_56_POINTS = {
+    ("gpt-5.6-sol", "max"): (73, 8.39, 60_000, 61),
+    ("gpt-5.6-sol", "xhigh"): (71, 4.70, 41_000, 44),
+    ("gpt-5.6-sol", "high"): (69, 3.47, 28_000, 37),
+    ("gpt-5.6-sol", "medium"): (61, 1.86, 18_000, 31),
+    ("gpt-5.6-sol", "low"): (45, 1.07, 11_000, 23),
+    ("gpt-5.6-terra", "max"): (70, 4.95, 72_000, 76),
+    ("gpt-5.6-terra", "xhigh"): (60, 2.13, 40_000, 43),
+    ("gpt-5.6-terra", "high"): (54, 1.13, 22_000, 34),
+    ("gpt-5.6-terra", "medium"): (35, 0.58, 12_000, 25),
+    ("gpt-5.6-terra", "low"): (24, 0.43, 8_600, 21),
+    ("gpt-5.6-luna", "max"): (67, 3.03, 73_000, 102),
+    ("gpt-5.6-luna", "xhigh"): (57, 1.54, 45_000, 71),
+    ("gpt-5.6-luna", "high"): (44, 0.78, 26_000, 49),
+    ("gpt-5.6-luna", "medium"): (11, 0.22, 8_200, 24),
+    ("gpt-5.6-luna", "low"): (2, 0.07, 3_100, 12),
+}
+
+
+def _dominates(candidate: tuple[int, float, int, int], target: tuple[int, float, int, int]) -> bool:
+    """Return whether ``candidate`` is at least as good on every supplied metric."""
+    candidate_pass, candidate_cost, candidate_tokens, candidate_steps = candidate
+    target_pass, target_cost, target_tokens, target_steps = target
+    return (
+        candidate_pass >= target_pass
+        and candidate_cost <= target_cost
+        and candidate_tokens <= target_tokens
+        and candidate_steps <= target_steps
+        and candidate != target
+    )
+
+
+@pytest.mark.parametrize(
+    ("task_class", "model", "effort"),
+    [
+        ("low-risk", "gpt-5.6-terra", "high"),
+        ("standard", "gpt-5.6-sol", "high"),
+        ("high-risk", "gpt-5.6-sol", "xhigh"),
+    ],
+)
+def test_gpt_56_policy_selects_the_automatic_pareto_defaults(task_class, model, effort):
+    """Automatic task classes select only the documented benchmark defaults."""
+    decision = _decision(model=None, model_policy=task_class, provider="openai")
+    marker = bd.build_marker(decision)
+
+    assert f"model={model}" in marker
+    assert f"effort={effort}" in marker
+    assert recorder.parse_model(marker) == model
+    assert recorder.parse_model_effort(marker) == effort
+
+
+def test_gpt_56_policy_points_are_not_dominated_on_supplied_metrics():
+    """Automatic choices cannot regress to a worse quality/cost/latency point."""
+    for policy, point in bd.AUTO_MODEL_POLICIES.items():
+        assert point in SUPPLIED_GPT_56_POINTS, f"{policy} is not in the supplied benchmark"
+        target = SUPPLIED_GPT_56_POINTS[point]
+        assert not any(_dominates(candidate, target) for candidate in SUPPLIED_GPT_56_POINTS.values()), (
+            f"{policy} selects dominated point {point}"
+        )
+
+
+@pytest.mark.parametrize(
+    ("model", "effort"), [("gpt-5.6-sol", "low"), ("gpt-5.6-terra", "xhigh"), ("gpt-5.6-luna", "max")]
+)
+def test_all_supplied_gpt_56_variants_and_efforts_are_valid_manual_overrides(model, effort):
+    """Every supplied GPT-5.6 pair is representable without becoming an auto route."""
+    marker = bd.build_marker(_decision(model=model, model_effort=effort, manual_model_override=True))
+    assert f"model={model}" in marker
+    assert f"effort={effort}" in marker
+
+
+def test_exceptional_max_power_requires_explicit_override():
+    """The most expensive benchmark point is opt-in, never an automatic default."""
+    with pytest.raises(bd.InputError, match="manual_model_override"):
+        bd.build_marker(_decision(model=None, model_policy="max-power", provider="openai"))
+
+    marker = bd.build_marker(
+        _decision(model=None, model_policy="max-power", manual_model_override=True, provider="openai")
+    )
+    assert "model=gpt-5.6-sol" in marker
+    assert "effort=max" in marker
+
+    # Anthropic max-power also requires override
+    with pytest.raises(bd.InputError, match="manual_model_override"):
+        bd.build_marker(_decision(model=None, model_policy="max-power", provider="anthropic"))
+
+    marker = bd.build_marker(
+        _decision(model=None, model_policy="max-power", manual_model_override=True, provider="anthropic")
+    )
+    assert "model=fable" in marker
+    assert "effort=high" in marker
+
+
+def test_manual_override_can_replace_a_policy_default():
+    """An explicit override wins over the automatic task-class selection."""
+    marker = bd.build_marker(
+        _decision(
+            model_policy="standard",
+            model="gpt-5.6-luna",
+            model_effort="max",
+            manual_model_override=True,
+            provider="openai",
+        )
+    )
+    assert "model=gpt-5.6-luna" in marker
+    assert "effort=max" in marker
+
+
+def test_manual_policy_model_override_requires_explicit_effort():
+    """A different model family must never inherit the policy's effort silently."""
+    with pytest.raises(bd.InputError, match="require 'model_effort'"):
+        bd.build_marker(
+            _decision(
+                model_policy="standard",
+                model="gpt-5.6-luna",
+                manual_model_override=True,
+                provider="openai",
+            )
+        )
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"model": "gpt-5.5", "model_effort": "high"},
+        {"model": "gpt-5.6-terra", "model_effort": "xhigh"},
+        {"model": "gpt-5.6-sol", "model_effort": "ultra", "manual_model_override": True},
+    ],
+)
+def test_non_default_openai_model_choices_require_manual_override(overrides):
+    """Dominated and legacy choices cannot be selected accidentally."""
+    with pytest.raises(bd.InputError):
+        bd.build_marker(_decision(**overrides))
+
+
+# ---------------------------------------------------------------------------
+# Anthropic lane: benchmark-backed automatic defaults and manual lanes.
+# ---------------------------------------------------------------------------
+
+_DO_SKILL_PATH = REPO_ROOT / "skills" / "meta" / "do" / "SKILL.md"
+_DOCUMENTED_EFFORTS = ("max", "xhigh", "high", "medium", "low")
+_DOCUMENTED_ROW_MODELS = {
+    "Opus-4.8 (prior measurement)": "opus-4.8",
+    "Sonnet-5 (prior measurement)": "sonnet",
+}
+
+
+def _parse_cell(cell: str) -> tuple[int, float, int, int]:
+    """Parse one `Pass@1 / cost / output tokens / steps` cell, expanding the `k` suffix."""
+    passed, cost, tokens, steps = (part.strip() for part in cell.split("/"))
+    scaled = int(float(tokens[:-1]) * 1000) if tokens.endswith("k") else int(tokens)
+    return int(passed), float(cost), scaled, int(steps)
+
+
+def _documented_claude_points() -> dict[tuple[str, str], tuple[int, float, int, int]]:
+    """Read the retained Anthropic benchmark table."""
+    points: dict[tuple[str, str], tuple[int, float, int, int]] = {}
+    for line in (_DO_SKILL_PATH.parent / "references" / "model-selection.md").read_text(encoding="utf-8").splitlines():
+        cells = [c.strip() for c in line.strip().strip("|").split("|")]
+        model = _DOCUMENTED_ROW_MODELS.get(cells[0]) if cells else None
+        if model is None or len(cells) != len(_DOCUMENTED_EFFORTS) + 1:
+            continue
+        for effort, cell in zip(_DOCUMENTED_EFFORTS, cells[1:]):
+            points[(model, effort)] = _parse_cell(cell)
+    return points
+
+
+SUPPLIED_CLAUDE_POINTS = {
+    ("opus-4.8", "max"): (59, 13.22, 135_000, 120),
+    ("opus-4.8", "xhigh"): (54, 8.01, 86_000, 95),
+    ("opus-4.8", "high"): (52, 4.28, 50_000, 73),
+    ("opus-4.8", "medium"): (49, 3.44, 41_000, 66),
+    ("opus-4.8", "low"): (41, 2.29, 29_000, 54),
+    ("sonnet", "max"): (54, 26.40, 214_000, 268),
+    ("sonnet", "xhigh"): (50, 11.89, 121_000, 186),
+    ("sonnet", "high"): (48, 7.43, 87_000, 147),
+    ("sonnet", "medium"): (40, 4.08, 57_000, 108),
+    ("sonnet", "low"): (31, 2.19, 36_000, 77),
+}
+
+
+@pytest.mark.parametrize(
+    ("task_class", "model", "effort"),
+    [
+        ("low-risk", "haiku", "low"),
+        ("standard", "opus", "medium"),
+        ("high-risk", "opus", "medium"),
+    ],
+)
+def test_anthropic_policy_maps_tiers_to_measured_models(task_class, model, effort):
+    """Policy 2026-11-09: low-risk haiku (read-only); standard and high-risk opus/medium (owner: medium over high)."""
+    decision = _decision(model=None, model_policy=task_class, provider="anthropic")
+    marker = bd.build_marker(decision)
+
+    assert f"model={model}" in marker
+    assert f"effort={effort}" in marker
+    assert recorder.parse_model(marker) == model
+    assert recorder.parse_model_effort(marker) == effort
+
+
+def test_anthropic_policy_models_are_known_and_effort_never_falls_with_risk():
+    """Every tier names a known Claude model; effort never falls as risk rises."""
+    order = ["low", "medium", "high", "xhigh", "max"]
+    previous = -1
+    for policy in ("low-risk", "standard", "high-risk", "max-power"):
+        model, effort = bd.ANTHROPIC_AUTO_POLICIES[policy]
+        assert model in bd.ANTHROPIC_MODELS, f"{policy} selects unknown model {model}"
+        assert order.index(effort) >= previous, f"{policy} breaks the start-low effort ordering"
+        previous = order.index(effort)
+
+
+def test_anthropic_policy_sonnet_is_no_tier_default():
+    """Owner policy 2026-11-01: haiku for read-only, opus for work, sonnet for none; fable is max-power."""
+    tiers = bd.ANTHROPIC_AUTO_POLICIES
+    assert all(model != "sonnet" for model, _ in tiers.values())
+    assert tiers == {
+        "low-risk": ("haiku", "low"),
+        "standard": ("opus", "medium"),
+        "high-risk": ("opus", "medium"),
+        "max-power": ("fable", "high"),
+    }
+
+
+def test_anthropic_policy_runs_opus_at_medium_on_every_tier():
+    """Owner, 2026-11-09: "Also I prefer opus 5.5 medium over high". opus/high is no tier's default."""
+    opus_tiers = {tier: effort for tier, (model, effort) in bd.ANTHROPIC_AUTO_POLICIES.items() if model == "opus"}
+    assert opus_tiers == {"standard": "medium", "high-risk": "medium"}
+
+
+def test_explicit_opus_high_needs_no_override():
+    """opus/high stays a valid explicit pick: the escalation step after a failed opus/medium attempt."""
+    marker = bd.build_marker(_decision(model="opus", model_effort="high"))
+    assert "model=opus" in marker and "effort=high" in marker
+
+
+@pytest.mark.parametrize("policy", ("standard", "high-risk"))
+@pytest.mark.parametrize("model", (None, "opus"))
+def test_opus_high_under_a_named_tier_is_rejected_with_the_escalation_hint(policy, model):
+    """A tier never yields opus/high by itself; the error names the explicit pick and the owner order."""
+    decision = _decision(model=model, model_policy=policy, model_effort="high")
+    with pytest.raises(bd.InputError) as excinfo:
+        bd.build_marker(decision)
+    message = str(excinfo.value)
+    assert "selects opus/medium" in message
+    assert "opus medium over high" in message
+    assert "model='opus' with model_effort='high' and no model_policy" in message
+    marker = bd.build_marker({**decision, "manual_model_override": True})
+    assert "model=opus" in marker and "effort=high" in marker
+
+
+def test_escalation_hint_stays_off_other_mismatches():
+    """The opus/high hint is for that one pick; other mismatches keep the short message."""
+    for extra in ({"model_effort": "low"}, {"model": "fable", "model_effort": "high"}):
+        with pytest.raises(bd.InputError) as excinfo:
+            bd.build_marker(_decision(**{"model": None, "model_policy": "high-risk", **extra}))
+        assert "no model_policy" not in str(excinfo.value)
+    with pytest.raises(bd.InputError) as excinfo:
+        bd.build_marker(_decision(model=None, model_policy="high-risk", model_effort="high", provider="openai"))
+    assert "no model_policy" not in str(excinfo.value)
+
+
+def test_anthropic_policy_never_raises_opus_past_high():
+    """Past opus/high the ladder goes up a model at a lower effort, never to opus/xhigh or opus/max."""
+    for model, effort in bd.ANTHROPIC_AUTO_POLICIES.values():
+        assert not (model == "opus" and effort in ("xhigh", "max"))
+
+
+def _main_decision(**overrides):
+    base = {"execution": "main", "skill": "testing", "complexity": "simple", "task_spec": {"intent": "fix a typo"}}
+    base.update(overrides)
+    return base
+
+
+def test_main_thread_marker_records_agent_main_and_exec_token():
+    """Main-thread routes keep a valid, recorder-parseable marker with no fallback."""
+    marker = bd.build_marker(_main_decision())
+    assert marker == "[do-route] agent=main skill=testing complexity=simple model=inherit health=- exec=main"
+    assert recorder.parse_do_route_marker(marker) == ("main", "testing")
+    assert recorder.parse_fallback_reason(marker) is None
+
+
+def test_agent_main_implies_main_thread_execution():
+    marker = bd.build_marker({"agent": "main", "skill": "testing", "complexity": "simple"})
+    assert marker.startswith("[do-route] agent=main ") and marker.endswith(" exec=main")
+
+
+def test_main_thread_preamble_omits_worker_handoff_blocks():
+    out = _preamble(_main_decision(complexity="medium"))
+    assert out.splitlines()[0].endswith(" exec=main")
+    assert "Call the Skill tool with `testing`." in out
+    assert bd.MAIN_THREAD_NOTE in out
+    assert bd.INJ_ROUTE_FIT not in out and "Task Specification" not in out
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [{"model": "opus"}, {"model_policy": "standard"}, {"flags": {"worktree": True}}, {"execution": "elsewhere"}],
+)
+def test_main_thread_rejects_dispatch_only_fields(overrides):
+    with pytest.raises(bd.InputError):
+        bd.build_marker(_main_decision(**overrides))
+
+
+def test_cli_main_thread_feeds_the_recorder(tmp_path):
+    """The CLI hands main-thread markers to the real recorder; --no-record skips it."""
+    env = {
+        **os.environ,
+        "CLAUDE_LEARNING_DIR": str(tmp_path / "ld"),
+        "CLAUDE_ROUTING_STATE_DIR": str(tmp_path / "rs"),
+        "CLAUDE_CODE_SESSION_ID": "main-thread-test",
+    }
+    payload = json.dumps(_main_decision())
+    run = functools.partial(subprocess.run, capture_output=True, text=True, env=env, check=False)
+    skipped = run([sys.executable, str(SCRIPT_PATH), "--json", payload, "--no-record"])
+    assert skipped.returncode == 0 and not (tmp_path / "ld" / "route-events.jsonl").exists()
+    result = run([sys.executable, str(SCRIPT_PATH), "--json", payload])
+    assert result.returncode == 0
+    events = (tmp_path / "ld" / "route-events.jsonl").read_text().splitlines()
+    decision = json.loads(events[-1])
+    assert (decision["agent"], decision["skill"], decision["model"]) == ("main", "testing", "inherit")
+    pending = json.loads((tmp_path / "rs" / "claude-routing-outcomes-main-thread-test.json").read_text())["pending"]
+    assert pending[-1]["key"] == "main:testing"
+
+
+def test_opus_max_requires_manual_override():
+    """The unmeasured top tier stays an explicit escalation."""
+    with pytest.raises(bd.InputError, match="manual_model_override"):
+        bd.build_marker(_decision(model="opus", model_effort="max"))
+
+
+def test_supplied_points_match_the_documented_benchmark_table():
+    """The table in the model-selection reference is the source; this dict must track it.
+
+    Without this the dict is a private copy: an edit to the doc table (or a
+    deleted row) leaves the Opus-5-has-no-benchmark-point check above asserting
+    against numbers the toolkit no longer publishes.
+    """
+    assert _documented_claude_points() == SUPPLIED_CLAUDE_POINTS, (
+        "SUPPLIED_CLAUDE_POINTS drifted from the model-selection reference"
+    )
+
+
+@pytest.mark.parametrize("model", ("haiku", "sonnet", "opus"))
+def test_explicit_claude_models_need_no_override(model):
+    """haiku, sonnet, and opus are all accepted explicitly; the marker and recorder carry them."""
+    marker = bd.build_marker(_decision(model=model))
+    assert f"model={model}" in marker
+    assert recorder.parse_model(marker) == model
+
+
+@pytest.mark.parametrize("effort", (None, "medium", "high", "xhigh"))
+def test_explicit_fable_needs_no_override(effort):
+    """fable is accepted wherever opus is; only fable/max needs an override."""
+    marker = bd.build_marker(_decision(model="fable", model_effort=effort))
+    assert "model=fable" in marker
+    assert ("effort=" in marker) == (effort is not None)
+    assert "fable" in bd.VALID_MODELS and "fable" in bd.ANTHROPIC_MODELS
+
+
+def test_fable_marker_round_trips_through_the_recorder():
+    """The recorder (hooks/routing-decision-recorder.py) must accept the fable marker the builder emits."""
+    marker = bd.build_marker(_decision(model="fable", model_effort="high"))
+    assert recorder.parse_model(marker) == "fable"
+    assert recorder.parse_model_effort(marker) == "high"
+
+
+def test_fable_max_requires_manual_override():
+    """fable/max is an explicit escalation, as opus/max is."""
+    with pytest.raises(bd.InputError, match="fable/max requires manual_model_override"):
+        bd.build_marker(_decision(model="fable", model_effort="max"))
+    marker = bd.build_marker(_decision(model="fable", model_effort="max", manual_model_override=True))
+    assert "model=fable" in marker and "effort=max" in marker
+
+
+def test_explicit_opus_xhigh_requires_manual_override_and_points_to_fable():
+    """Past high, the next model up at a lower effort is tried before more Opus effort."""
+    with pytest.raises(bd.InputError, match="manual_model_override=true; test fable at high first"):
+        bd.build_marker(_decision(model="opus", model_effort="xhigh"))
+    marker = bd.build_marker(_decision(model="opus", model_effort="xhigh", manual_model_override=True))
+    assert "model=opus" in marker and "effort=xhigh" in marker
+
+
+def test_fable_differing_from_a_policy_tier_requires_manual_override():
+    """fable follows the opus rule: a pick that differs from the named tier needs an override and an effort."""
+    with pytest.raises(bd.InputError, match="manual_model_override"):
+        bd.build_marker(_decision(model="fable", model_policy="standard"))
+    with pytest.raises(bd.InputError, match="model_effort"):
+        bd.build_marker(_decision(model="fable", model_policy="standard", manual_model_override=True))
+    marker = bd.build_marker(
+        _decision(model="fable", model_effort="medium", model_policy="standard", manual_model_override=True)
+    )
+    assert "model=fable" in marker and "effort=medium" in marker
+
+
+@pytest.mark.parametrize("model", ("haiku", "sonnet", "opus", "fable", "inherit"))
+@pytest.mark.parametrize("complexity", ("simple", "medium", "complex"))
+def test_owner_per_task_model_override_is_recordable(model, complexity):
+    """When the owner names a model for the task, every dispatch can pass and record it."""
+    prompt = _preamble(_decision(model=model, complexity=complexity, manual_model_override=True))
+    marker = prompt.splitlines()[0]
+    assert f"model={model}" in marker
+    assert "effort=" not in marker
+
+
+def test_policy_differing_pick_still_requires_manual_override():
+    """A model that differs from the policy's tier needs manual_model_override and an effort."""
+    with pytest.raises(bd.InputError, match="manual_model_override"):
+        bd.build_marker(_decision(model="opus", model_policy="low-risk"))
+    marker = bd.build_marker(
+        _decision(model="sonnet", model_effort="medium", model_policy="low-risk", manual_model_override=True)
+    )
+    assert "model=sonnet" in marker
+
+
+def test_claude_model_effort_round_trip():
+    """Claude model@effort (opus@high) parses and persists in the marker."""
+    marker = bd.build_marker(_decision(model="opus", model_effort="high"))
+    assert "model=opus" in marker
+    assert "effort=high" in marker
+    assert recorder.parse_model(marker) == "opus"
+    assert recorder.parse_model_effort(marker) == "high"
+
+
+def test_provider_absent_defaults_to_anthropic():
+    """Missing provider field defaults to 'anthropic' (Claude Code is primary)."""
+    decision = _decision(model=None, model_policy="standard")
+    marker = bd.build_marker(decision)
+    # Should resolve via the Anthropic table: opus/medium (policy 2026-11-09)
+    assert "model=opus" in marker
+    assert "effort=medium" in marker
+
+
+def test_provider_openai_uses_openai_table():
+    """provider='openai' routes through the GPT-5.6 policy table."""
+    decision = _decision(model=None, model_policy="standard", provider="openai")
+    marker = bd.build_marker(decision)
+    assert "model=gpt-5.6-sol" in marker
+    assert "effort=high" in marker
+
+
+@pytest.mark.parametrize("provider", ("google", "antigravity"))
+@pytest.mark.parametrize(
+    ("task_class", "model", "effort"),
+    [
+        ("low-risk", "gemini-3.8-flash", "low"),
+        ("standard", "gemini-4-argon", "medium"),
+        ("high-risk", "gemini-4-argon-high", "high"),
+    ],
+)
+def test_google_antigravity_policy_maps_tiers_to_argon_and_flash(provider, task_class, model, effort):
+    """Google/Antigravity lane maps low-risk to Flash, standard to Argon, and high-risk to Argon-High."""
+    decision = _decision(model=None, model_policy=task_class, provider=provider)
+    marker = bd.build_marker(decision)
+    assert f"model={model}" in marker
+    assert f"effort={effort}" in marker
+    assert recorder.parse_model(marker) == model
+    assert recorder.parse_model_effort(marker) == effort
+
+
+@pytest.mark.parametrize("provider", ("google", "antigravity"))
+def test_google_max_power_requires_manual_override(provider):
+    """Google max-power requires manual_model_override=true."""
+    with pytest.raises(bd.InputError, match="manual_model_override"):
+        bd.build_marker(_decision(model=None, model_policy="max-power", provider=provider))
+    marker = bd.build_marker(
+        _decision(model=None, model_policy="max-power", manual_model_override=True, provider=provider)
+    )
+    assert "model=gemini-4-argon-high" in marker
+    assert "effort=max" in marker
+
+
+@pytest.mark.parametrize(
+    "model",
+    (
+        "gemini-4-argon",
+        "gemini-4-argon-low",
+        "gemini-4-argon-medium",
+        "gemini-4-argon-high",
+        "gemini-3.8-flash",
+        "gemini-3.8-flash-low",
+        "gemini-3.8-flash-medium",
+        "gemini-3.8-flash-high",
+        "argon",
+        "flash",
+        "flash_lite",
+        "pro",
+    ),
+)
+def test_explicit_google_models_round_trip_with_recorder(model):
+    """All Google AI / Antigravity subagent and CLI models are accepted and parsed by the recorder."""
+    marker = bd.build_marker(_decision(model=model, model_effort="medium", provider="google"))
+    assert f"model={model}" in marker
+    assert "effort=medium" in marker
+    assert recorder.parse_model(marker) == model
+    assert recorder.parse_model_effort(marker) == "medium"
+
+
+def test_google_cross_provider_policy_override_rejected():
+    """Google policy cannot be overridden with a non-Google model."""
+    with pytest.raises(bd.InputError, match="Google/Gemini model"):
+        bd.build_marker(
+            _decision(
+                model_policy="standard",
+                model="opus",
+                model_effort="high",
+                manual_model_override=True,
+                provider="google",
+            )
+        )
+
+
+def test_provider_other_rejects_model_policy():
+    """provider='other' cannot use model_policy — no hardcoded table."""
+    with pytest.raises(bd.InputError, match="other"):
+        bd.build_marker(_decision(model=None, model_policy="standard", provider="other"))
+
+
+def test_cross_provider_policy_override_rejected():
+    """Anthropic policy cannot be overridden with a GPT model (cross-lane)."""
+    with pytest.raises(bd.InputError, match="Claude model"):
+        bd.build_marker(
+            _decision(
+                model_policy="standard",
+                model="gpt-5.6-sol",
+                model_effort="high",
+                manual_model_override=True,
+                provider="anthropic",
+            )
+        )
+
+
+# ---------------------------------------------------------------------------
+# CLI.
+# ---------------------------------------------------------------------------
+
+
+def _run_cli(*args, stdin_text=None):
+    return subprocess.run(
+        [sys.executable, str(SCRIPT_PATH), *args],
+        input=stdin_text,
+        capture_output=True,
+        text=True,
+    )
+
+
+def test_cli_json_flag_emits_preamble():
+    result = _run_cli("--json", json.dumps(_decision()), "--no-gather")
+    assert result.returncode == 0
+    assert result.stdout == _preamble(_decision())
+
+
+def test_cli_json_file_and_stdin(tmp_path):
+    decision = _decision()
+    path = tmp_path / "route.json"
+    path.write_text(json.dumps(decision))
+    from_file = _run_cli("--json-file", str(path), "--no-gather")
+    from_stdin = _run_cli("--json-file", "-", "--no-gather", stdin_text=json.dumps(decision))
+    assert from_file.returncode == from_stdin.returncode == 0
+    assert from_file.stdout == from_stdin.stdout == _preamble(decision)
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        "not json",
+        json.dumps({"agent": "claude", "complexity": "Low"}),  # invalid enum
+    ],
+)
+def test_cli_bad_input_exits_2_with_empty_stdout(payload):
+    result = _run_cli("--json", payload)
+    assert result.returncode == 2
+    assert result.stdout == ""
+    assert "build-dispatch:" in result.stderr
+
+
+def test_cli_model_missing_error_message():
+    """CLI exit-2 message names the missing field and the allowed values."""
+    result = _run_cli("--json", json.dumps({"agent": "claude", "skill": "quick", "complexity": "complex"}))
+    assert result.returncode == 2
+    assert "'model' is required" in result.stderr
+    assert "fable" in result.stderr
+    assert "standard=opus/medium" in result.stderr and "max-power=fable/high" in result.stderr
+
+
+# ---------------------------------------------------------------------------
+# task_spec.files path validation and the repo-state block.
+# ---------------------------------------------------------------------------
+
+
+def test_missing_spec_path_is_rejected_by_name():
+    decision = _decision(task_spec={"intent": "x", "files": "scripts/does-not-exist.py"})
+    with pytest.raises(bd.InputError, match=r"scripts/does-not-exist\.py"):
+        _preamble(decision)
+    result = _run_cli("--json", json.dumps(decision))
+    assert result.returncode == 2
+    assert result.stdout == ""
+    assert "scripts/does-not-exist.py" in result.stderr
+
+
+def test_new_prefix_allows_a_path_the_task_creates():
+    decision = _decision(task_spec={"intent": "x", "files": "new:scripts/future.py"})
+    assert "new:scripts/future.py" in _preamble(decision)
+    assert _run_cli("--json", json.dumps(decision)).returncode == 0
+
+
+@pytest.mark.parametrize(
+    ("files", "expected"),
+    [
+        ("scripts/build-dispatch.py:690-703 — build_task_spec", ["scripts/build-dispatch.py"]),
+        ("`scripts/build-dispatch.py:12`, README.md.", ["scripts/build-dispatch.py", "README.md"]),
+        ("the retry helper, and its test", []),
+        ("scripts/a.py\nscripts/a.py", ["scripts/a.py"]),
+    ],
+)
+def test_path_candidates_strip_line_suffix_excerpt_and_prose(files, expected):
+    assert bd._path_candidates(files) == expected
+
+
+def test_gather_block_present_by_default_with_outline_and_boundary():
+    decision = _decision(task_spec={"intent": "x", "files": "scripts/build-dispatch.py:690-703 — build_task_spec"})
+    preamble = bd.build_preamble(decision)
+    assert "## Repo state (auto-gathered)" in preamble
+    assert "SECURITY:" in preamble
+    assert "<untrusted-content>" in preamble and "</untrusted-content>" in preamble
+    assert "def build_task_spec" in preamble
+    assert "### git status" in preamble
+    # Block order: after the task spec, before the mandatory injections.
+    assert (
+        preamble.index("## Task Specification")
+        < preamble.index("## Repo state")
+        < preamble.index(bd.INJ_REFERENCE_LOADING)
+    )
+
+
+def test_no_gather_omits_the_block_and_matches_library_output():
+    decision = _decision()
+    result = _run_cli("--json", json.dumps(decision), "--no-gather")
+    assert result.returncode == 0
+    assert "## Repo state" not in result.stdout
+    assert result.stdout == _preamble(decision)
+    with_gather = _run_cli("--json", json.dumps(decision)).stdout
+    assert "## Repo state" in with_gather
+
+
+def test_sensitive_path_is_skipped_not_validated_or_gathered(tmp_path):
+    secret = tmp_path / ".ssh" / "id_rsa"
+    secret.parent.mkdir()
+    secret.write_text("PRIVATE")
+    (tmp_path / "ok.md").write_text("fine")
+    decision = _decision(task_spec={"intent": "x", "files": ".ssh/id_rsa, config/.env.local, ok.md"})
+    preamble = bd.build_preamble(decision, repo_root=tmp_path)
+    assert "PRIVATE" not in preamble
+    assert "gather: .ssh/id_rsa skipped (sensitive path)" in preamble
+    assert "gather: config/.env.local skipped (sensitive path)" in preamble
+    assert "### ok.md" in preamble
+
+
+def test_file_head_is_capped_at_30_lines(tmp_path):
+    (tmp_path / "long.md").write_text("\n".join(f"line {i}" for i in range(1, 101)))
+    decision = _decision(task_spec={"intent": "x", "files": "long.md"})
+    block = bd.build_gather_block(decision, repo_root=tmp_path)
+    assert "line 30" in block
+    assert "line 31" not in block
+    assert "[70 more lines]" in block
+
+
+def test_gather_block_is_capped_with_truncation_note(tmp_path):
+    for i in range(6):
+        (tmp_path / f"big{i}.md").write_text("x" * 5000)
+    decision = _decision(task_spec={"intent": "x", "files": ", ".join(f"big{i}.md" for i in range(6))})
+    block = bd.build_gather_block(decision, repo_root=tmp_path)
+    assert len(block) <= bd._GATHER_BLOCK_CAP
+    assert "[truncated " in block
+    assert block.endswith("</untrusted-content>")
+
+
+def test_outside_repo_degrades_to_unavailable_lines(tmp_path):
+    decision = _decision(task_spec={"intent": "x", "files": "new:x.py"})
+    block = bd.build_gather_block(decision, repo_root=tmp_path)
+    for item in ("git status", "git diff --stat", "git log -5"):
+        assert f"gather: {item} unavailable" in block
+    # A repo root that does not exist at all degrades the same way.
+    block = bd.build_gather_block(decision, repo_root=tmp_path / "absent")
+    assert "gather: git status unavailable" in block
+
+
+def test_gather_is_deterministic_for_a_fixed_repo_state():
+    decision = _decision()
+    assert bd.build_preamble(decision) == bd.build_preamble(decision)
+
+
+# ---------------------------------------------------------------------------
+# Repo-root resolution: --repo-root > cwd git toplevel > the script's own repo.
+# Every test pins cwd; none depends on the machine's cwd or on ~/.claude.
+# ---------------------------------------------------------------------------
+
+_SOURCE_DECISION = {"intent": "x", "files": "scripts/build-dispatch.py"}
+
+
+def _run_cli_from(cwd, script=None, *args):
+    return subprocess.run(
+        [sys.executable, str(script or SCRIPT_PATH), *args],
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+    )
+
+
+def _git_repo(root: Path) -> Path:
+    """A tmp git repo with one committed file, `tracked.md`."""
+    root.mkdir()
+    (root / "tracked.md").write_text("tracked\n")
+    for args in (["init", "-q"], ["add", "."], ["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "init"]):
+        subprocess.run(["git", *args], cwd=root, capture_output=True, check=True)
+    return root
+
+
+def test_symlinked_script_from_non_repo_cwd_gathers_real_git_output(tmp_path):
+    # Mirror the deployed layout: ~/.claude/{scripts,agents,skills,hooks} -> <repo>/...
+    for name in ("scripts", "agents", "skills", "hooks"):
+        (tmp_path / name).symlink_to(REPO_ROOT / name)
+    link = tmp_path / "scripts"
+    result = _run_cli_from(
+        tmp_path, link / "build-dispatch.py", "--json", json.dumps(_decision(task_spec=_SOURCE_DECISION))
+    )
+    assert result.returncode == 0, result.stderr
+    assert "### git status" in result.stdout
+    assert "### git log -5" in result.stdout
+    assert "def build_task_spec" in result.stdout
+    assert "gather:" not in result.stdout
+
+
+def test_installed_layout_with_per_skill_symlinks_validates_pipeline(tmp_path):
+    # Real install shape: skills/ holds flat per-skill symlinks (skills/workflow -> <repo>/skills/process/workflow,
+    # skills/process -> <repo>/skills/process/process), so skills/process/workflow does not exist.
+    for name in ("scripts", "agents", "hooks"):
+        (tmp_path / name).symlink_to(REPO_ROOT / name)
+    skills = tmp_path / "skills"
+    skills.mkdir()
+    for extra in ("INDEX.json", "shared-patterns"):
+        (skills / extra).symlink_to(REPO_ROOT / "skills" / extra)
+    for category in sorted((REPO_ROOT / "skills").iterdir()):
+        if not category.is_dir() or category.name == "shared-patterns":
+            continue
+        for child in sorted(category.iterdir()):
+            if child.is_dir() and not (skills / child.name).exists():
+                (skills / child.name).symlink_to(child)
+    assert not (skills / "process" / "workflow").exists()
+    decision_file = tmp_path / "d.json"
+    decision_file.write_text(json.dumps(_decision(pipeline="explore-pipeline")))
+    result = _run_cli_from(
+        tmp_path, tmp_path / "scripts" / "build-dispatch.py", "--no-gather", "--json-file", str(decision_file)
+    )
+    assert result.returncode == 0, result.stderr
+    assert "pipeline=explore-pipeline" in result.stdout
+
+
+def test_cwd_inside_a_git_repo_picks_that_repo(tmp_path):
+    repo = _git_repo(tmp_path / "repo")
+    decision = _decision(task_spec={"intent": "x", "files": "tracked.md"})
+    result = _run_cli_from(repo, None, "--json", json.dumps(decision))
+    assert result.returncode == 0, result.stderr
+    assert "### tracked.md" in result.stdout
+    assert "init" in result.stdout.split("### git log -5", 1)[1]
+    assert "gather:" not in result.stdout
+
+
+def test_cwd_outside_any_repo_falls_back_to_the_script_repo(tmp_path):
+    result = _run_cli_from(tmp_path, None, "--json", json.dumps(_decision(task_spec=_SOURCE_DECISION)))
+    assert result.returncode == 0, result.stderr
+    assert "def build_task_spec" in result.stdout
+    assert "gather:" not in result.stdout
+
+
+def test_repo_root_flag_overrides_the_cwd_repo(tmp_path):
+    cwd_repo = _git_repo(tmp_path / "cwd")
+    other = _git_repo(tmp_path / "other")
+    (other / "only-here.md").write_text("here\n")
+    decision = _decision(task_spec={"intent": "x", "files": "only-here.md"})
+    without = _run_cli_from(cwd_repo, None, "--json", json.dumps(decision))
+    assert without.returncode == 2
+    assert f"does not exist under {cwd_repo}" in without.stderr
+    with_flag = _run_cli_from(cwd_repo, None, "--json", json.dumps(decision), "--repo-root", str(other))
+    assert with_flag.returncode == 0, with_flag.stderr
+    assert "### only-here.md" in with_flag.stdout
+
+
+def test_missing_file_names_the_root_it_was_checked_under(tmp_path):
+    block = bd.build_gather_block(_decision(task_spec={"intent": "x", "files": "absent.md"}), repo_root=tmp_path)
+    assert f"gather: absent.md unavailable (not found under {tmp_path})" in block
+
+
+def test_non_repo_dir_reports_not_a_git_repository(tmp_path):
+    lines, reason = bd._run_git(tmp_path, ["status"], None)
+    assert lines is None and reason == "not a git repository"
+    lines, reason = bd._run_git(tmp_path / "absent", ["status"], None)
+    assert lines is None and reason == "not a git repository"
+
+
+@pytest.mark.parametrize(
+    ("effect", "reason"),
+    [
+        (
+            subprocess.TimeoutExpired(["git"], bd._GATHER_TIMEOUT_SECONDS),
+            f"timeout after {bd._GATHER_TIMEOUT_SECONDS}s",
+        ),
+        (FileNotFoundError(2, "No such file", "git"), "git not found"),
+        (subprocess.CompletedProcess(["git"], 128, "", "fatal: not a git repository"), "not a git repository"),
+        (subprocess.CompletedProcess(["git"], 129, "", "usage"), "exit 129"),
+    ],
+)
+def test_run_git_reports_each_failure_reason(tmp_path, effect, reason):
+    kwargs = {"side_effect": effect} if isinstance(effect, Exception) else {"return_value": effect}
+    with patch.object(bd.subprocess, "run", **kwargs):
+        lines, got = bd._run_git(tmp_path, ["status"], None)
+    assert lines is None and got == reason
+    with patch.object(bd.subprocess, "run", **kwargs):
+        block = bd.build_gather_block(_decision(task_spec={"intent": "x", "files": "new:x.py"}), repo_root=tmp_path)
+    assert f"gather: git status unavailable ({reason})" in block
+
+
+@pytest.mark.performance
+def test_cli_with_gather_runs_under_300ms():
+    decision = _decision()
+    start = time.perf_counter()
+    result = _run_cli("--json", json.dumps(decision))
+    elapsed = time.perf_counter() - start
+    assert result.returncode == 0
+    assert elapsed < 0.3, f"took {elapsed:.3f}s"
+
+
+def test_decisions_prior_results_gaps_emit_in_order():
+    spec = {"intent": "x", "gaps": "g", "prior_results": "p", "decisions": "d", "operator_context": "o"}
+    block = bd.build_task_spec(_decision(task_spec=spec))
+    labels = [line.split(":**")[0] for line in block.splitlines() if line.startswith("**")]
+    assert labels == ["**Intent", "**Decisions", "**Prior results", "**Gaps", "**Operator context"]
+
+
+@pytest.mark.parametrize(
+    ("complexity", "provider"),
+    list(zip(bd.VALID_COMPLEXITY[1:] + bd.VALID_COMPLEXITY[:1], bd.VALID_PROVIDERS, strict=False)),
+)
+def test_inherit_requests_no_tool_override_and_round_trips(complexity, provider):
+    prompt = _preamble(_decision(model="inherit", complexity=complexity, provider=provider))
+    marker = prompt.splitlines()[0]
+    assert recorder.parse_model(marker) == "inherit"
+    assert recorder.parse_model_effort(marker) is None
+    assert "effort=" not in marker
+    assert "Omit model and reasoning-effort overrides from the agent tool call" in prompt
+    assert "actual worker model is unknown unless the harness reports it" in prompt
+    assert "do not pass the literal 'inherit' as a model name" in prompt
+
+
+@pytest.mark.parametrize(
+    "conflict",
+    [{"model_policy": "standard"}, {"model_effort": "high"}],
+)
+def test_inherit_rejects_conflicting_overrides(conflict):
+    with pytest.raises(bd.InputError, match="cannot include"):
+        _preamble(_decision(model="inherit", **conflict))
+
+
+def test_inherit_never_records_effort_even_from_malformed_external_marker():
+    marker = "[do-route] agent=claude skill=quick complexity=simple model=inherit effort=high health=-"
+    assert recorder.parse_model(marker) == "inherit"
+    assert recorder.parse_model_effort(marker) is None
+
+
+def test_summary_context_omits_file_reads_but_preserves_handoff(tmp_path):
+    source = tmp_path / "source.md"
+    source.write_text("File contents should only appear in files mode.\n")
+    spec = {
+        "request_verbatim": "Make the requested fix.",
+        "intent": "Fix this file.",
+        "constraints": "Do not publish.",
+        "acceptance": "The link resolves.",
+        "files": "source.md",
+        "ownership": "Only source.md",
+        "prior_results": "Evidence: report.md at the reviewed revision.",
+    }
+    decision = _decision(task_spec=spec, context_mode="summary")
+    with patch.object(bd, "_gather_file", side_effect=AssertionError("unneeded file read")):
+        prompt = bd.build_preamble(decision, repo_root=tmp_path)
+    assert "File contents should only appear" not in prompt
+    for value in spec.values():
+        assert value in prompt
+    assert bd._GATHER_SECURITY in prompt
+    assert "</untrusted-content>" in prompt
+    assert bd.INJ_REFERENCE_LOADING in prompt
+    files = bd.build_preamble({**decision, "context_mode": "files"}, repo_root=tmp_path)
+    assert "File contents should only appear" in files
+
+
+@pytest.mark.parametrize("mode", ["summary", "none"])
+def test_reduced_context_still_rejects_missing_paths(tmp_path, mode):
+    with pytest.raises(bd.InputError, match="does not exist"):
+        bd.build_preamble(_decision(context_mode=mode, task_spec={"files": "missing.py"}), repo_root=tmp_path)
+
+
+def test_none_context_does_not_gather_or_drop_task_spec(tmp_path):
+    decision = _decision(context_mode="none", task_spec={"intent": "Complete authorized task"})
+    with patch.object(bd, "_run_git", side_effect=AssertionError("unexpected gather")):
+        prompt = bd.build_preamble(decision, repo_root=tmp_path)
+    assert bd._GATHER_HEADING not in prompt
+    assert "## Repo state" in prompt
+    assert "No fresh repository state is asserted" in prompt
+    assert "Complete authorized task" in prompt
+    assert bd.INJ_BASE_INSTRUCTIONS in prompt
+
+
+@pytest.mark.parametrize("mode", ["everything", None, []])
+def test_invalid_context_mode_fails_even_without_gather(mode):
+    with pytest.raises(bd.InputError, match="context_mode"):
+        _preamble(_decision(context_mode=mode))
+
+
+def test_build_subagent_dispatch():
+    decision = _decision(agent="python-general-engineer", skill="testing")
+    payload = bd.build_subagent_dispatch(decision, repo_root=REPO_ROOT)
+    assert "subagent_spec" in payload
+    assert payload["subagent_spec"]["Name"] == "python-general-engineer"
+    assert payload["define_subagent"]["EnableWriteTools"] is True
+    assert payload["invoke_subagent"]["TypeName"] == "python-general-engineer"
+    assert payload["invoke_subagent"]["Workspace"] == "branch"
+    assert "[do-route]" in payload["preamble"]
+
+
+def test_build_dispatch_cli_subagent_spec(tmp_path):
+    decision_file = tmp_path / "route.json"
+    decision = _decision(agent="reviewer-code", skill="review")
+    decision_file.write_text(json.dumps(decision), encoding="utf-8")
+
+    cmd = [
+        sys.executable,
+        str(SCRIPT_PATH),
+        "--json-file",
+        str(decision_file),
+        "--subagent-spec",
+        "--no-gather",
+    ]
+    res = subprocess.run(cmd, capture_output=True, text=True, cwd=REPO_ROOT, check=False)
+    assert res.returncode == 0
+    data = json.loads(res.stdout)
+    assert data["define_subagent"]["Name"] == "reviewer-code"
+    assert data["define_subagent"]["EnableWriteTools"] is False
+    assert data["invoke_subagent"]["Workspace"] == "inherit"

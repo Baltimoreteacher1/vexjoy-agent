@@ -2,6 +2,8 @@
 
 import importlib.util
 import json
+import os
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -58,7 +60,7 @@ def test_comments_and_blanks_only_produces_empty():
 
 def test_single_session_start_no_matcher():
     """SessionStart entry with no matcher gets default matcher 'startup|resume'."""
-    text = "SessionStart:session-github-briefing.py\n"
+    text = "SessionStart:session-github-briefing.py matcher=startup|resume class=native mode=native failure=open\n"
     entries = parse_allowlist(text)
     result = build_hooks_json(entries, codex_hooks_dir="/home/user/.codex/hooks")
 
@@ -82,9 +84,9 @@ def test_single_session_start_no_matcher():
 def test_multiple_session_start_entries_grouped():
     """Multiple SessionStart entries are grouped into one matcher block."""
     text = (
-        "SessionStart:session-github-briefing.py\n"
-        "SessionStart:adr-context-injector.py\n"
-        "SessionStart:instruction-reminder.py\n"
+        "SessionStart:session-github-briefing.py matcher=startup|resume class=native mode=native failure=open\n"
+        "SessionStart:operator-context-detector.py matcher=startup|resume class=native mode=native failure=open\n"
+        "SessionStart:team-config-loader.py matcher=startup|resume class=native mode=native failure=open\n"
     )
     entries = parse_allowlist(text)
     result = build_hooks_json(entries, codex_hooks_dir="/fake/hooks")
@@ -95,8 +97,8 @@ def test_multiple_session_start_entries_grouped():
     assert len(hook_list) == 3
     names = [h["command"] for h in hook_list]
     assert any("session-github-briefing.py" in n for n in names)
-    assert any("adr-context-injector.py" in n for n in names)
-    assert any("instruction-reminder.py" in n for n in names)
+    assert any("operator-context-detector.py" in n for n in names)
+    assert any("team-config-loader.py" in n for n in names)
 
 
 # ---------------------------------------------------------------------------
@@ -106,18 +108,18 @@ def test_multiple_session_start_entries_grouped():
 
 def test_pretooluse_without_matcher_raises():
     """PreToolUse entry without matcher raises ValueError mentioning 'Bash'."""
-    text = "PreToolUse:pretool-bash-injection-scan.py\n"
+    text = "PreToolUse:pretool-branch-safety.py class=native mode=native failure=closed\n"
     with pytest.raises(ValueError) as exc_info:
         parse_allowlist(text)
-    assert "Bash" in str(exc_info.value)
+    assert "matcher" in str(exc_info.value)
 
 
 def test_posttooluse_without_matcher_raises():
     """PostToolUse entry without matcher raises ValueError mentioning 'Bash'."""
-    text = "PostToolUse:posttool-bash-injection-scan.py\n"
+    text = "PostToolUse:posttool-bash-injection-scan.py class=native mode=native failure=open\n"
     with pytest.raises(ValueError) as exc_info:
         parse_allowlist(text)
-    assert "Bash" in str(exc_info.value)
+    assert "matcher" in str(exc_info.value)
 
 
 # ---------------------------------------------------------------------------
@@ -127,7 +129,10 @@ def test_posttooluse_without_matcher_raises():
 
 def test_pretooluse_and_posttooluse_with_bash_matcher():
     """PreToolUse and PostToolUse with Bash matcher produce separate event keys."""
-    text = "PreToolUse:pretool-bash-injection-scan.py Bash\nPostToolUse:posttool-bash-injection-scan.py Bash\n"
+    text = (
+        "PreToolUse:pretool-branch-safety.py matcher=Bash class=native mode=native failure=closed\n"
+        "PostToolUse:posttool-bash-injection-scan.py matcher=Bash class=native mode=native failure=open\n"
+    )
     entries = parse_allowlist(text)
     result = build_hooks_json(entries, codex_hooks_dir="/fake/hooks")
 
@@ -155,10 +160,10 @@ def test_comments_and_blank_lines_ignored():
     text = (
         "# Phase 1: safe on Codex v0.114.0+\n"
         "\n"
-        "SessionStart:session-github-briefing.py\n"
+        "SessionStart:session-github-briefing.py matcher=startup|resume class=native mode=native failure=open\n"
         "\n"
         "# Another comment\n"
-        "Stop:suggest-compact.py\n"
+        "Stop:session-summary.py class=native mode=native failure=open\n"
     )
     entries = parse_allowlist(text)
     assert len(entries) == 2
@@ -196,7 +201,7 @@ def test_malformed_unknown_event_raises():
 
 def test_user_prompt_submit_no_matcher_field():
     """UserPromptSubmit entry produces a block without a 'matcher' key."""
-    text = "UserPromptSubmit:instruction-reminder.py\n"
+    text = "UserPromptSubmit:prompt-capture.py class=native mode=native failure=open\n"
     entries = parse_allowlist(text)
     result = build_hooks_json(entries, codex_hooks_dir="/fake/hooks")
 
@@ -209,13 +214,24 @@ def test_user_prompt_submit_no_matcher_field():
 
 def test_stop_entry_no_matcher_field():
     """Stop entry produces a block without a 'matcher' key."""
-    text = "Stop:suggest-compact.py\n"
+    text = "Stop:session-summary.py class=native mode=native failure=open\n"
     entries = parse_allowlist(text)
     result = build_hooks_json(entries, codex_hooks_dir="/fake/hooks")
 
     blocks = result["hooks"]["Stop"]
     assert len(blocks) == 1
     assert "matcher" not in blocks[0]
+
+
+def test_adapted_stop_command_preserves_stop_mode_for_block_translation():
+    """Stop hooks that exit 2 must run through stop mode for Codex continuation."""
+    entries = parse_allowlist("Stop:stop-drift-guard.py class=adapted mode=stop failure=open\n")
+    result = build_hooks_json(entries, codex_hooks_dir="/fake/hooks")
+
+    command = result["hooks"]["Stop"][0]["hooks"][0]["command"]
+    assert "--event Stop" in command
+    assert "--mode stop" in command
+    assert "--failure-policy open" in command
 
 
 # ---------------------------------------------------------------------------
@@ -227,10 +243,10 @@ def test_cli_dry_run_produces_valid_json():
     """CLI invocation with --dry-run prints valid JSON to stdout."""
     allowlist_text = (
         "# Phase 1 hooks\n"
-        "SessionStart:session-github-briefing.py\n"
-        "UserPromptSubmit:instruction-reminder.py\n"
-        "PreToolUse:pretool-bash-injection-scan.py Bash\n"
-        "Stop:suggest-compact.py\n"
+        "SessionStart:session-github-briefing.py matcher=startup|resume class=native mode=native failure=open\n"
+        "UserPromptSubmit:prompt-capture.py class=native mode=native failure=open\n"
+        "PreToolUse:pretool-branch-safety.py matcher=Bash class=native mode=native failure=closed\n"
+        "Stop:session-summary.py class=native mode=native failure=open\n"
     )
     with tempfile.TemporaryDirectory() as tmpdir:
         allowlist_path = Path(tmpdir) / "allowlist.txt"
@@ -272,19 +288,19 @@ def test_cli_dry_run_produces_valid_json():
 
 
 def test_event_ordering():
-    """Events appear in SessionStart, UserPromptSubmit, PreToolUse, PostToolUse, Stop order."""
+    """Present events retain their relative order from the current release."""
     text = (
-        "Stop:suggest-compact.py\n"
-        "PostToolUse:posttool-bash-injection-scan.py Bash\n"
-        "SessionStart:session-github-briefing.py\n"
-        "PreToolUse:pretool-bash-injection-scan.py Bash\n"
-        "UserPromptSubmit:instruction-reminder.py\n"
+        "Stop:session-summary.py class=native mode=native failure=open\n"
+        "PostToolUse:posttool-bash-injection-scan.py matcher=Bash class=native mode=native failure=open\n"
+        "SessionStart:session-github-briefing.py matcher=startup|resume class=native mode=native failure=open\n"
+        "PreToolUse:pretool-branch-safety.py matcher=Bash class=native mode=native failure=closed\n"
+        "UserPromptSubmit:prompt-capture.py class=native mode=native failure=open\n"
     )
     entries = parse_allowlist(text)
     result = build_hooks_json(entries, codex_hooks_dir="/fake/hooks")
 
     keys = list(result["hooks"].keys())
-    expected_order = ["SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse", "Stop"]
+    expected_order = ["SessionStart", "PreToolUse", "PostToolUse", "UserPromptSubmit", "Stop"]
     assert keys == expected_order, f"Got order: {keys}"
 
 
@@ -295,7 +311,7 @@ def test_event_ordering():
 
 def test_command_shape_uses_configured_dir():
     """Hook command uses python3 and the codex-hooks-dir path."""
-    text = "SessionStart:session-github-briefing.py\n"
+    text = "SessionStart:session-github-briefing.py matcher=startup|resume class=native mode=native failure=open\n"
     entries = parse_allowlist(text)
     result = build_hooks_json(entries, codex_hooks_dir="/home/testuser/.codex/hooks")
 
@@ -310,10 +326,243 @@ def test_command_shape_default_dir_uses_home():
     import os
 
     home = os.environ.get("HOME", "~")
-    text = "SessionStart:session-github-briefing.py\n"
+    text = "SessionStart:session-github-briefing.py matcher=startup|resume class=native mode=native failure=open\n"
     entries = parse_allowlist(text)
     result = build_hooks_json(entries)
 
     hook = result["hooks"]["SessionStart"][0]["hooks"][0]
     cmd = hook["command"]
     assert f"{home}/.codex/hooks/session-github-briefing.py" in cmd
+
+
+# ---------------------------------------------------------------------------
+# Current Codex hook surface and adapter contract (0.144.1)
+# ---------------------------------------------------------------------------
+
+
+def test_current_codex_event_surface_is_complete():
+    """Generator recognizes all ten command-hook events in release order."""
+    assert _mod.EVENT_ORDER == [
+        "SessionStart",
+        "SubagentStart",
+        "PreToolUse",
+        "PermissionRequest",
+        "PostToolUse",
+        "PreCompact",
+        "PostCompact",
+        "UserPromptSubmit",
+        "SubagentStop",
+        "Stop",
+    ]
+
+
+def test_explicit_adapter_metadata_is_parsed():
+    """Allowlist entries carry explicit matcher, adapter mode, and failure policy."""
+    entries = parse_allowlist(
+        "PreToolUse:pretool-plan-gate.py matcher=Edit|Write class=adapted mode=patch failure=closed\n"
+    )
+    assert entries == [
+        {
+            "event": "PreToolUse",
+            "filename": "pretool-plan-gate.py",
+            "matcher": "Edit|Write",
+            "mode": "patch",
+            "failure_policy": "closed",
+            "classification": "adapted",
+        }
+    ]
+
+
+def test_explicit_metadata_requires_classification():
+    """Current entries cannot infer native/adapted classification."""
+    with pytest.raises(ValueError, match="class"):
+        parse_allowlist("Stop:session-summary.py mode=native failure=open")
+
+
+@pytest.mark.parametrize(
+    ("line", "expected"),
+    [
+        ("Stop:session-summary.py class=native mode=bogus failure=open", "mode"),
+        ("Stop:session-summary.py class=adapted mode=stop failure=bogus", "failure"),
+        ("Stop:session-summary.py matcher=* class=adapted mode=stop failure=open", "matcher"),
+        ("PreCompact:precompact-archive.py matcher=manual|auto class=adapted mode=patch failure=open", "PreCompact"),
+        ("PreToolUse:pretool-plan-gate.py matcher=Bash class=adapted mode=patch failure=closed", "patch"),
+    ],
+)
+def test_invalid_adapter_metadata_is_rejected(line, expected):
+    """Impossible event/matcher/mode combinations fail before installation."""
+    with pytest.raises(ValueError, match=expected):
+        parse_allowlist(line)
+
+
+def test_generated_command_uses_adapter_cli_contract():
+    """Every explicit entry runs its target through the shared adapter."""
+    entries = parse_allowlist(
+        "PreToolUse:pretool-plan-gate.py matcher=Edit|Write class=adapted mode=patch failure=closed\n"
+    )
+    result = build_hooks_json(entries, codex_hooks_dir="/fake hooks")
+    hook = result["hooks"]["PreToolUse"][0]["hooks"][0]
+    command = hook["command"]
+    assert command == (
+        "python3 '/fake hooks/codex-hook-adapter.py' "
+        "--hook '/fake hooks/pretool-plan-gate.py' "
+        "--event PreToolUse --matcher 'Edit|Write' --mode patch --failure-policy closed"
+    )
+
+
+def test_all_ten_events_build_in_canonical_order():
+    """Generated JSON keeps the release event order regardless of allowlist order."""
+    text = "\n".join(
+        [
+            "Stop:session-summary.py class=native mode=native failure=open",
+            "SubagentStop:routing-outcome-recorder.py matcher=* class=native mode=native failure=open",
+            "UserPromptSubmit:prompt-capture.py class=native mode=native failure=open",
+            "PostCompact:postcompact-handler.py matcher=manual|auto class=native mode=native failure=open",
+            "PreCompact:precompact-archive.py matcher=manual|auto class=adapted mode=precompact failure=open",
+            "PostToolUse:posttool-bash-injection-scan.py matcher=Bash class=native mode=native failure=open",
+            "PermissionRequest:security-review-hook.py matcher=Bash class=native mode=native failure=closed",
+            "PreToolUse:pretool-branch-safety.py matcher=Bash class=native mode=native failure=closed",
+            "SubagentStart:team-config-loader.py matcher=* class=native mode=native failure=open",
+            "SessionStart:session-context.py matcher=startup|resume class=native mode=native failure=open",
+        ]
+    )
+    result = build_hooks_json(parse_allowlist(text), codex_hooks_dir="/fake/hooks")
+    assert list(result["hooks"]) == _mod.EVENT_ORDER
+
+
+@pytest.mark.parametrize("matcher", ["Edit|Write", "apply_patch", "^apply_patch$"])
+def test_patch_mode_accepts_documented_apply_patch_aliases(matcher):
+    """Codex documents both canonical and Claude-compatible edit matchers."""
+    entries = parse_allowlist(
+        f"PreToolUse:pretool-plan-gate.py matcher={matcher} class=adapted mode=patch failure=closed"
+    )
+    assert entries[0]["matcher"] == matcher
+
+
+def test_native_tool_events_accept_mcp_regex_matchers():
+    """Current Codex tool hooks can target MCP tool names as well as Bash."""
+    entries = parse_allowlist(
+        "PermissionRequest:security-review-hook.py matcher=mcp__filesystem__.* class=native mode=native failure=closed"
+    )
+    assert entries[0]["matcher"] == "mcp__filesystem__.*"
+
+
+def test_build_rejects_missing_target_hook(tmp_path):
+    """hooks.json is never built with a command pointing at a missing source file."""
+    entries = parse_allowlist("Stop:missing-hook.py class=native mode=native failure=open")
+    with pytest.raises(ValueError, match=r"missing-hook\.py"):
+        build_hooks_json(entries, codex_hooks_dir="/fake/hooks", source_hooks_dir=tmp_path)
+
+
+def test_cli_rejects_allowlist_with_missing_target_hook(tmp_path):
+    """CLI generation fails before replacing hooks.json when a target is absent."""
+    allowlist = tmp_path / "allowlist.txt"
+    output = tmp_path / "hooks.json"
+    allowlist.write_text("Stop:missing-hook.py class=native mode=native failure=open\n", encoding="utf-8")
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(_SCRIPT_PATH),
+            "--allowlist",
+            str(allowlist),
+            "--source-hooks-dir",
+            str(tmp_path / "hooks"),
+            "--output",
+            str(output),
+        ],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 1
+    assert "missing-hook.py" in result.stderr
+    assert not output.exists()
+
+
+def test_subagent_start_warmstart_builds_a_subagent_start_block():
+    """The SubagentStart warm-start hook mirrors to Codex once the owner adds this line."""
+    line = "SubagentStart:subagent-start-warmstart.py matcher=* class=native mode=native failure=open"
+    entries = parse_allowlist(line)
+    result = build_hooks_json(entries, codex_hooks_dir="/codex/hooks")
+    assert list(result["hooks"]) == ["SubagentStart"]
+    block = result["hooks"]["SubagentStart"][0]
+    assert block["matcher"] == "*"
+    command = block["hooks"][0]["command"]
+    assert "--hook /codex/hooks/subagent-start-warmstart.py" in command
+    assert "--event SubagentStart" in command
+
+
+# ---------------------------------------------------------------------------
+# The unified gate guards Codex Bash as well as apply_patch, failing closed
+# ---------------------------------------------------------------------------
+
+_REPO = _SCRIPT_PATH.resolve().parent.parent
+_ALLOWLIST_PATH = _REPO / "scripts" / "codex-hooks-allowlist.txt"
+
+
+def test_one_hook_may_register_under_two_matchers():
+    """One Claude registration can need a native Bash entry and an apply_patch entry."""
+    entries = parse_allowlist(
+        "PreToolUse:pretool-unified-gate.py matcher=Bash class=native mode=native failure=closed\n"
+        "PreToolUse:pretool-unified-gate.py matcher=Edit|Write class=adapted mode=patch failure=closed\n"
+    )
+    assert [(e["matcher"], e["mode"]) for e in entries] == [("Bash", "native"), ("Edit|Write", "patch")]
+
+
+def test_exact_duplicate_registration_is_rejected():
+    line = "PreToolUse:pretool-plan-gate.py matcher=Edit|Write class=adapted mode=patch failure=closed\n"
+    with pytest.raises(ValueError, match=r"Duplicate hook registration: PreToolUse:pretool-plan-gate\.py"):
+        parse_allowlist(line + line)
+
+
+def _production_unified_gate_on_bash() -> list[str]:
+    """The generated command for the unified gate in the shipped Codex config, as argv."""
+    entries = parse_allowlist(_ALLOWLIST_PATH.read_text(encoding="utf-8"))
+    hooks = build_hooks_json(entries, codex_hooks_dir=str(_REPO / "hooks"))["hooks"]
+    commands = [
+        handler["command"]
+        for block in hooks["PreToolUse"]
+        if block.get("matcher") == "Bash"
+        for handler in block["hooks"]
+        if "pretool-unified-gate.py" in handler["command"]
+    ]
+    assert len(commands) == 1, commands
+    return shlex.split(commands[0])
+
+
+def test_production_config_runs_the_unified_gate_on_bash_failing_closed():
+    args = _production_unified_gate_on_bash()
+    assert args[args.index("--mode") + 1] == "native"
+    assert args[args.index("--failure-policy") + 1] == "closed"
+
+
+@pytest.mark.parametrize("command", ["rm -rf /", "python3 -m http.server 8080"])
+def test_unified_gate_denies_a_dangerous_bash_command_through_the_adapter(command, tmp_path):
+    """The command string is only data in the payload; nothing runs it."""
+    args = _production_unified_gate_on_bash()
+    args[0] = sys.executable
+    payload = {
+        "session_id": "codex-unified-gate",
+        "cwd": str(tmp_path),
+        "hook_event_name": "PreToolUse",
+        "turn_id": "turn-1",
+        "tool_name": "Bash",
+        "tool_use_id": "tool-1",
+        "tool_input": {"command": command},
+    }
+    # A gate bypass left in the caller's shell would let the probe through.
+    env = {k: v for k, v in os.environ.items() if not k.endswith("_BYPASS")}
+    env.update(
+        HOME=str(tmp_path / "home"),
+        CLAUDE_LEARNING_DIR=str(tmp_path / "learning"),
+        CLAUDE_HOOK_ERRORS_PATH=str(tmp_path / "hook-errors.jsonl"),
+    )
+
+    result = subprocess.run(
+        args, input=json.dumps(payload), capture_output=True, text=True, cwd=tmp_path, env=env, timeout=60
+    )
+
+    assert result.returncode == 0, result.stderr
+    inner = json.loads(result.stdout)["hookSpecificOutput"]
+    assert inner["permissionDecision"] == "deny", result.stdout
+    # The gate itself denied: an adapter failure would also deny, under failure=closed.
+    assert "[codex-hook-adapter]" not in inner["permissionDecisionReason"]

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# hook-version: 1.0.0
+# hook-version: 1.1.0
 """PostToolUse Hook: ADR lifecycle checker on merge.
 
 Fires after a Bash tool use. Detects merge commands (gh pr merge / git merge)
@@ -17,6 +17,25 @@ Always exits 0 (non-blocking, informational hook).
 Target execution time: <200ms (exits early when not a merge command).
 """
 
+import sys  # vexjoy-pyguard
+
+if sys.version_info < (3, 10):  # vexjoy-pyguard advisory
+    import os
+
+    if not os.environ.get("VEXJOY_PYGUARD_REEXEC"):
+        os.environ["VEXJOY_PYGUARD_REEXEC"] = "1"
+        for _d in [*os.environ.get("PATH", "").split(os.pathsep), "/opt/homebrew/bin", "/usr/local/bin", "/usr/bin"]:
+            for _v in ("14", "13", "12", "11", "10"):
+                _p = os.path.join(_d, "python3." + _v)
+                if _d and "/shims" not in _d and os.access(_p, os.X_OK):
+                    os.execv(_p, [_p, *sys.argv])
+    sys.stderr.write(
+        "[vexjoy] hook %s needs Python 3.10+, got %s (%s); run ./install.sh in vexjoy-agent from a terminal"
+        " outside Claude Code (gated tool calls stay blocked until then)\n"
+        % (__file__.rsplit("/", 1)[-1], sys.version.split()[0], sys.executable)
+    )
+    sys.exit(0)
+
 import json
 import os
 import re
@@ -27,7 +46,7 @@ from datetime import date
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent / "lib"))
-from hook_utils import context_output, empty_output
+from hook_utils import append_hook_debug_log, context_output, empty_output, get_tool_input
 from stdin_timeout import read_stdin
 
 DEBUG_LOG = Path("/tmp/claude_hook_debug.log")
@@ -47,11 +66,8 @@ ADR_PATTERNS = [
 
 
 def debug_log(msg: str) -> None:
-    try:
-        with open(DEBUG_LOG, "a") as f:
-            f.write(f"[adr-lifecycle] {msg}\n")
-    except Exception:
-        pass
+    """Append to the shared debug log (0600) only when CLAUDE_HOOKS_DEBUG is set."""
+    append_hook_debug_log(DEBUG_LOG, f"[adr-lifecycle] {msg}")
 
 
 # ---------------------------------------------------------------------------
@@ -262,7 +278,15 @@ def process_merge(command: str) -> str | None:
     return "\n".join(lines)
 
 
+_BYPASS_ENV = "ADR_LIFECYCLE_ON_MERGE_BYPASS"
+
+
 def main() -> None:
+    if os.environ.get(_BYPASS_ENV) == "1":
+        if os.environ.get("CLAUDE_HOOKS_DEBUG"):
+            print("[adr-lifecycle-on-merge] Bypassed via ADR_LIFECYCLE_ON_MERGE_BYPASS=1", file=sys.stderr)
+        sys.exit(0)
+
     raw = read_stdin(timeout=3)
     if not raw.strip():
         empty_output(EVENT_NAME).print_and_exit()
@@ -277,7 +301,7 @@ def main() -> None:
     if tool_name != "Bash":
         empty_output(EVENT_NAME).print_and_exit()
 
-    tool_input = event.get("tool_input", {})
+    tool_input = get_tool_input(event)
     command = tool_input.get("command", "")
 
     tool_output = event.get("tool_output", {})

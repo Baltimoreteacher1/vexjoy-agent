@@ -14,18 +14,21 @@ Hooks are shell commands registered in `settings.json` that execute in response 
 
 ## Event Type Reference
 
-| Event | When Fires | `once` Default | Typical Timeout |
+| Event | When Fires | `once` Default | Typical Timeout (seconds) |
 |-------|------------|---------------|-----------------|
-| `SessionStart` | Session begins | `true` | 1000–5000ms |
-| `UserPromptSubmit` | Before prompt is processed | — | 500–2000ms |
-| `PreToolUse` | Before a tool executes | — | 500ms |
-| `PostToolUse` | After a tool returns | — | 500–2000ms |
-| `PreCompact` | Before context compression | `true` | 2000ms |
-| `PostCompact` | After context compression | — | 1000ms |
-| `TaskCompleted` | After task completion | — | 1000ms |
-| `SubagentStop` | After subagent finishes | — | 500ms |
-| `StopFailure` | Session ends with error | — | 1000ms |
-| `Stop` | Session ends cleanly | — | 2000ms |
+| `SessionStart` | Session begins | `true` | 5–10 |
+| `UserPromptSubmit` | Before prompt is processed | — | 5 |
+| `PreToolUse` | Before a tool executes | — | 5 (gates: 10) |
+| `PostToolUse` | After a tool returns | — | 5 |
+| `PreCompact` | Before context compression | `true` | 5 |
+| `PostCompact` | After context compression | — | 5 |
+| `SubagentStart` | Before a subagent starts | — | 5 |
+| `SubagentStop` | After subagent finishes | — | 5 |
+| `StopFailure` | Session ends with error | — | 5 |
+| `Stop` | After every turn | — | 5–10 |
+| `SessionEnd` | Session ends | — | 5 |
+
+Claude Code reads `timeout` in **seconds**, so `"timeout": 3000` means 50 minutes, not 3 seconds. The timeout is a kill limit, not a latency budget: keep critical-path hooks fast in code, and give gates headroom, because a gate killed by its timeout cannot deny the call.
 
 ---
 
@@ -39,9 +42,9 @@ Hooks are shell commands registered in `settings.json` that execute in response 
         "hooks": [
           {
             "type": "command",
-            "command": "python3 \"$HOME/.claude/hooks/my-hook.py\"",
+            "command": "sh \"$HOME/.claude/hooks/lib/pyrun.sh\" \"$HOME/.claude/hooks/my-hook.py\"",
             "description": "One-line description of what the hook does",
-            "timeout": 2000,
+            "timeout": 10,
             "once": true
           }
         ]
@@ -52,9 +55,9 @@ Hooks are shell commands registered in `settings.json` that execute in response 
         "hooks": [
           {
             "type": "command",
-            "command": "python3 \"$HOME/.claude/hooks/posttool-lint-hint.py\"",
-            "description": "Emit lint hints after file edits",
-            "timeout": 1000
+            "command": "sh \"$HOME/.claude/hooks/lib/pyrun.sh\" \"$HOME/.claude/hooks/posttool-security-scan.py\"",
+            "description": "Scan edited files for security risks",
+            "timeout": 5
           }
         ]
       }
@@ -66,10 +69,12 @@ Hooks are shell commands registered in `settings.json` that execute in response 
 | Field | Required | Type | Notes |
 |-------|----------|------|-------|
 | `type` | yes | `"command"` | Only `"command"` is currently supported |
-| `command` | yes | string | Shell command; always quote paths with spaces |
+| `command` | yes | string | Use the launcher form shown above, exactly; it runs the installer-linked python 3.10+ (`docs/installer-layout.md`, Hook interpreter). Before registering, stamp the version guard: `python3 scripts/hook-pyguard.py --apply --file hooks/<file>.py` |
 | `description` | yes | string | Shown in session startup output |
-| `timeout` | recommended | integer (ms) | Omitting allows hooks to hang indefinitely |
+| `timeout` | recommended | number (seconds) | Omitting leaves the runtime default kill limit; a value written in milliseconds becomes a very long limit |
 | `once` | no | boolean | `true` = run only once per session (SessionStart default) |
+
+Agent frontmatter `hooks:` use the same shape: each event maps to a list of matcher groups, and each group holds its own `hooks:` list (`- matcher: "Edit|Write"` then `hooks:` then `- type: command`). When a bare `- type: command` entry sits directly under PostToolUse or another non-guard event, Claude Code drops it with the note `Hook matcher "hooks" must be an array of hook entries; received undefined; entry ignored`, so the hook never runs. Under PreToolUse or PermissionRequest the same mistake is worse: Claude Code applies nothing from the agent file until the entry is fixed.
 
 ---
 
@@ -136,27 +141,31 @@ def read_event() -> dict:
 
 event = read_event()
 tool_name = event.get("tool_name", "")
-tool_result = event.get("tool_result", {})
+tool_input = event.get("tool_input") or {}
+tool_response = event.get("tool_response", {})
 ```
 
-**Why**: Hooks that skip stdin reading miss the event context. For `PostToolUse`, the tool name and result are in the event — without reading them, the hook cannot inspect what just happened.
+**Why**: Hooks that skip stdin reading miss the event context. For `PostToolUse`, the event carries `tool_name`, `tool_input`, and `tool_response`; a hook that reads other keys (`tool`, `tool_result`, `output`) gets empty values and never fires.
 
 ---
 
 ### Inject Context via stdout
 
-Hooks inject context into Claude's prompt by printing structured output to stdout.
+Hooks inject context into Claude's prompt by printing `hookSpecificOutput.additionalContext` JSON to stdout.
 
 ```python
-# Inject a context block (appears as system-reminder in Claude's context)
-print(json.dumps({"type": "context", "content": "Important context here"}))
+from hook_utils import context_output, empty_output  # hooks/lib/hook_utils.py
 
-# Print a plain string (simpler, appears as hook output)
-print("[hook-name] Action suggested: fix the broken reference")
+# Inject context (appears as a system-reminder in Claude's context)
+context_output("PostToolUse", "[hook-name] Action suggested: fix the broken reference").print_and_exit()
+# prints {"hookSpecificOutput": {"hookEventName": "PostToolUse", "additionalContext": "..."}}
 
 # Silent hook — print nothing when there's nothing to report
 # (preferred: hooks should be silent when they have no signal)
+empty_output("PostToolUse").print_and_exit()
 ```
+
+Plain-text stdout reaches the model only for `SessionStart` and `UserPromptSubmit`; for `PostToolUse` and the other tool events it shows in the transcript only, so a plain `print()` reminder there never reaches the model.
 
 **Why**: Hooks that always print output — even when silent — add noise to every interaction. Hooks should only print when they have a signal to communicate.
 
@@ -165,14 +174,14 @@ print("[hook-name] Action suggested: fix the broken reference")
 ### Timeout Configuration by Event Type
 
 ```json
-"SessionStart": { "timeout": 5000 }   // Sync operations, file reads: allow up to 5s
-"UserPromptSubmit": { "timeout": 500 } // Must be fast — blocks prompt processing
-"PreToolUse": { "timeout": 500 }       // Blocks tool execution — keep under 500ms
-"PostToolUse": { "timeout": 2000 }     // Can be slower; runs after tool completes
-"Stop": { "timeout": 3000 }            // Session ending — can afford more time
+"SessionStart": { "timeout": 10 }     // Sync operations, file reads (seconds)
+"UserPromptSubmit": { "timeout": 5 }  // Must be fast in code — blocks prompt processing
+"PreToolUse": { "timeout": 10 }       // Gates: headroom, since a killed gate cannot deny
+"PostToolUse": { "timeout": 5 }       // Advisory; runs after tool completes
+"Stop": { "timeout": 10 }             // Session ending — can afford more time
 ```
 
-**Why**: `UserPromptSubmit` and `PreToolUse` hooks are on the critical path — they block user interaction. Slow hooks here cause noticeable latency. `Stop` and `SessionStart` hooks can afford longer timeouts since they don't block active work.
+**Why**: `timeout` is in seconds. `UserPromptSubmit` and `PreToolUse` hooks are on the critical path — they block user interaction, so their code must finish in well under a second; the timeout only caps a hang. `Stop` and `SessionStart` hooks can afford longer limits since they don't block active work.
 
 ---
 
@@ -180,7 +189,7 @@ print("[hook-name] Action suggested: fix the broken reference")
 
 PreToolUse hooks split into **gates** (can block tool execution) and **advisory** (context injection only). This distinction matters for exit code behavior and testing.
 
-### Gates (8 hooks — block on violation)
+### Gates (9 hooks — block on violation)
 
 | Hook | Matcher | Blocking Mechanism |
 |------|---------|-------------------|
@@ -188,6 +197,7 @@ PreToolUse hooks split into **gates** (can block tool execution) and **advisory*
 | `pretool-branch-safety.py` | Bash | JSON `permissionDecision: deny` (exit 0) |
 | `ci-merge-gate.py` | Bash | JSON `permissionDecision: deny` (exit 0) — **non-functional**: uses `gh pr checks --json conclusion` but `conclusion` is invalid; use `bucket` |
 | `pretool-ruff-format-gate.py` | Bash | JSON `permissionDecision: deny` (exit 0) |
+| `pretool-review-before-push-gate.py` | Bash | JSON `permissionDecision: deny` (exit 0); denies on crash once a push or PR is detected |
 | `pretool-synthesis-gate.py` | Write\|Edit | JSON `permissionDecision: deny` (exit 0) |
 | `pretool-plan-gate.py` | Write\|Edit | JSON `permissionDecision: deny` (exit 0) |
 | `pretool-adr-creation-gate.py` | Write | JSON `permissionDecision: deny` (exit 0) |
@@ -202,7 +212,6 @@ PreToolUse hooks split into **gates** (can block tool execution) and **advisory*
 | `pretool-prompt-injection-scanner.py` | Write\|Edit | Warn about prompt injection |
 | `pretool-file-backup.py` | Edit | Backup files before modification |
 | `reference-loading-enforcer.py` | Agent | Inject reference loading requirements |
-| `pretool-subagent-warmstart.py` | Agent | Inject parent session context |
 | `creation-protocol-enforcer.py` | Agent | Soft-warn on creation without ADR |
 
 ---
@@ -247,7 +256,7 @@ for event, groups in settings.get('hooks', {}).items():
 ```json
 {
   "type": "command",
-  "command": "python3 \"$HOME/.claude/hooks/my-hook.py\"",
+  "command": "sh \"$HOME/.claude/hooks/lib/pyrun.sh\" \"$HOME/.claude/hooks/my-hook.py\"",
   "description": "Does something"
 }
 ```
@@ -256,9 +265,9 @@ for event, groups in settings.get('hooks', {}).items():
 
 **Preferred action:**
 
-Always add `"timeout"` to every hook entry in `settings.json`. Use 1000ms for informational hooks, 500ms for `PreToolUse` and `UserPromptSubmit` hooks, and up to 5000ms for `SessionStart` hooks doing file reads. Run the detection script above to find any hooks currently missing this field.
+Always add `"timeout"` to every hook entry in `settings.json`, in seconds. Use 5 for informational and `UserPromptSubmit` hooks, 10 for `PreToolUse` gates, and up to 10 for `SessionStart` hooks doing file reads. Run the detection script above to find any hooks currently missing this field.
 
-**Preferred action**: Always set `"timeout"` in milliseconds. Use 1000ms as a safe default for informational hooks; 500ms for `PreToolUse`/`UserPromptSubmit`.
+**Preferred action**: Always set `"timeout"` in seconds. Use 5 as a safe default for informational hooks and 10 for gates.
 
 ---
 
@@ -362,14 +371,15 @@ Deploy the hook Python file to `~/.claude/hooks/` first, verify it exists with `
 
 | Symptom | Root Cause | Fix |
 |---------|------------|-----|
-| Session startup fails or hangs | Hook missing `timeout` and hangs | Add `"timeout": 2000` to the hook config |
+| Session startup fails or hangs | Hook missing `timeout` and hangs | Add `"timeout": 10` (seconds) to the hook config |
+| A hung hook stalls the session for many minutes | `timeout` written in milliseconds (`3000`) is read as seconds (50 minutes) | Write seconds: `5` for advisory hooks, `10` for gates |
 | Every session classified as AFK | `sys.stdin.isatty()` check in hook | Replace with `os.environ.get("SSH_CONNECTION")` check |
 | Hook blocks Claude from proceeding | Advisory hook exits non-zero | Wrap in try/except, call `sys.exit(0)` unconditionally |
 | Hook registered but errors on startup | Hook file not deployed to `~/.claude/hooks/` | Deploy file first, then register in settings.json |
 | Hook runs multiple times per session | Missing `"once": true` on SessionStart hook | Add `"once": true` for one-time session initialization hooks |
 | Hook output appears as noise every turn | Hook prints even when no signal | Add early-return guard: only print when there's something to report |
 | Hook registration disappears after restart | Registered in `~/.claude/settings.json` (runtime copy) | Register in `.claude/settings.json` (repo) — see Two-File Architecture above |
-| Hook depends on nonexistent file | Script imports or shells to a file that was removed/never created | Verify all dependencies exist before registering; known case: `agent-grade-on-change.py` depends on `evals/harness.py` which does not exist |
+| Hook depends on nonexistent file | Script imports or shells to a file that was removed/never created | Verify all dependencies exist before registering |
 | Gate uses wrong `gh` API field | `gh pr checks --json conclusion` — `conclusion` is not a valid field | Use `bucket` field instead of `conclusion`; known case: `ci-merge-gate.py` |
 | Duplicate detection across hooks | Multiple hooks scan for the same vulnerability class | `posttool-security-scan.py` and `sql-injection-detector.py` both detect SQL injection; consolidate or scope non-overlapping |
 | Gate uses exit(2) instead of JSON deny | Inconsistent blocking mechanism across gate hooks | Migrate to `{"permissionDecision": "deny", "permissionDecisionReason": "..."}` pattern; known case: `pipeline-phase-gate.py` |
@@ -382,25 +392,28 @@ Deploy the hook Python file to `~/.claude/hooks/` first, verify it exists with `
 | Hook | Event | Issue | Status |
 |------|-------|-------|--------|
 | `ci-merge-gate.py` | PreToolUse (Bash) | Uses `gh pr checks --json conclusion` — `conclusion` is not a valid field name; should use `bucket` | Fix pending |
-| `agent-grade-on-change.py` | PostToolUse (Write\|Edit) | Depends on `evals/harness.py` which does not exist in the repo | Fix pending |
+| Retired agent grading hook | PostToolUse (Write\|Edit) | Depended on a missing evaluation harness | Retired 2026-09-04 |
 
 ### Registered Hook Inventory by Event
 
-| Event | Count | Gate | Advisory | Notes |
-|-------|-------|------|----------|-------|
-| SessionStart | 9 | 0 | 9 | sync, context loading, environment detection |
-| UserPromptSubmit | 4 | 0 | 4 | pipeline detection, correction capture, prompt capture |
-| PreToolUse | 15 | 8 | 7 | branch safety, format gates, plan gates, context injection |
-| PostToolUse | 22 | 0 | 22 | lint, security scan, learning, analytics, testing |
-| PreCompact | 1 | 0 | 1 | archive learnings |
-| PostCompact | 1 | 0 | 1 | re-inject plan context |
-| TaskCompleted | 1 | 0 | 1 | completion metadata |
-| SubagentStop | 1 | 0 | 1 | branch safety enforcement |
-| StopFailure | 1 | 0 | 1 | failure recording |
-| Stop | 5 | 0 | 5 | summary, decay, learning, graduation |
-| **Total** | **60** | **8** | **52** | |
+Counts are command entries in `.claude/settings.json` on 2026-11-09. The file is the source of truth: recount it before you rely on a number here.
 
-18 additional hook files exist in `hooks/` but are not registered in settings.json (retired, superseded by unified-gate, or feature-flagged).
+| Event | Count | Notes |
+|-------|-------|-------|
+| SessionStart | 18 | sync, context loading, environment detection (17 hook files plus `session-bootstrap.sh`) |
+| UserPromptSubmit | 8 | pipeline detection, prompt capture, routing-outcome finalizer |
+| PreToolUse | 21 | safety gates, branch safety, config protection, context injection |
+| PostToolUse | 16 | lint, security scan, routing decisions, index refresh |
+| PreCompact | 1 | archive the session transcript |
+| PostCompact | 1 | re-inject plan context |
+| SubagentStart | 1 | warm-start context for the subagent |
+| SubagentStop | 5 | completion guard, routing-outcome recorder, state tracking |
+| StopFailure | 1 | failure recording |
+| Stop | 4 | summary, routing-outcome fallback (errored or stale), rules distill, drift guard |
+| SessionEnd | 1 | routing-outcome fallback (every pending outcome) |
+| **Total** | **77** | 76 hook-file registrations plus `session-bootstrap.sh` |
+
+Other hook files exist in `hooks/` but are not registered in settings.json (retired, superseded by the unified gate, or feature-flagged).
 
 ---
 

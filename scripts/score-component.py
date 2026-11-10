@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import sys
 from dataclasses import dataclass, field
@@ -33,6 +34,10 @@ import yaml
 # ---------------------------------------------------------------------------
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
+
+sys.path.insert(0, str(REPO_ROOT))
+
+from scripts.lib.frontmatter import extract_frontmatter_block
 
 SECRET_PATTERNS: list[re.Pattern[str]] = [
     re.compile(r"sk-[a-zA-Z0-9]{20,}"),
@@ -115,11 +120,9 @@ class ComponentScore:
 
 def extract_frontmatter(content: str) -> dict | None:
     """Extract YAML frontmatter from markdown content."""
-    match = re.match(r"^---\n(.*?)\n---", content, re.DOTALL)
-    if not match:
+    yaml_content = extract_frontmatter_block(content)
+    if yaml_content is None:
         return None
-
-    yaml_content = match.group(1)
     try:
         return yaml.safe_load(yaml_content)
     except yaml.YAMLError:
@@ -184,8 +187,20 @@ def check_yaml_frontmatter(content: str) -> CheckResult:
     return CheckResult("Valid YAML frontmatter", 10, 5, f"Missing: {', '.join(missing)}")
 
 
-def check_referenced_files(content: str) -> CheckResult:
-    """Check: Referenced backtick-quoted paths exist on disk (15 pts)."""
+def check_referenced_files(content: str, file_path: Path, component_type: str) -> CheckResult:
+    """Check: Referenced backtick-quoted paths exist on disk (15 pts).
+
+    Repo-relative paths (agents/..., skills/..., etc.) resolve against
+    REPO_ROOT. Bare `references/X.md` paths resolve against the component's
+    own directory instead — matching the resolution check_reference_files()
+    already uses (agents/{name}/references/ for agents, the skill directory's
+    references/ for skills). A component's own references/ dir isn't repo-root-relative.
+    """
+    if component_type == "agent":
+        component_dir = file_path.parent / file_path.stem
+    else:
+        component_dir = file_path.parent
+
     # Match backtick-quoted strings that look like filesystem paths
     backtick_paths = re.findall(r"`([^`]+)`", content)
     file_like: list[str] = []
@@ -225,11 +240,22 @@ def check_referenced_files(content: str) -> CheckResult:
     valid = 0
     invalid_paths: list[str] = []
     for p in file_like:
-        resolved = REPO_ROOT / p
+        if p.startswith("references/"):
+            # Bare references/ paths resolve against the component's own directory
+            resolved = component_dir / p
+        else:
+            resolved = REPO_ROOT / p
         if resolved.exists():
             valid += 1
         else:
-            invalid_paths.append(p)
+            # Agent-dir-relative convention: paths like {agent-name}/references/x.md
+            # resolve against REPO_ROOT/agents/ (or skills/ for skills)
+            alt_agents = REPO_ROOT / "agents" / p
+            alt_skills = REPO_ROOT / "skills" / p
+            if alt_agents.exists() or alt_skills.exists():
+                valid += 1
+            else:
+                invalid_paths.append(p)
 
     total = len(file_like)
     ratio = valid / total if total > 0 else 1.0
@@ -253,10 +279,25 @@ def check_anti_patterns_section(content: str) -> CheckResult:
 
 
 def check_error_handling_section(content: str) -> CheckResult:
-    """Check: Has error handling section heading (10 pts)."""
-    if re.search(r"^#{1,3}\s+.*error", content, re.IGNORECASE | re.MULTILINE):
+    """Check: Has error handling section heading (10 pts).
+
+    Matches "error" headings and the "failure mode" phrasing some skills use
+    instead (e.g. "## Failure Modes by Mode").
+    """
+    if re.search(r"^#{1,3}\s+.*(error|failure\s+mode)", content, re.IGNORECASE | re.MULTILINE):
         return CheckResult("Error handling section", 10, 10)
-    return CheckResult("Error handling section", 10, 0, "No '## Error*' heading found")
+    return CheckResult("Error handling section", 10, 0, "No '## Error*' or '## Failure Mode*' heading found")
+
+
+def _index_path(kind: str) -> Path:
+    """Index for *kind*: ``$VEXJOY_INDEX_DIR/<kind>.json`` when set and present,
+    the same override the routing readers honor, else ``<repo>/<kind>/INDEX.json``."""
+    env = os.environ.get("VEXJOY_INDEX_DIR")
+    if env:
+        candidate = Path(env).expanduser() / f"{kind}.json"
+        if candidate.is_file():
+            return candidate
+    return REPO_ROOT / kind / "INDEX.json"
 
 
 def check_routing_registration(component_type: str, file_path: Path, fm: dict | None) -> CheckResult:
@@ -269,7 +310,7 @@ def check_routing_registration(component_type: str, file_path: Path, fm: dict | 
         return CheckResult("Registered in routing", 10, 0, "No name in frontmatter")
 
     if component_type == "agent":
-        index_path = REPO_ROOT / "agents" / "INDEX.json"
+        index_path = _index_path("agents")
         if not index_path.exists():
             return CheckResult("Registered in routing", 10, 0, "agents/INDEX.json not found")
 
@@ -286,22 +327,21 @@ def check_routing_registration(component_type: str, file_path: Path, fm: dict | 
     elif component_type == "skill":
         skill_dir_name = get_skill_name(file_path)
 
-        # Check /do SKILL.md
-        do_skill = REPO_ROOT / "skills" / "do" / "SKILL.md"
-        routing_tables = REPO_ROOT / "skills" / "do" / "references" / "routing-tables.md"
+        # Check /do SKILL.md. routing-tables.md was absorbed into INDEX.json
+        # (see scripts/validate-index-integrity.py) and no longer exists.
+        do_skill = REPO_ROOT / "skills" / "meta" / "do" / "SKILL.md"
 
         found_in: list[str] = []
-        for check_path, label in [(do_skill, "do/SKILL.md"), (routing_tables, "routing-tables.md")]:
-            if check_path.exists():
-                try:
-                    text = check_path.read_text(encoding="utf-8")
-                    if skill_dir_name in text:
-                        found_in.append(label)
-                except OSError:
-                    pass
+        if do_skill.exists():
+            try:
+                text = do_skill.read_text(encoding="utf-8")
+                if skill_dir_name in text:
+                    found_in.append("do/SKILL.md")
+            except OSError:
+                pass
 
         # Also check skills/INDEX.json
-        skills_index = REPO_ROOT / "skills" / "INDEX.json"
+        skills_index = _index_path("skills")
         if skills_index.exists():
             try:
                 si_data = json.loads(skills_index.read_text(encoding="utf-8"))
@@ -479,7 +519,7 @@ def score_component(file_path: Path, do_check_secrets: bool = False) -> Componen
     )
 
     score.checks.append(check_yaml_frontmatter(content))
-    score.checks.append(check_referenced_files(content))
+    score.checks.append(check_referenced_files(content, file_path, component_type))
     score.checks.append(check_anti_patterns_section(content))
     score.checks.append(check_error_handling_section(content))
     score.checks.append(check_routing_registration(component_type, file_path, fm))
@@ -583,11 +623,16 @@ def score_to_dict(score: ComponentScore) -> dict:
 
 
 def find_all_agents() -> list[Path]:
-    """Find all agent markdown files (excludes README.md and INDEX.json)."""
+    """Find all agent markdown files (excludes non-routable files).
+
+    base-instructions.md is a shared preamble included by agents, not a
+    routable agent itself (no frontmatter, no routing entry). Scoring it
+    produces guaranteed false failures.
+    """
     agents_dir = REPO_ROOT / "agents"
     if not agents_dir.is_dir():
         return []
-    excluded = {"README.md", "INDEX.json"}
+    excluded = {"README.md", "INDEX.json", "base-instructions.md"}
     return sorted(p for p in agents_dir.glob("*.md") if p.name not in excluded)
 
 

@@ -17,29 +17,12 @@ from typing import Any, Dict
 class ReportGenerator:
     """Generate sync reports from issues data."""
 
-    def __init__(self, strict: bool = False, auto_fix: bool = False):
+    def __init__(self, strict: bool = False):
         self.strict = strict
-        self.auto_fix = auto_fix
 
     def generate_suggested_fix_markdown(self, issue: Dict[str, Any]) -> str:
-        """
-        Generate suggested markdown to add/remove for an issue.
-        """
-        tool_type = issue["tool_type"]
-        tool_name = issue["tool_name"]
-        description = issue.get("yaml_description", "")
-
-        if tool_type == "skill":
-            # Skills README table row
-            return f"| {tool_name} | {description} | `skill: {tool_name}` | - |"
-        elif tool_type == "agent":
-            # Agents README table row (or list item)
-            return f"| {tool_name} | {description} |"
-        elif tool_type == "command":
-            # Commands README list item
-            return f"- `/{tool_name}` - {description}"
-
-        return ""
+        """Return the fix parse_docs.py attached to the issue."""
+        return issue.get("suggested_fix", "")
 
     def generate_markdown_report(self, issues_data: Dict[str, Any], scan_results: Dict[str, Any] = None) -> str:
         """
@@ -83,7 +66,6 @@ class ReportGenerator:
 
         lines.append(f"- **Missing Entries**: {summary.get('missing_entries', 0)} HIGH priority")
         lines.append(f"- **Stale Entries**: {summary.get('stale_entries', 0)} MEDIUM priority")
-        lines.append(f"- **Version Mismatches**: {summary.get('version_mismatches', 0)} LOW priority")
 
         if total_issues > 0 and scan_results:
             total_tools = scan_results.get("summary", {}).get("total_tools", 1)
@@ -114,17 +96,14 @@ class ReportGenerator:
 
                 lines.append(f"#### {i}. {tool_type}: {tool_name}")
                 lines.append(f"**Path**: `{tool_path}`")
-                lines.append(f"**Missing from**: {missing_from}")
+                lines.append(f"**Missing from**: {missing_from}")  # security-review: ignore (markdown report line, not SQL)  # fmt: skip
                 lines.append("")
 
                 # Suggested fixes for each location
                 for location in issue["missing_from"]:
                     suggested_fix = self.generate_suggested_fix_markdown(issue)
                     if suggested_fix:
-                        lines.append(f"**Suggested Fix for {location}**:")
-                        lines.append("```markdown")
-                        lines.append(suggested_fix)
-                        lines.append("```")
+                        lines.append(f"**Suggested Fix for {location}**: {suggested_fix}")
                         lines.append("")
 
             lines.append("---")
@@ -149,36 +128,8 @@ class ReportGenerator:
                 lines.append(f"**Documented in**: {documented_in}")
                 lines.append("")
                 lines.append("**Suggested Fix**:")
-                lines.append(f'- Remove the entry for "{tool_name}" from {documented_in}')
-                lines.append(f'- Check README.md for references to "{tool_name}" and remove')
-                lines.append("")
-
-            lines.append("---")
-            lines.append("")
-
-        # Version Mismatches
-        version_mismatches = issues.get("version_mismatches", [])
-        if version_mismatches:
-            lines.append("## LOW Priority Issues")
-            lines.append("")
-            lines.append(f"### Version Mismatches ({len(version_mismatches)})")
-            lines.append("")
-            lines.append("YAML version differs from documented version:")
-            lines.append("")
-
-            for i, issue in enumerate(version_mismatches, 1):
-                tool_name = issue["tool_name"]
-                yaml_version = issue["yaml_version"]
-                documented_version = issue["documented_version"]
-                documented_in = issue["documented_in"]
-
-                lines.append(f"#### {i}. {tool_name}")
-                lines.append(f"**YAML Version**: {yaml_version}")
-                lines.append(f"**Documented Version**: {documented_version}")
-                lines.append(f"**File**: {documented_in}")
-                lines.append("")
-                lines.append("**Suggested Fix**:")
-                lines.append(f"Update {documented_in} to show version {yaml_version}")
+                fix = issue.get("suggested_fix") or f"Remove the entry for {tool_name} from {documented_in}"
+                lines.append(f"- {fix}")
                 lines.append("")
 
             lines.append("---")
@@ -193,11 +144,8 @@ class ReportGenerator:
                 lines.append(f"1. **Add missing entries** for new tools ({len(missing)} tools)")
             if stale:
                 lines.append(f"2. **Remove stale entries** for deleted tools ({len(stale)} tools)")
-            if version_mismatches:
-                lines.append(f"3. **Update versions** to match YAML frontmatter ({len(version_mismatches)} tools)")
-
-            lines.append("4. **Run this check** before committing documentation changes")
-            lines.append("5. **Integrate with CI/CD** to prevent future drift")
+            lines.append("3. **Run this check** before committing documentation changes")
+            lines.append("4. **Integrate with CI/CD** to prevent future drift")
             lines.append("")
         else:
             lines.append("## Status: All Clear! ✅")
@@ -226,11 +174,13 @@ class ReportGenerator:
             lines.append("")
             lines.append("```bash")
             lines.append("# Review suggested fixes above")
-            lines.append("# Manually update documentation files")
+            lines.append("# Regenerate generated catalogs; edit docs/REFERENCE.md by hand")
             lines.append("# Re-run sync checker to verify")
-            lines.append("python3 skills/meta/docs-sync-checker/scripts/scan_tools.py --repo-root .")
             lines.append(
-                "python3 skills/meta/docs-sync-checker/scripts/parse_docs.py --repo-root . --scan-results /tmp/scan.json"
+                "python3 skills/meta/docs-sync-checker/scripts/scan_tools.py --repo-root . --output /tmp/scan.json"
+            )
+            lines.append(
+                "python3 skills/meta/docs-sync-checker/scripts/parse_docs.py --repo-root . --scan-results /tmp/scan.json --output /tmp/issues.json"
             )
             lines.append("python3 skills/meta/docs-sync-checker/scripts/generate_report.py --issues /tmp/issues.json")
             lines.append("```")
@@ -266,7 +216,6 @@ def main():
         "--format", choices=["markdown", "json"], default="markdown", help="Output format (default: markdown)"
     )
     parser.add_argument("--strict", action="store_true", help="Exit with error code if issues found (for CI/CD)")
-    parser.add_argument("--auto-fix", action="store_true", help="Automatically fix missing entries (EXPERIMENTAL)")
 
     args = parser.parse_args()
 
@@ -289,7 +238,7 @@ def main():
                 scan_results = json.load(f)
 
         # Generate report
-        generator = ReportGenerator(strict=args.strict, auto_fix=args.auto_fix)
+        generator = ReportGenerator(strict=args.strict)
 
         if args.format == "markdown":
             report_content = generator.generate_markdown_report(issues_data, scan_results)

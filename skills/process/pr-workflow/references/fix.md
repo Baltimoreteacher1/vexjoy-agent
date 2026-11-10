@@ -125,6 +125,8 @@ Resolves review comments on PR #{number}"
 git push
 ```
 
+Repos that are not non-fork `github.com/notque` repos: run `ruff check`/`ruff format` and the repo's own formatters and linters before the fix commit; before `git push`, run `/pr-review` on the fix commit, fix any Critical or Important finding, and re-review until it records the SHA. The push gate blocks an unreviewed commit.
+
 ### Phase 6: FINAL REPORT
 
 **Goal**: Summarize what was done.
@@ -206,8 +208,8 @@ Solution:
 
 ### Related Skills
 - `pr-pipeline` — For creating PRs from scratch
-- `pr-review` — For reviewing code without fixing
-- `systematic-debugging` — For general debugging unrelated to PR comments
+- `review` — For reviewing code without fixing (skill); use `/pr-review` command for full multi-agent PR review
+- `debugging` — For general debugging unrelated to PR comments
 
 ### PR Comment Best Practices
 - Always validate before fixing (this prevents introducing bugs that reviewers caught)

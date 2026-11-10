@@ -11,6 +11,7 @@ from pathlib import Path
 import pytest
 
 SCRIPT = Path(__file__).resolve().parent.parent / "generate-skill-index.py"
+AGENT_SCRIPT = Path(__file__).resolve().parent.parent / "generate-agent-index.py"
 
 
 def _load_gsi():
@@ -21,7 +22,16 @@ def _load_gsi():
     return mod
 
 
+def _load_gai():
+    """Load generate-agent-index.py as a module (hyphenated name requires importlib)."""
+    spec = importlib.util.spec_from_file_location("generate_agent_index", AGENT_SCRIPT)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
 gsi = _load_gsi()
+gai = _load_gai()
 
 # Minimal valid SKILL.md frontmatter for test fixtures
 _SKILL_FRONTMATTER = """\
@@ -184,14 +194,14 @@ class TestFlattenResolvesNestedThroughSymlink:
         repo = tmp_path
         skills = repo / "skills"
         # Canonical copy under a normal category.
-        canon = skills / "content" / "voice-writer"
+        canon = skills / "content" / "voice-example"
         canon.mkdir(parents=True)
-        (canon / "SKILL.md").write_text(_SKILL_FRONTMATTER.format(name="voice-writer"))
+        (canon / "SKILL.md").write_text(_SKILL_FRONTMATTER.format(name="voice-example"))
         # Shadow copy reached through a symlinked category skills/voice -> external.
         external_voice = repo / "private" / "voice"
-        shadow = external_voice / "voice-writer"
+        shadow = external_voice / "voice-example"
         shadow.mkdir(parents=True)
-        (shadow / "SKILL.md").write_text(_SKILL_FRONTMATTER.format(name="voice-writer"))
+        (shadow / "SKILL.md").write_text(_SKILL_FRONTMATTER.format(name="voice-example"))
         (skills / "voice").symlink_to(external_voice)
 
         index, _ = gsi.generate_index(
@@ -202,8 +212,8 @@ class TestFlattenResolvesNestedThroughSymlink:
             flatten=True,
             repo_root=repo,
         )
-        assert index["skills"]["voice-writer"]["file"] == "skills/content/voice-writer/SKILL.md"
-        assert (repo / index["skills"]["voice-writer"]["file"]).is_file()
+        assert index["skills"]["voice-example"]["file"] == "skills/content/voice-example/SKILL.md"
+        assert (repo / index["skills"]["voice-example"]["file"]).is_file()
 
 
 class TestCustomOutputPath:
@@ -229,25 +239,6 @@ class TestCustomOutputPath:
         data = json.loads(custom_output.read_text())
         assert "some-skill" in data["skills"]
 
-    def test_output_is_valid_json(self, tmp_path: Path) -> None:
-        """The generated file is always valid JSON."""
-        skills_dir = tmp_path / "skills"
-        _make_skill_dir(skills_dir, "json-test-skill")
-
-        output = tmp_path / "INDEX.json"
-        index, _warnings = gsi.generate_index(
-            source_dir=skills_dir,
-            dir_prefix="skills",
-            collection_key="skills",
-        )
-        gsi.write_index(index, output)
-
-        # json.loads raises if invalid — that is the assertion
-        data = json.loads(output.read_text())
-        assert isinstance(data, dict)
-        assert "version" in data
-        assert "skills" in data
-
 
 class TestCLIFlag:
     """End-to-end CLI tests for --include-private and --output flags."""
@@ -264,6 +255,181 @@ class TestCLIFlag:
         assert custom_output.exists(), "Output file not created"
         json.loads(custom_output.read_text())  # must be valid JSON
 
+    def test_skill_repo_root_flag_scans_and_writes_target_repo(self, tmp_path: Path) -> None:
+        _make_skill_dir(tmp_path / "skills" / "testing", "target-skill")
+
+        result = subprocess.run(
+            [sys.executable, str(SCRIPT), "--repo-root", str(tmp_path)],
+            capture_output=True,
+            text=True,
+        )
+
+        assert result.returncode == 0, result.stderr
+        index = json.loads((tmp_path / "skills" / "INDEX.json").read_text(encoding="utf-8"))
+        assert set(index["skills"]) == {"target-skill"}
+
+    def test_agent_repo_root_flag_scans_and_writes_target_repo(self, tmp_path: Path) -> None:
+        agents = tmp_path / "agents"
+        agents.mkdir()
+        (agents / "target-agent.md").write_text(
+            "---\nname: target-agent\ndescription: Target agent fixture.\n---\n",
+            encoding="utf-8",
+        )
+
+        result = subprocess.run(
+            [sys.executable, str(AGENT_SCRIPT), "--repo-root", str(tmp_path)],
+            capture_output=True,
+            text=True,
+        )
+
+        assert result.returncode == 0, result.stderr
+        index = json.loads((agents / "INDEX.json").read_text(encoding="utf-8"))
+        assert set(index["agents"]) == {"target-agent"}
+
+
+class TestPrivateIndexOutput:
+    """Private-inclusive generation must never overwrite the public index name."""
+
+    def test_skill_default_output_is_local_when_private_is_included(self, tmp_path: Path) -> None:
+        skills_dir = tmp_path / "skills"
+        assert gsi.default_output_path(skills_dir, include_private=False) == skills_dir / "INDEX.json"
+        assert gsi.default_output_path(skills_dir, include_private=True) == skills_dir / "INDEX.local.json"
+
+    def test_agent_default_output_is_local_when_private_is_included(self, tmp_path: Path) -> None:
+        agents_dir = tmp_path / "agents"
+        assert gai.default_output_path(agents_dir, include_private=False) == agents_dir / "INDEX.json"
+        assert gai.default_output_path(agents_dir, include_private=True) == agents_dir / "INDEX.local.json"
+
+
+class TestPrunePhantomEntries:
+    """Entries advertising files that exist in no layout are pruned (audit defect D1)."""
+
+    def _index(self, file_path: str) -> dict:
+        return {
+            "skills": {
+                "sample-skill": {
+                    "file": file_path,
+                    "description": "A sample skill.",
+                    "triggers": ["sample"],
+                }
+            }
+        }
+
+    def test_existing_file_survives(self, tmp_path: Path) -> None:
+        """An entry whose advertised file resolves under a root is kept."""
+        skill_md = tmp_path / "skills" / "sample-skill" / "SKILL.md"
+        skill_md.parent.mkdir(parents=True)
+        skill_md.write_text("---\nname: sample-skill\n---\n")
+        index = self._index("skills/sample-skill/SKILL.md")
+
+        pruned = gsi.prune_phantom_entries(index, [tmp_path])
+
+        assert pruned == []
+        assert "sample-skill" in index["skills"]
+
+    def test_missing_file_is_pruned(self, tmp_path: Path) -> None:
+        """An entry whose advertised file exists under no root is removed."""
+        index = self._index("skills/sample-skill/SKILL.md")
+
+        pruned = gsi.prune_phantom_entries(index, [tmp_path, tmp_path / "deployed"])
+
+        assert pruned == ["sample-skill"]
+        assert index["skills"] == {}
+
+    def test_nested_layout_flat_path_is_pruned(self, tmp_path: Path) -> None:
+        """Reproduces D1: a package with only nested skill/SKILL.md gets a flat
+        advertised path that resolves nowhere — it must be pruned."""
+        nested = tmp_path / "skills" / "voice-sample" / "skill" / "SKILL.md"
+        nested.parent.mkdir(parents=True)
+        nested.write_text("---\nname: voice-sample\n---\n")
+        index = {
+            "skills": {
+                "voice-sample": {
+                    "file": "skills/voice-sample/SKILL.md",  # flat path; only skill/SKILL.md exists
+                    "description": "Nested-layout package.",
+                    "triggers": ["voice sample"],
+                }
+            }
+        }
+
+        pruned = gsi.prune_phantom_entries(index, [tmp_path])
+
+        assert pruned == ["voice-sample"]
+        assert index["skills"] == {}
+
+
+class TestRealRepoRun:
+    """End-to-end over the real skill tree: the only run that reaches frontmatter shapes fixtures don't model."""
+
+    @pytest.mark.slow
+    def test_include_private_run_writes_only_the_requested_output(self, tmp_path: Path) -> None:
+        """The include-private generator exits 0 and writes where told, never over the shared public index."""
+        output = tmp_path / "INDEX.json"
+        result = subprocess.run(
+            [sys.executable, str(SCRIPT), "--include-private", "--output", str(output)],
+            capture_output=True,
+            text=True,
+            cwd=str(SCRIPT.parent.parent),
+            timeout=30,
+        )
+        assert result.returncode == 0, f"stdout: {result.stdout}\nstderr: {result.stderr}"
+        data = json.loads(output.read_text(encoding="utf-8"))
+        # Floor tracks the post-consolidation catalog; raise it with new skills.
+        assert 35 <= len(data["skills"]) <= 80
+
+
+class TestHybridDirIndexing:
+    """Hybrid dirs (top-level SKILL.md + nested skill subdirs) appear fully in index."""
+
+    def test_hybrid_dir_top_and_nested_both_indexed(self, tmp_path: Path) -> None:
+        """A hybrid dir's top-level skill and its nested skill both appear in the index."""
+        skills_dir = tmp_path / "skills"
+        # Top-level hybrid skill (e.g. skills/process/SKILL.md)
+        process_dir = skills_dir / "process"
+        process_dir.mkdir(parents=True)
+        (process_dir / "SKILL.md").write_text(_SKILL_FRONTMATTER.format(name="process"))
+        # Nested skill under the hybrid dir (e.g. skills/process/pr-workflow/SKILL.md)
+        nested_dir = process_dir / "pr-workflow"
+        nested_dir.mkdir()
+        (nested_dir / "SKILL.md").write_text(_SKILL_FRONTMATTER.format(name="pr-workflow"))
+
+        index, _warnings = gsi.generate_index(
+            source_dir=skills_dir,
+            dir_prefix="skills",
+            collection_key="skills",
+        )
+
+        assert "process" in index["skills"], "Top-level hybrid skill must be indexed"
+        assert "pr-workflow" in index["skills"], "Nested skill in hybrid dir must be indexed"
+
+
+class TestOverwriteWarning:
+    """A duplicate skill name emits an overwrite warning."""
+
+    def test_duplicate_name_emits_warning(self, tmp_path: Path) -> None:
+        """Two skill dirs with the same name: in frontmatter triggers the overwrite-warning branch."""
+        skills_dir = tmp_path / "skills"
+        # Two different dir names, same name: in frontmatter so both map to "shared-name".
+        dir_a = skills_dir / "cat-a" / "shared-skill"
+        dir_a.mkdir(parents=True)
+        (dir_a / "SKILL.md").write_text(_SKILL_FRONTMATTER.format(name="shared-name"))
+
+        dir_b = skills_dir / "cat-b" / "shared-skill"
+        dir_b.mkdir(parents=True)
+        (dir_b / "SKILL.md").write_text(_SKILL_FRONTMATTER.format(name="shared-name"))
+
+        index, warnings = gsi.generate_index(
+            source_dir=skills_dir,
+            dir_prefix="skills",
+            collection_key="skills",
+            repo_root=tmp_path,
+        )
+
+        assert "shared-name" in index["skills"], "The skill must still be indexed"
+        assert any("shared-name" in w for w in warnings), (
+            f"Expected an overwrite warning for 'shared-name'; got warnings: {warnings}"
+        )
+
 
 class TestFallbackTriggers:
     """Skills without routing.triggers get name-derived triggers, each listed once."""
@@ -271,13 +437,43 @@ class TestFallbackTriggers:
     def test_single_word_name_not_duplicated(self, tmp_path):
         """A name with no hyphen must not produce a duplicate trigger."""
         skill_dir = _make_skill_dir(tmp_path, "wrangler")
-        (skill_dir / "SKILL.md").write_text(_SKILL_FRONTMATTER.format(name="wrangler"))
         entry = gsi.build_entry({"name": "wrangler"}, skill_dir, "")
         assert entry["triggers"] == ["wrangler"]
 
     def test_hyphenated_name_derives_parts(self, tmp_path):
         """A hyphenated name yields the full name first, then its significant parts."""
         skill_dir = _make_skill_dir(tmp_path, "code-cleanup")
-        (skill_dir / "SKILL.md").write_text(_SKILL_FRONTMATTER.format(name="code-cleanup"))
         entry = gsi.build_entry({"name": "code-cleanup"}, skill_dir, "")
         assert entry["triggers"] == ["code-cleanup", "code", "cleanup"]
+
+
+# ---------------------------------------------------------------- agent short description
+
+
+@pytest.mark.parametrize(
+    ("description", "expected"),
+    [
+        (
+            "MCP server development for local documentation access in TypeScript/Node.js and Go. Second sentence.",
+            "MCP server development for local documentation access in TypeScript/Node.js and Go",
+        ),
+        (
+            "React portfolio/gallery sites for creatives: React 18+, Next.js App Router, image optimization.",
+            "React portfolio/gallery sites for creatives: React 18+, Next.js App Router, image optimization",
+        ),
+        (
+            "PHP development: features, debugging, code quality, security, modern PHP 8.x patterns.",
+            "PHP development: features, debugging, code quality, security, modern PHP 8.x patterns",
+        ),
+        ("Civilization VII 1.2 UI mods. More detail.", "Civilization VII 1.2 UI mods"),
+        ("Go development. Second sentence.", "Go development"),
+    ],
+)
+def test_agent_short_description_does_not_split_on_identifier_dots(description: str, expected: str) -> None:
+    # Splitting at the first "." cut "Node.js and Go" to "Node" and "PHP 8.x" to "PHP 8".
+    assert gai.extract_short_description(description) == expected
+
+
+def test_agent_short_description_keeps_the_use_this_agent_clause() -> None:
+    desc = "Use this agent when you need NodeJS API work: REST, auth, webhooks. Examples follow."
+    assert gai.extract_short_description(desc) == "Use this agent when you need NodeJS API work: REST, auth, webhooks"

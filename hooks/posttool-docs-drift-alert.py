@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# hook-version: 1.0.0
+# hook-version: 1.0.2
 """
 Claude Code hook: Alert when documentation may be out of sync after file writes.
 
@@ -11,6 +11,25 @@ Event: PostToolUse (Write, Edit)
 Filters: INDEX.json, agents/*.md, skills/INDEX.json, agents/INDEX.json
 """
 
+import sys  # vexjoy-pyguard
+
+if sys.version_info < (3, 10):  # vexjoy-pyguard advisory
+    import os
+
+    if not os.environ.get("VEXJOY_PYGUARD_REEXEC"):
+        os.environ["VEXJOY_PYGUARD_REEXEC"] = "1"
+        for _d in [*os.environ.get("PATH", "").split(os.pathsep), "/opt/homebrew/bin", "/usr/local/bin", "/usr/bin"]:
+            for _v in ("14", "13", "12", "11", "10"):
+                _p = os.path.join(_d, "python3." + _v)
+                if _d and "/shims" not in _d and os.access(_p, os.X_OK):
+                    os.execv(_p, [_p, *sys.argv])
+    sys.stderr.write(
+        "[vexjoy] hook %s needs Python 3.10+, got %s (%s); run ./install.sh in vexjoy-agent from a terminal"
+        " outside Claude Code (gated tool calls stay blocked until then)\n"
+        % (__file__.rsplit("/", 1)[-1], sys.version.split()[0], sys.executable)
+    )
+    sys.exit(0)
+
 import json
 import os
 import subprocess
@@ -18,13 +37,20 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent / "lib"))
+from hook_utils import context_output, hook_error
 from stdin_timeout import read_stdin
+
+_EVENT_NAME = "PostToolUse"
+_TRUSTED_ROOT = Path(__file__).resolve().parent.parent
 
 # Files that trigger a drift check when modified
 _TRIGGER_NAMES = frozenset({"INDEX.json"})
 
-# Repo root — derived relative to this hook's location (hooks/ → repo root)
-_REPO_ROOT = Path(__file__).parent.parent
+
+def _project_root(event: dict) -> Path:
+    """Resolve the repository targeted by the hook event."""
+    candidate = event.get("cwd") or os.environ.get("CLAUDE_PROJECT_DIR") or Path.cwd()
+    return Path(candidate).resolve()
 
 
 def _is_watched_file(file_path: str) -> bool:
@@ -50,22 +76,23 @@ def _is_watched_file(file_path: str) -> bool:
     return False
 
 
-def _run_scan_tools() -> tuple[bool, str]:
+def _run_scan_tools(repo_root: Path) -> tuple[bool, str]:
     """Run docs-sync-checker/scripts/scan_tools.py if it exists.
 
     Returns:
         (drift_detected, message)
     """
-    script = _REPO_ROOT / "skills" / "docs-sync-checker" / "scripts" / "scan_tools.py"
+    script = _TRUSTED_ROOT / "skills" / "meta" / "docs-sync-checker" / "scripts" / "scan_tools.py"
     if not script.exists():
         return False, ""
 
     try:
         result = subprocess.run(
-            ["python3", str(script), "--repo-root", str(_REPO_ROOT)],
+            ["python3", str(script), "--repo-root", str(repo_root)],
             capture_output=True,
             text=True,
             timeout=10,
+            cwd=str(_TRUSTED_ROOT),
         )
         if result.returncode != 0:
             return True, f"scan_tools.py exited {result.returncode}: {result.stderr[:300]}"
@@ -76,13 +103,13 @@ def _run_scan_tools() -> tuple[bool, str]:
         return False, ""
 
 
-def _fallback_count_check() -> tuple[bool, str]:
+def _fallback_count_check(repo_root: Path) -> tuple[bool, str]:
     """Compare agent .md file count on disk vs entries in agents/INDEX.json.
 
     Returns:
         (drift_detected, message)
     """
-    agents_dir = _REPO_ROOT / "agents"
+    agents_dir = repo_root / "agents"
     index_path = agents_dir / "INDEX.json"
 
     if not agents_dir.is_dir() or not index_path.exists():
@@ -110,19 +137,27 @@ def _fallback_count_check() -> tuple[bool, str]:
     return False, ""
 
 
-def _check_drift() -> tuple[bool, str]:
+def _check_drift(repo_root: Path) -> tuple[bool, str]:
     """Run drift detection: prefer scan_tools.py, fall back to count check."""
-    drift, msg = _run_scan_tools()
+    drift, msg = _run_scan_tools(repo_root)
     if drift:
         return drift, msg
     if not msg:
         # scan_tools.py either passed or was absent — run fallback regardless
-        return _fallback_count_check()
+        return _fallback_count_check(repo_root)
     return False, ""
+
+
+_BYPASS_ENV = "POSTTOOL_DOCS_DRIFT_ALERT_BYPASS"
 
 
 def main() -> None:
     """Main hook entry point."""
+    if os.environ.get(_BYPASS_ENV) == "1":
+        if os.environ.get("CLAUDE_HOOKS_DEBUG"):
+            print("[posttool-docs-drift-alert] Bypassed via POSTTOOL_DOCS_DRIFT_ALERT_BYPASS=1", file=sys.stderr)
+        sys.exit(0)
+
     hook_input: dict | None = None
 
     # Read from stdin with timeout protection
@@ -133,14 +168,6 @@ def main() -> None:
                 hook_input = json.loads(raw)
             except json.JSONDecodeError:
                 pass
-
-    # Fall back to temp file (shared stdin cache used by hook chain)
-    if not hook_input:
-        try:
-            with open("/tmp/claude_hook_stdin.json", encoding="utf-8") as fh:
-                hook_input = json.load(fh)
-        except (FileNotFoundError, json.JSONDecodeError):
-            return
 
     if not hook_input:
         return
@@ -158,20 +185,16 @@ def main() -> None:
     if not file_path or not _is_watched_file(file_path):
         return
 
-    drift_detected, message = _check_drift()
+    drift_detected, message = _check_drift(_project_root(hook_input))
 
     if drift_detected and message:
-        print(f"[docs-drift] WARNING: {message}", file=sys.stderr)
+        context_output(_EVENT_NAME, f"[docs-drift] WARNING: {message}").print_and_exit(0)
 
 
 if __name__ == "__main__":
     try:
         main()
     except Exception as e:
-        if os.environ.get("CLAUDE_HOOKS_DEBUG"):
-            import traceback
-
-            print(f"[docs-drift] HOOK-ERROR: {type(e).__name__}: {e}", file=sys.stderr)
-            traceback.print_exc(file=sys.stderr)
+        hook_error("posttool-docs-drift-alert", e)
     finally:
         sys.exit(0)

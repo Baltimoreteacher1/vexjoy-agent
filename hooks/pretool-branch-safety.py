@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# hook-version: 1.0.0
+# hook-version: 1.0.2
 """
 PreToolUse:Bash Hook: Branch Safety Gate
 
@@ -20,6 +20,25 @@ Allow-through conditions:
 - BRANCH_SAFETY_BYPASS=1 env var
 """
 
+import sys  # vexjoy-pyguard
+
+if sys.version_info < (3, 10):  # vexjoy-pyguard gate
+    import os
+
+    if not os.environ.get("VEXJOY_PYGUARD_REEXEC"):
+        os.environ["VEXJOY_PYGUARD_REEXEC"] = "1"
+        for _d in [*os.environ.get("PATH", "").split(os.pathsep), "/opt/homebrew/bin", "/usr/local/bin", "/usr/bin"]:
+            for _v in ("14", "13", "12", "11", "10"):
+                _p = os.path.join(_d, "python3." + _v)
+                if _d and "/shims" not in _d and os.access(_p, os.X_OK):
+                    os.execv(_p, [_p, *sys.argv])
+    sys.stderr.write(
+        "[vexjoy] hook %s needs Python 3.10+, got %s (%s); run ./install.sh in vexjoy-agent from a terminal"
+        " outside Claude Code (gated tool calls stay blocked until then)\n"
+        % (__file__.rsplit("/", 1)[-1], sys.version.split()[0], sys.executable)
+    )
+    sys.exit(2)
+
 import json
 import os
 import re
@@ -29,7 +48,7 @@ import traceback
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent / "lib"))
-from learning_db_v2 import record_governance_event
+from hook_utils import deny_tool_use, get_tool_input, hook_error, record_governance
 from stdin_timeout import read_stdin
 
 _BYPASS_ENV = "BRANCH_SAFETY_BYPASS"
@@ -89,7 +108,7 @@ def main() -> None:
     # tool_name filter removed — matcher "Bash" in settings.json prevents
     # this hook from spawning for non-Bash tools.
 
-    command = event.get("tool_input", {}).get("command", "")
+    command = get_tool_input(event).get("command", "")
     if "git commit" not in command:
         sys.exit(0)
 
@@ -118,23 +137,21 @@ def main() -> None:
             file=sys.stderr,
         )
         print("[fix-with-skill] pr-workflow", file=sys.stderr)
-        try:
-            record_governance_event(
-                "policy_violation", tool_name="Bash", hook_phase="pre", severity="high", blocked=True
-            )
-        except Exception:
-            pass  # Never let recording prevent a block
-        deny_output = {
-            "hookSpecificOutput": {
-                "hookEventName": "PreToolUse",
-                "permissionDecision": "deny",
-                "permissionDecisionReason": (
-                    f"Cannot commit directly to {branch}. Create a feature branch first. "
-                    "Use the pr-workflow skill (commit intent) to commit safely."
-                ),
-            }
-        }
-        print(json.dumps(deny_output))
+        record_governance(
+            "policy_violation",
+            hook_name="pretool-branch-safety",
+            tool_name="Bash",
+            hook_phase="pre",
+            severity="high",
+            blocked=True,
+            event=event,
+            command=command,
+        )
+        deny_tool_use(
+            "PreToolUse",
+            f"Cannot commit directly to {branch}. Create a feature branch first. "
+            "[fix-with-skill] pr-workflow\nCall the Skill tool with `pr-workflow`.",
+        )
         sys.exit(0)
 
     if debug:
@@ -148,10 +165,6 @@ if __name__ == "__main__":
     except SystemExit:
         raise  # Let sys.exit(0) propagate normally
     except Exception as e:
-        if os.environ.get("CLAUDE_HOOKS_DEBUG"):
-            traceback.print_exc(file=sys.stderr)
-        else:
-            print(f"[branch-safety] Error: {type(e).__name__}: {e}", file=sys.stderr)
-        # A crashed hook must fail OPEN — never block tools.
+        hook_error("pretool-branch-safety", e)
     finally:
         sys.exit(0)

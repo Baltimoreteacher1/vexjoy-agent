@@ -118,7 +118,7 @@ def _clean_env(extra: dict | None = None) -> dict:
     return base
 
 
-def _run(stdin_payload: str, *, env: dict | None = None, diff=None, check_results=None):
+def _run(stdin_payload: str, *, env: dict | None = None, diff=None, check_results=None, toolkit_repo: bool = True):
     """Invoke mod.main() in-process.
 
     Returns (exit_code, stdout_str, stderr_str).
@@ -128,11 +128,15 @@ def _run(stdin_payload: str, *, env: dict | None = None, diff=None, check_result
                      - a dict mapping check-name -> result dict (per-check control), or
                      - a single result dict applied to whatever check is invoked, or
                      - a list capturing call order (see _CheckSpy below).
+    toolkit_repo:  patches _is_toolkit_repo to this value (default True) so the
+                   toolkit-repo identity gate lets the event through. Set False to
+                   exercise the non-toolkit no-op path.
     """
     out, err = io.StringIO(), io.StringIO()
     with ExitStack() as stack:
         stack.enter_context(patch.dict(os.environ, _clean_env(env), clear=True))
         stack.enter_context(patch.object(mod, "read_stdin", return_value=stdin_payload))
+        stack.enter_context(patch.object(mod, "_is_toolkit_repo", return_value=toolkit_repo))
         stack.enter_context(redirect_stdout(out))
         stack.enter_context(redirect_stderr(err))
         if diff is not None:
@@ -474,6 +478,75 @@ class TestFailOpen:
         assert code == 0
         assert _rewake_summary(out) is None
 
+    def test_doc_count_check_uses_trusted_script_with_target_root_data(self, tmp_path):
+        trusted = tmp_path / "trusted"
+        target = tmp_path / "target"
+        trusted_scripts = trusted / "scripts"
+        target_scripts = target / "scripts"
+        trusted_scripts.mkdir(parents=True)
+        target_scripts.mkdir(parents=True)
+        sentinel = tmp_path / "malicious-stop-ran"
+        for name in ("smoke-test-hooks.py", "validate-doc-counts.py", "check-routing-drift.py"):
+            (target_scripts / name).write_text(
+                f"from pathlib import Path\nPath({str(sentinel)!r}).write_text('owned')\n",
+                encoding="utf-8",
+            )
+        argv_record = tmp_path / "trusted-doc-count-argv.json"
+        (trusted_scripts / "validate-doc-counts.py").write_text(
+            "import json, sys\n"
+            "from pathlib import Path\n"
+            f"Path({str(argv_record)!r}).write_text(json.dumps(sys.argv[1:]))\n"
+            "print(json.dumps({'drifts': [{'source': 'README.md', 'line': 1, "
+            "'claim': '1 hook', 'actual': 2}]}))\n",
+            encoding="utf-8",
+        )
+
+        with patch.object(mod, "_TRUSTED_ROOT", trusted, create=True):
+            result = mod._run_check(DOC_COUNTS, str(target))
+
+        assert result is not None and result["drift"] is True
+        assert not sentinel.exists()
+        argv = json.loads(argv_record.read_text(encoding="utf-8"))
+        assert argv == ["--json", "--repo-root", str(target)]
+
+    def test_smoke_check_uses_trusted_validator_for_untrusted_target(self, tmp_path):
+        trusted = tmp_path / "trusted"
+        target = tmp_path / "target"
+        (trusted / "scripts").mkdir(parents=True)
+        (target / "scripts").mkdir(parents=True)
+        sentinel = tmp_path / "malicious-smoke-ran"
+        (target / "scripts" / "smoke-test-hooks.py").write_text(
+            f"from pathlib import Path\nPath({str(sentinel)!r}).write_text('owned')\n",
+            encoding="utf-8",
+        )
+        argv_record = tmp_path / "trusted-smoke-argv.json"
+        (trusted / "scripts" / "smoke-test-hooks.py").write_text(
+            "import json, sys\n"
+            "from pathlib import Path\n"
+            f"Path({str(argv_record)!r}).write_text(json.dumps(sys.argv[1:]))\n"
+            "print('trusted smoke drift')\nraise SystemExit(1)\n",
+            encoding="utf-8",
+        )
+
+        with patch.object(mod, "_TRUSTED_ROOT", trusted, create=True):
+            result = mod._run_check(SMOKE, str(target))
+
+        assert result is not None and result["drift"] is True
+        assert not sentinel.exists()
+        argv = json.loads(argv_record.read_text(encoding="utf-8"))
+        assert argv == [
+            "--ci",
+            "--repo-root",
+            str(target),
+            "--hooks-dir",
+            str(trusted / "hooks"),
+        ]
+
+    def test_smoke_reports_missing_target_settings_without_executing_target(self, tmp_path):
+        result = mod._run_check(SMOKE, str(tmp_path))
+        assert result is not None and result["drift"] is True
+        assert "No registered hooks found" in result["detail"]
+
 
 # ---------------------------------------------------------------------------
 # Fix (3): the has_reviewable_content gate is honored.
@@ -518,3 +591,108 @@ class TestReviewableContentGate:
         assert spy.calls == []
         assert code == 0
         assert _rewake_summary(out) is None
+
+
+# ---------------------------------------------------------------------------
+# Toolkit-repo identity gate: the hook runs ONLY when the session cwd IS the
+# toolkit repo (cwd/pyproject.toml declares [project] name == "vexjoy-agent").
+# In any other repo it silently no-ops. Clone-portable intrinsic marker.
+# ---------------------------------------------------------------------------
+
+
+def _write_pyproject(dir_path: Path, name: str = "vexjoy-agent") -> Path:
+    dir_path.mkdir(parents=True, exist_ok=True)
+    (dir_path / "pyproject.toml").write_text(f'[project]\nname = "{name}"\nversion = "0.1.0"\n', encoding="utf-8")
+    return dir_path
+
+
+class TestIsToolkitRepo:
+    def test_true_when_pyproject_names_vexjoy_agent(self, tmp_path):
+        repo = _write_pyproject(tmp_path / "repo")
+        assert mod._is_toolkit_repo(str(repo)) is True
+
+    def test_false_when_pyproject_absent(self, tmp_path):
+        empty = tmp_path / "empty"
+        empty.mkdir()
+        assert mod._is_toolkit_repo(str(empty)) is False
+
+    def test_false_when_pyproject_names_other_project(self, tmp_path):
+        repo = _write_pyproject(tmp_path / "other", name="some-other-service")
+        assert mod._is_toolkit_repo(str(repo)) is False
+
+    def test_false_when_cwd_is_none(self):
+        assert mod._is_toolkit_repo(None) is False
+
+    def test_false_when_cwd_is_empty_string(self):
+        assert mod._is_toolkit_repo("") is False
+
+    def test_fail_open_on_unreadable_pyproject(self, tmp_path):
+        """A pyproject.toml that can't be read -> False (fail-open, no-op)."""
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        # pyproject.toml is a directory, so read_text raises OSError.
+        (repo / "pyproject.toml").mkdir()
+        assert mod._is_toolkit_repo(str(repo)) is False
+
+
+class TestToolkitRepoGate:
+    def test_non_toolkit_repo_no_ops_even_with_reviewable_drift(self):
+        """Regression for the false positive in unrelated repos:
+        a reviewable diff in a NON-toolkit cwd exits 0 and never rewakes."""
+        spy = _CheckSpy(results={SMOKE: _drift()})
+        with patch.object(mod, "_run_check", side_effect=spy):
+            code, out, _ = _run(
+                _stop_event(),
+                diff=_diff_for("hooks/foo.py"),
+                toolkit_repo=False,
+            )
+        assert code == 0
+        assert _rewake_summary(out) is None
+        # Gated before any check ran.
+        assert spy.calls == []
+
+    def test_toolkit_repo_with_real_drift_still_rewakes(self):
+        """In a toolkit cwd, real drift preserves the existing rewake behavior."""
+        code, out, err = _run(
+            _stop_event(),
+            diff=_diff_for("hooks/foo.py"),
+            check_results={SMOKE: _drift("hook crashed", "python3 scripts/smoke-test-hooks.py --ci")},
+            toolkit_repo=True,
+        )
+        assert code == 2
+        assert _rewake_summary(out) is not None
+
+    def test_gate_consulted_with_real_pyproject_end_to_end(self, tmp_path):
+        """Unpatched _is_toolkit_repo: a tmp toolkit repo (real pyproject) with
+        drift rewakes; the same diff in a non-toolkit tmp dir stays silent."""
+        toolkit = _write_pyproject(tmp_path / "toolkit")
+        non_toolkit = tmp_path / "plain"
+        non_toolkit.mkdir()
+        results = {SMOKE: _drift()}
+
+        def fake(name, cwd, _map=results):
+            return _map.get(name, _clean())
+
+        def drive(cwd: str) -> tuple[int, str]:
+            out = io.StringIO()
+            with ExitStack() as stack:
+                stack.enter_context(patch.dict(os.environ, _clean_env(None), clear=True))
+                stack.enter_context(patch.object(mod, "read_stdin", return_value=_stop_event(cwd=cwd)))
+                stack.enter_context(patch.object(mod, "_working_tree_diff", return_value=_diff_for("hooks/foo.py")))
+                stack.enter_context(patch.object(mod, "_run_check", side_effect=fake))
+                stack.enter_context(redirect_stdout(out))
+                stack.enter_context(redirect_stderr(io.StringIO()))
+                code = 0
+                try:
+                    mod.main()
+                except SystemExit as e:
+                    code = int(e.code) if e.code is not None else 0
+            return code, out.getvalue()
+
+        code_t, out_t = drive(str(toolkit))
+        assert code_t == 2
+        assert _rewake_summary(out_t) is not None
+
+        code_n, out_n = drive(str(non_toolkit))
+        assert code_n == 0
+        assert _rewake_summary(out_n) is None

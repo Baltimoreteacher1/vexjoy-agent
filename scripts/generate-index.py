@@ -30,6 +30,11 @@ from pathlib import Path
 
 import yaml
 
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from scripts.lib.atomic_io import atomic_write_text
+from scripts.lib.frontmatter import extract_frontmatter_block
+
 # ---------------------------------------------------------------------------
 # Shared helpers
 # ---------------------------------------------------------------------------
@@ -43,11 +48,9 @@ def extract_frontmatter(content: str) -> dict | None:
     Tries PyYAML first, falls back to regex for malformed frontmatter
     (common in agent descriptions with unquoted colons).
     """
-    match = re.match(r"^---\n(.*?)\n---", content, re.DOTALL)
-    if not match:
+    yaml_content = extract_frontmatter_block(content)
+    if yaml_content is None:
         return None
-
-    yaml_content = match.group(1)
 
     try:
         result = yaml.safe_load(yaml_content)
@@ -512,7 +515,7 @@ def main() -> int:
     skills_dir = repo_root / "skills"
     pipelines_dir = repo_root / "skills" / "workflow" / "references"
 
-    # Pipeline INDEX is now hand-maintained at skills/workflow/references/pipeline-index.json
+    # Pipeline INDEX is now hand-maintained at skills/process/workflow/references/pipeline-index.json
     # (flat .md files, not subdirectory-per-pipeline). Exclude from auto-generation.
     types = [args.type] if args.type != "all" else ["agents", "skills"]
 
@@ -550,7 +553,7 @@ def main() -> int:
 
     # Write mode
     for label, (idx, path) in indexes.items():
-        path.write_text(json.dumps(idx, indent=2) + "\n", encoding="utf-8")
+        atomic_write_text(path, json.dumps(idx, indent=2) + "\n")
 
     # Summary
     parts = []

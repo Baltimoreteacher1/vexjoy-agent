@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# hook-version: 1.0.0
+# hook-version: 1.6.0
 """
 PostToolUse Hook: Routing Decision Recorder (action A, formerly /do Phase 5)
 
@@ -7,6 +7,19 @@ Records the routing-decision row for every Agent dispatch so the routing
 feedback loop (`learning-db.py route-health`) keeps receiving the rows it
 needs. Replaces the hand-run `learning-db.py record routing ...` step that
 lived in /do Phase 2 Step 4 + Phase 5 action A.
+
+WORKFLOW DISPATCHES (v1.1.0): /do Complex dispatches run through the Workflow
+tool. Its inner agent() calls fire NO PostToolUse:Agent event — the harness
+emits ONE PostToolUse with tool_name "Workflow", carrying every worker prompt
+(marker included) inside tool_input.script. So this hook also matches
+"Workflow": it reads tool_input.script, finds ALL line-start [do-route]
+markers (same anchored regex as the Agent path), and records one decision per
+marker. Idempotency is keyed per marker LINE so a resubmitted script (workflow
+resume) is a no-op. Pending outcomes are still appended per marker: Workflow
+inner agents fire no SubagentStop, but resolution never needed one — the
+UserPromptSubmit finalizer / Stop fallback resolve pendings on their normal
+paths, and a SubagentStop from any other dispatch merely revalidates them
+(their decision rows exist, written here first).
 
 SCOPING — record ONLY /do-routed dispatches.
 Every Agent dispatch fires PostToolUse:Agent, including pr-review's reviewer
@@ -31,7 +44,16 @@ and the subagent's tool_result. From these we:
      (tool_errors, request/description snippet).
   3. (C) Parse a `rightsizing:tier{N}` banner from the subagent output and
      record a separate rightsizing row, parse-only and silent when absent.
-  4. Write a pending-outcome entry to a per-session file so the SubagentStop
+     A background dispatch has no reply here; routing-outcome-recorder.py
+     reads its banner at SubagentStop (hooks/lib/rightsizing_banner.py).
+  4. (D, v1.3.0) Parse the `route-fit:` banner from the subagent output and
+     score it ASYMMETRICALLY: a negative verdict decays the route, `ok` is a
+     no-op that boosts nothing. Parse-only and silent when absent. See
+     record_route_fit for why a self-report may only move against the router.
+     A background dispatch returns a launch receipt here, not the reply: this
+     hook registers its agent id, and routing-outcome-recorder.py scores the
+     banner at SubagentStop.
+  5. Write a pending-outcome entry to a per-session file so the SubagentStop
      hook (routing-outcome-recorder.py) can recover the full key + the error
      verdict and apply boost/decay. PostToolUse:Agent fires before
      SubagentStop, so the decision row is committed before the outcome runs —
@@ -47,6 +69,25 @@ Design Principles:
 - Fast execution (<50ms target); lazy imports
 """
 
+import sys  # vexjoy-pyguard
+
+if sys.version_info < (3, 10):  # vexjoy-pyguard advisory
+    import os
+
+    if not os.environ.get("VEXJOY_PYGUARD_REEXEC"):
+        os.environ["VEXJOY_PYGUARD_REEXEC"] = "1"
+        for _d in [*os.environ.get("PATH", "").split(os.pathsep), "/opt/homebrew/bin", "/usr/local/bin", "/usr/bin"]:
+            for _v in ("14", "13", "12", "11", "10"):
+                _p = os.path.join(_d, "python3." + _v)
+                if _d and "/shims" not in _d and os.access(_p, os.X_OK):
+                    os.execv(_p, [_p, *sys.argv])
+    sys.stderr.write(
+        "[vexjoy] hook %s needs Python 3.10+, got %s (%s); run ./install.sh in vexjoy-agent from a terminal"
+        " outside Claude Code (gated tool calls stay blocked until then)\n"
+        % (__file__.rsplit("/", 1)[-1], sys.version.split()[0], sys.executable)
+    )
+    sys.exit(0)
+
 import hashlib
 import json
 import os
@@ -55,7 +96,19 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent / "lib"))
-from routing_outcome_state import append_pending_outcome, claim_dispatch
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts" / "lib"))
+from hook_utils import hook_error
+
+try:
+    from route_types import DO_ROUTE_MARKER_RE, HealthGateInputs
+except ImportError as exc:
+    # route_types lives in scripts/lib, so an install without scripts/ cannot load it.
+    # Record why and exit 0: this hook only records telemetry.
+    hook_error("routing-decision-recorder", exc)
+    sys.exit(0)
+from rightsizing_banner import record_rightsizing
+from route_fit import _ROUTE_FIT_NEGATIVE, _ROUTE_FIT_RE, parse_route_fit, record_route_fit
+from routing_outcome_state import append_pending_outcome, claim_dispatch, register_async_dispatch
 from stdin_timeout import read_stdin
 
 EVENT_NAME = "PostToolUse"
@@ -65,18 +118,70 @@ EVENT_NAME = "PostToolUse"
 # /do routing decision; agent + skill are read straight from it. Sub-agent
 # fan-out (pr-review reviewers, nested dispatches) carries no marker → skipped.
 #   [do-route] agent=python-general-engineer skill=test-driven-development complexity=Medium
-# skill may be empty/"-"/absent (agent-only routing).
+# skill may be empty/"-"/absent (agent-only routing). The same line may carry
+# optional tokens: health=/n=/fail=/action=/alts= (Step 1.5 gate inputs) and
+# stack={s1,s2} (the composed skill stack, instrumentation only).
 # Anchored to line start (^\s*, MULTILINE) so a quoted/forwarded marker
 # mid-prose (e.g. a user pasting "...the [do-route] line...") doesn't get
 # recorded — only a marker /do itself emitted at the head of a line counts.
-_DO_ROUTE_RE = re.compile(
-    r"^\s*\[do-route\]\s+agent=([a-z0-9][a-z0-9-]*)(?:\s+skill=([a-z0-9-]*|-)?)?",
-    re.IGNORECASE | re.MULTILINE,
-)
+# Defined in route_types so every marker reader shares the SAME definition.
+_DO_ROUTE_RE = DO_ROUTE_MARKER_RE
 
 # Optional complexity field on the same marker line, recorded into the T3 event
 # log for replay. Absent => "".
 _COMPLEXITY_RE = re.compile(r"\bcomplexity=([a-z0-9-]+)", re.IGNORECASE)
+
+# The router's complexity enum (do/SKILL.md Phase 1). Marker values are
+# lowercased and validated against it: production events carried both case
+# splits ("medium" vs "Medium") and invalid values ("Low"), which fragmented
+# per-complexity aggregation. Valid => store normalized; invalid => store ""
+# and keep the raw value in the event's complexity_invalid field for audit.
+_VALID_COMPLEXITY = frozenset({"trivial", "simple", "medium", "complex"})
+
+# Optional stack token on the marker line: ` stack={s1,s2}` — the skill stack
+# the router composed for this dispatch. Instrumentation only: parsed onto the
+# decision event as a list; absent token => no field. Same charset as alts=.
+_STACK_RE = re.compile(r"\bstack=\{([a-z0-9:_,-]*)\}", re.IGNORECASE)
+
+# Pipeline token on the marker line: ` pipeline=<name>` — the workflow pipeline
+# the router picked (build-dispatch.py resolve_pipeline, validated against
+# pipeline-index.json before it is emitted). Absent or `-` => None. Every
+# pipeline pick was invisible until this parser existed: the router emitted the
+# token, nothing read it, so evidence_route_decisions.pipeline stayed NULL.
+_PIPELINE_RE = re.compile(r"\bpipeline=([a-z0-9-]+)", re.IGNORECASE)
+
+# Requested selection, not an observed worker model. inherit means no override.
+# Model token on the marker line: `model=opus` or `model=-`. GPT-5.6 selections
+# carry an additional `effort=` token. Valid values match build-dispatch.py;
+# `model=-` or absent => null. Old markers remain readable.
+_MODEL_RE = re.compile(r"\bmodel=([a-z0-9._-]+|-)", re.IGNORECASE)
+_EFFORT_RE = re.compile(r"\beffort=(low|medium|high|xhigh|max)", re.IGNORECASE)
+_VALID_MODELS = frozenset(
+    {
+        "inherit",
+        "haiku",
+        "sonnet",
+        "opus",
+        "fable",
+        "codex",
+        "gpt-5.5",
+        "gpt-5.6-sol",
+        "gpt-5.6-terra",
+        "gpt-5.6-luna",
+        "gemini-4-argon",
+        "gemini-4-argon-low",
+        "gemini-4-argon-medium",
+        "gemini-4-argon-high",
+        "gemini-3.8-flash",
+        "gemini-3.8-flash-low",
+        "gemini-3.8-flash-medium",
+        "gemini-3.8-flash-high",
+        "argon",
+        "flash",
+        "flash_lite",
+        "pro",
+    }
+)
 
 # Step 1.5 health gate inputs on the same marker line (do/SKILL.md Phase 4 Step 2).
 # Each is an independent \b token. `health=-` => null (no weight row); else float.
@@ -91,6 +196,53 @@ _N_RE = re.compile(r"\bn=(\d+)", re.IGNORECASE)
 _FAIL_RE = re.compile(r"\bfail=(\d+)", re.IGNORECASE)
 _ACTION_RE = re.compile(r"\baction=(keep|demote|tiebreak)", re.IGNORECASE)
 _ALTS_RE = re.compile(r"\balts=([a-z0-9:_,-]+)", re.IGNORECASE)
+
+# Fallback justification on the marker line: ` fallback=<slug>` (build-dispatch.py
+# emits it whenever the router picked general-purpose or coerced an unknown agent).
+# Independent \b token, same charset as alts= items. Absent => None.
+_FALLBACK_RE = re.compile(r"\bfallback=([a-z0-9][a-z0-9:_-]*)", re.IGNORECASE)
+
+# Handoff-completeness telemetry. Thin handoffs failed acceptance 3/3 and
+# rich ones passed 3/3 (scripts/routing-ab-results/handoff-context-v1), so
+# every [do-route] Agent dispatch records how many task-spec labels its
+# prompt carries. The seven labels, in report order; scripts/build-dispatch.py
+# emits the first six as `**Label:**` and the last as a section heading. A
+# label counts when its text appears anywhere in the prompt. Substring
+# checks, no regex: this runs on the hot path.
+_SPEC_LABELS = (
+    "Request (verbatim)",
+    "Intent",
+    "Acceptance criteria",
+    "Relevant file locations",
+    "Decisions",
+    "Prior results",
+    "## Repo state",
+)
+_SPEC_SCORE_DISABLE_ENV = "VEXJOY_SPEC_SCORE_DISABLE"
+
+
+def score_handoff_spec(prompt: str) -> tuple[int, str]:
+    """Return (spec_score 0-7, comma-joined absent labels in _SPEC_LABELS order)."""
+    missing = [label for label in _SPEC_LABELS if label not in prompt]
+    return len(_SPEC_LABELS) - len(missing), ",".join(missing)
+
+
+def handoff_spec_fields(prompt: str | None) -> tuple[int | None, str | None, int | None]:
+    """(spec_score, spec_missing, prompt_chars) for one Agent prompt.
+
+    All None when the prompt is absent or VEXJOY_SPEC_SCORE_DISABLE=1.
+    """
+    if prompt is None or os.environ.get(_SPEC_SCORE_DISABLE_ENV) == "1":
+        return None, None, None
+    score, missing = score_handoff_spec(prompt)
+    return score, missing, len(prompt)
+
+
+def _line_containing(text: str, pos: int) -> str:
+    """Return the full line of ``text`` that contains char offset ``pos``."""
+    start = text.rfind("\n", 0, pos) + 1  # -1 -> 0 for the first line
+    end = text.find("\n", pos)
+    return text[start:] if end == -1 else text[start:end]
 
 
 def _marker_line(prompt: str) -> str:
@@ -108,12 +260,10 @@ def _marker_line(prompt: str) -> str:
     m = _DO_ROUTE_RE.search(prompt)
     if not m:
         return ""
-    start = prompt.rfind("\n", 0, m.start()) + 1  # -1 -> 0 for the first line
-    end = prompt.find("\n", m.start())
-    return prompt[start:] if end == -1 else prompt[start:end]
+    return _line_containing(prompt, m.start())
 
 
-def parse_health_inputs(prompt: str) -> dict[str, object]:
+def parse_health_inputs(prompt: str) -> HealthGateInputs:
     """Read the Step-1.5 gate inputs off the marker LINE. Three instrumentation states.
 
     Inputs are read from the marker line only (`_marker_line`), never the whole
@@ -170,17 +320,152 @@ def parse_health_inputs(prompt: str) -> dict[str, object]:
     }
 
 
-# Right-sizing banner. The first four fields are required; findings= and the
-# cost fields (tokens=, wall_clock_s=) are optional, additive extensions
-# (ADR: review-tier-roi). Legacy four-field banners still match.
-#   rightsizing: tier=3 files=15 packages=4 agents_dispatched=17 findings=2C/3H/5M tokens=84000 wall_clock_s=312
-_RIGHTSIZING_RE = re.compile(
-    r"rightsizing:\s*tier=(\d+)\s+files=(\d+)\s+packages=(\d+)\s+agents_dispatched=(\d+)"
-    r"(?:\s+findings=(\d+)C/(\d+)H/(\d+)M)?"
-    r"(?:\s+tokens=(\d+))?"
-    r"(?:\s+wall_clock_s=(\d+))?",
-    re.IGNORECASE,
-)
+def parse_marker_complexity(marker_text: str) -> tuple[str, str]:
+    """Read complexity off the marker LINE: (normalized, invalid_raw).
+
+    Scoped to the marker line (same rationale as parse_health_inputs, Finding
+    70): a task body mentioning `complexity=...` must not be read as the
+    router's value. Returns:
+      valid value   => ("medium", "")   — lowercased, in _VALID_COMPLEXITY
+      invalid value => ("", "Low")      — raw kept for the complexity_invalid
+                                          event field, never silently dropped
+      absent        => ("", "")
+    """
+    line = _marker_line(marker_text)
+    m = _COMPLEXITY_RE.search(line)
+    if not m:
+        return "", ""
+    raw = m.group(1)
+    normalized = raw.lower()
+    if normalized in _VALID_COMPLEXITY:
+        return normalized, ""
+    return "", raw
+
+
+def parse_stack(marker_text: str) -> list[str] | None:
+    """Read the optional ` stack={s1,s2}` token off the marker LINE, or None.
+
+    None when the token is absent (or empty) => the decision event carries no
+    stack field. Instrumentation only — the router spec change that EMITS the
+    token lands separately; this parser is forward-tolerant of it.
+    """
+    line = _marker_line(marker_text)
+    m = _STACK_RE.search(line)
+    if not m:
+        return None
+    items = [s for s in m.group(1).split(",") if s]
+    return items or None
+
+
+def parse_pipeline(marker_text: str) -> str | None:
+    """Read the optional ` pipeline=<name>` token off the marker LINE, or None.
+
+    None when the token is absent (the majority of dispatches) or `pipeline=-`.
+    Scoped to the marker line (same rationale as parse_stack): task prose
+    mentioning `pipeline=` must never be read as the router's pick.
+    """
+    line = _marker_line(marker_text)
+    m = _PIPELINE_RE.search(line)
+    if not m:
+        return None
+    name = m.group(1).lower()
+    return None if name == "-" else name
+
+
+def parse_model(marker_text: str) -> str | None:
+    """Read the `model=` token off the marker LINE, or None.
+
+    None when the token is absent (old markers) or `model=-` (trivial/simple
+    with no explicit pick). A valid model name => that string. An unrecognized
+    value => None (not silently accepted). Backward-compatible: old markers
+    without `model=` return None.
+    """
+    line = _marker_line(marker_text)
+    m = _MODEL_RE.search(line)
+    if not m:
+        return None
+    raw = m.group(1).lower()
+    if raw == "-":
+        return None
+    return raw if raw in _VALID_MODELS else None
+
+
+def parse_fallback_reason(marker_text: str) -> str | None:
+    """Read the optional ` fallback=<slug>` token off the marker LINE, or None.
+
+    Scoped to the marker line (same rationale as parse_health_inputs): task
+    prose mentioning `fallback=` must never be read as the router's reason.
+    """
+    line = _marker_line(marker_text)
+    m = _FALLBACK_RE.search(line)
+    return m.group(1).lower() if m else None
+
+
+def parse_model_effort(marker_text: str) -> str | None:
+    """Read a valid ``effort=`` token from the marker line, if present.
+
+    Returns effort for any recognized model (Claude or OpenAI).  Effort is
+    advisory for Claude lanes but recorded for telemetry (model@effort).
+    """
+    line = _marker_line(marker_text)
+    model = parse_model(line)
+    if model is None or model == "inherit":
+        return None
+    match = _EFFORT_RE.search(line)
+    return match.group(1).lower() if match else None
+
+
+# Right-sizing banner (C): parsing and recording live in hooks/lib/rightsizing_banner.py,
+# shared with routing-outcome-recorder.py. A background dispatch returns only a
+# launch receipt here, so its banner is recorded at SubagentStop instead.
+
+
+# Route-fit banner (D): parsing and scoring live in hooks/lib/route_fit.py,
+# shared with routing-outcome-recorder.py. A background dispatch returns only a
+# launch receipt here, so its banner is scored at SubagentStop instead.
+
+
+def async_agent_id(result: object) -> str | None:
+    """Agent id from a background launch receipt, or None for any other result.
+
+    A background ``Agent`` call returns
+    ``{"isAsync": true, "status": "async_launched", "agentId": "..."}`` at
+    PostToolUse: the agent has started, not finished. A foreground call returns
+    the reply and must not be registered for a second read at SubagentStop.
+    """
+    if not isinstance(result, dict):
+        return None
+    if not (result.get("isAsync") is True or result.get("status") == "async_launched"):
+        return None
+    agent_id = result.get("agentId") or result.get("agent_id")
+    return agent_id if isinstance(agent_id, str) and agent_id else None
+
+
+_FALLBACK_REASON_KEY_PREFIX = "fallback-reason:"
+
+
+def record_fallback_reason(reason: str | None, session_id: str | None = None) -> None:
+    """Bump the aggregate row for one fallback reason. Silent when absent.
+
+    Mirrors record_stack_usage: one `learnings` row per reason slug
+    (topic="routing", category="effectiveness", key "fallback-reason:{slug}"),
+    reusing record_learning's upsert so observation_count = times that reason
+    was used. 128 of 287 dispatches fell back with no recorded reason; this is
+    what makes the reason countable rather than merely printed.
+    """
+    if not reason:
+        return
+    from learning_db_v2 import record_learning
+
+    record_learning(
+        topic="routing",
+        key=f"{_FALLBACK_REASON_KEY_PREFIX}{reason}",
+        value=f"fallback-reason: {reason}",
+        category="effectiveness",
+        tags=["fallback-reason"],
+        source="hook:routing-decision-recorder",
+        session_id=session_id or None,
+    )
 
 
 def parse_do_route_marker(prompt: str) -> tuple[str, str] | None:
@@ -201,14 +486,82 @@ def parse_do_route_marker(prompt: str) -> tuple[str, str] | None:
     return agent, skill
 
 
+def parse_workflow_markers(script: str) -> list[tuple[str, str, str]]:
+    """All line-start [do-route] markers in a Workflow script: [(agent, skill, marker line)].
+
+    A Workflow tool_input.script carries every worker prompt of a /do Complex
+    dispatch, so ONE script holds N markers — one routing decision each.
+    finditer with the SAME line-start-anchored regex as the Agent path keeps
+    the anchor semantics: a marker quoted mid-line never counts. skill is ""
+    when the marker carries no skill or "-".
+    """
+    if not script or "[do-route]" not in script.lower():
+        return []
+    markers: list[tuple[str, str, str]] = []
+    for m in _DO_ROUTE_RE.finditer(script):
+        agent = m.group(1).strip().lower()
+        if not agent:
+            continue  # malformed marker => nothing to key on
+        skill = (m.group(2) or "").strip().lower()
+        if skill == "-":
+            skill = ""
+        markers.append((agent, skill, _line_containing(script, m.start())))
+    return markers
+
+
 def build_routing_key(agent: str, skill: str) -> str:
     """Build the {agent}:{skill} key; agent-only "{agent}:" when skill unknown."""
     return f"{agent}:{skill}" if skill else f"{agent}:"
 
 
+_STACK_USAGE_KEY_PREFIX = "stack-usage:"
+
+
+def record_stack_usage(stack: list[str] | None, session_id: str | None) -> None:
+    """Bump the per-skill stack-usage row for every skill in ``stack``.
+
+    Mirrors the rightsizing accumulation convention: one `learnings` row per
+    enhancement skill (topic="routing", category="effectiveness", key
+    "stack-usage:{skill}"), reusing record_learning's built-in upsert so
+    observation_count = times stacked and last_seen = last stacked — no
+    parallel store. Deduplicated per dispatch so a marker listing the same
+    skill twice counts once. No-op when stack is None/empty (absent token).
+    """
+    if not stack:
+        return
+    from learning_db_v2 import record_learning
+
+    for skill in dict.fromkeys(stack):  # de-dup, preserve order
+        if not skill:
+            continue
+        record_learning(
+            topic="routing",
+            key=f"{_STACK_USAGE_KEY_PREFIX}{skill}",
+            value=f"stack-usage: skill={skill}",
+            category="effectiveness",
+            tags=["stack-usage", skill],
+            source="hook:routing-decision-recorder",
+            session_id=session_id or None,
+        )
+
+
 def dispatch_signature(agent: str, skill: str, description: str, prompt: str) -> str:
     """Stable signature for one dispatch, used for idempotency."""
     raw = f"{agent}|{skill}|{description}|{prompt[:200]}"
+    return hashlib.md5(raw.encode("utf-8", errors="replace")).hexdigest()[:16]
+
+
+def workflow_dispatch_signature(occurrence: int, marker_line: str) -> str:
+    """Idempotency signature for ONE marker in a Workflow script.
+
+    Keyed on the marker LINE, not the script: a workflow resume resubmits the
+    same script (possibly with step state changed AROUND the markers), and
+    every marker must re-derive the SAME signature so the re-run claims
+    nothing and records nothing. ``occurrence`` is this line's index among
+    IDENTICAL marker lines in the script, so two duplicate worker lines stay
+    two distinct dispatches while unrelated script edits shift no signature.
+    """
+    raw = f"workflow|{occurrence}|{marker_line.strip()}"
     return hashlib.md5(raw.encode("utf-8", errors="replace")).hexdigest()[:16]
 
 
@@ -271,39 +624,6 @@ def extract_output_text(result: object) -> str:
     return ""
 
 
-def record_rightsizing(output: str, session_id: str | None = None) -> None:
-    """(C) Add one rightsizing review to the tier's running sums. Silent when no banner.
-
-    Per-review findings and cost are accumulated into running sums in the
-    rightsizing:tier{N} row (`accumulate_rightsizing`) so `learning-db.py
-    review-roi` reports a TRUE per-tier mean (sum / count), not the last
-    review's sample. findings= and the cost fields are optional: a legacy
-    banner (no findings=) bumps the review count only; a "-" cost never enters
-    its sum (ADR: review-tier-roi).
-    """
-    if not output or "rightsizing:" not in output.lower():
-        return
-    m = _RIGHTSIZING_RE.search(output)
-    if not m:
-        return
-
-    def _int_or_none(s: str | None) -> int | None:
-        return int(s) if s is not None and s != "" else None
-
-    from learning_db_v2 import accumulate_rightsizing
-
-    accumulate_rightsizing(
-        int(m.group(1)),
-        critical=_int_or_none(m.group(5)),
-        high=_int_or_none(m.group(6)),
-        medium=_int_or_none(m.group(7)),
-        tokens=_int_or_none(m.group(8)),
-        wall_clock_s=_int_or_none(m.group(9)),
-        source="hook:routing-decision-recorder",
-        session_id=session_id or None,
-    )
-
-
 def main() -> None:
     try:
         raw = read_stdin(timeout=2)
@@ -311,128 +631,234 @@ def main() -> None:
             return
         event = json.loads(raw)
 
-        # matcher "Agent" in settings.json scopes this hook; guard defensively.
+        # matcher "Agent|Workflow" in settings.json scopes this hook; guard
+        # defensively.
         tool_name = event.get("tool_name") or event.get("tool", "")
-        if tool_name != "Agent":
+        if tool_name not in ("Agent", "Workflow"):
             return
 
         tool_input = event.get("tool_input") or event.get("input") or {}
-        prompt = tool_input.get("prompt") or ""
         description = tool_input.get("description") or ""
+        session_id = event.get("session_id") or ""
 
         # SCOPING: record ONLY /do-routed dispatches. No [do-route] marker =>
         # this is a sub-agent fan-out (pr-review reviewers, nested dispatch),
         # not a /do routing decision — skip so route-health's denominator stays
         # clean. agent + skill are read straight from the marker.
-        routed = parse_do_route_marker(prompt)
-        if routed is None:
+        #
+        # Build one decision per marker: (agent, skill, signature, marker_text).
+        # Agent carries ONE marker in tool_input.prompt (marker_text = whole
+        # prompt, unchanged semantics). Workflow carries N worker prompts in
+        # tool_input.script — one decision per line-start marker, marker_text =
+        # that marker's line so complexity/health parse per marker.
+        if tool_name == "Agent":
+            prompt = tool_input.get("prompt") or ""
+            routed = parse_do_route_marker(prompt)
+            if routed is None:
+                return
+            agent, skill = routed
+            if not agent:
+                return  # malformed marker => nothing to key on
+            decisions = [(agent, skill, dispatch_signature(agent, skill, description, prompt), prompt)]
+            # Agent path only: a Workflow script packs N prompts, so a per-marker
+            # score is not observable there and the fields stay NULL.
+            spec_score, spec_missing, prompt_chars = handoff_spec_fields(prompt)
+        else:
+            spec_score, spec_missing, prompt_chars = None, None, None
+            script = tool_input.get("script") or ""
+            occurrence: dict[str, int] = {}  # nth sighting of each identical marker line
+            decisions = []
+            for agent, skill, line in parse_workflow_markers(script):
+                nth = occurrence.get(line.strip(), 0)
+                occurrence[line.strip()] = nth + 1
+                decisions.append((agent, skill, workflow_dispatch_signature(nth, line), line))
+        if not decisions:
             return
-        agent, skill = routed
-        if not agent:
-            return  # malformed marker => nothing to key on
-        key = build_routing_key(agent, skill)
 
-        # Idempotency (atomic, MEDIUM/TOCTOU): claim this dispatch signature.
-        # claim_dispatch performs check-and-set under one flock, so N concurrent
-        # duplicate deliveries record exactly once. False => already claimed.
-        sig = dispatch_signature(agent, skill, description, prompt)
-        session_id = event.get("session_id") or ""
-        if not claim_dispatch(session_id, sig):
-            return
+        has_errors = None  # computed once, on the first claimed marker
+        recorded_keys: list[str] = []  # routing keys this event actually recorded
+        recorded_decision_ids: list[str] = []  # evidence row id per recorded key
+        for agent, skill, sig, marker_text in decisions:
+            # Idempotency (atomic, MEDIUM/TOCTOU): claim this dispatch signature.
+            # claim_dispatch performs check-and-set under one flock, so N concurrent
+            # duplicate deliveries record exactly once. False => already claimed.
+            # For Workflow, the signature is keyed per marker line, so a resumed
+            # workflow resubmitting the same script re-claims nothing (no-op).
+            if not claim_dispatch(session_id, sig):
+                continue
+            if has_errors is None:
+                # One Workflow event carries one tool result for ALL inner
+                # agents — per-marker error attribution is not observable here,
+                # so every marker shares the event-level flag (best available).
+                has_errors = detect_errors(event)
+            key = build_routing_key(agent, skill)
+            request_snippet = (description or marker_text)[:200].replace("\n", " ").strip()
 
-        has_errors = detect_errors(event)
-        request_snippet = (description or prompt)[:200].replace("\n", " ").strip()
+            from learning_db_v2 import record_learning
 
-        from learning_db_v2 import record_learning
+            record_learning(
+                topic="routing",
+                key=key,
+                value=(
+                    f"routing-decision: agent={agent} skill={skill or '-'} "
+                    f"tool_errors={1 if has_errors else 0} user_rerouted=0 "
+                    f"request: {request_snippet}"
+                ),
+                category="effectiveness",
+                tags=["routing", agent] + ([skill] if skill else []),
+                source="hook:routing-decision-recorder",
+                session_id=session_id or None,
+            )
+            recorded_keys.append(key)
+            decision_id = f"{session_id or 'no-session'}:{sig}"
+            recorded_decision_ids.append(decision_id)
 
-        record_learning(
-            topic="routing",
-            key=key,
-            value=(
-                f"routing-decision: agent={agent} skill={skill or '-'} "
-                f"tool_errors={1 if has_errors else 0} user_rerouted=0 "
-                f"request: {request_snippet}"
-            ),
-            category="effectiveness",
-            tags=["routing", agent] + ([skill] if skill else []),
-            source="hook:routing-decision-recorder",
-            session_id=session_id or None,
-        )
+            # T3: per-dispatch DECISION event (JSONL), append-only + failure-safe.
+            # Auxiliary to the aggregate row above — never blocks; route_events
+            # swallows write errors so the hook stays non-blocking.
+            complexity, complexity_invalid = parse_marker_complexity(marker_text)
+            stack = parse_stack(marker_text)
+            pipeline = parse_pipeline(marker_text)
+            health = parse_health_inputs(marker_text)
+            model = parse_model(marker_text)
+            effort = parse_model_effort(marker_text)
+            recorded_model = f"{model}@{effort}" if model and effort else model
 
-        # T3: per-dispatch DECISION event (JSONL), append-only + failure-safe.
-        # Auxiliary to the aggregate row above — never blocks; route_events
-        # swallows write errors so the hook stays non-blocking.
-        cm = _COMPLEXITY_RE.search(prompt)
-        complexity = cm.group(1) if cm else ""
-        health = parse_health_inputs(prompt)
-        from route_events import record_decision_event
+            # Stack-usage telemetry: one aggregate row per enhancement skill in
+            # the marker's ` stack={...}` token (routing-table utilization audit).
+            # No-op when stack is None (token absent) — never blocks the hook.
+            record_stack_usage(stack, session_id)
 
-        record_decision_event(
-            session=session_id,
-            request_snippet=request_snippet,
-            agent=agent,
-            skill=skill,
-            complexity=complexity,
-            health_at_decision=health["health"],  # real gate inputs from the marker (Step 1.5)
-            n=health["n"],
-            failure=health["failure"],
-            action=health["action"],
-            alternates=health["alternates"],
-            gate_inputs_present=health["gate_inputs_present"],
-        )
+            # Fallback accounting: one aggregate row per ` fallback=<slug>` reason
+            # so every fallback is countable, not just visible in the prompt.
+            # No-op when the token is absent (the non-fallback majority).
+            record_fallback_reason(parse_fallback_reason(marker_text), session_id)
 
-        # Per-run telemetry envelope (ADR: learning-telemetry-envelope). Append-only,
-        # one row per dispatch, AFTER the decision row so both share (topic, key).
-        # git_sha + session_id + run_id are always derivable, so this row is non-empty
-        # even when the best-effort fields (token_count, wall_clock_ms, model_id) are NULL.
-        import uuid
+            from route_events import record_decision_event
 
-        from learning_db_v2 import record_telemetry_run
-        from telemetry_capture import git_sha_cached, model_id_from, token_count_from, wall_clock_ms_from
+            record_decision_event(
+                session=session_id,
+                request_snippet=request_snippet,
+                agent=agent,
+                skill=skill,
+                complexity=complexity,
+                complexity_invalid=complexity_invalid,
+                stack=stack,
+                pipeline=pipeline,
+                model=recorded_model,
+                health_at_decision=health["health"],  # real gate inputs from the marker (Step 1.5)
+                n=health["n"],
+                failure=health["failure"],
+                action=health["action"],
+                alternates=health["alternates"],
+                gate_inputs_present=health["gate_inputs_present"],
+            )
 
-        record_telemetry_run(
-            topic="routing",
-            key=key,
-            run_id=str(uuid.uuid4()),
-            source="hook:routing-decision-recorder",
-            batch_id=os.environ.get("CLAUDE_TELEMETRY_BATCH") or session_id or None,
-            session_id=session_id or None,
-            git_sha=git_sha_cached(session_id),
-            model_id=model_id_from(event),
-            skill_version=None,  # PR-A: None (ADR Alternative D — populate when cheap)
-            token_count=token_count_from(event),
-            wall_clock_ms=wall_clock_ms_from(event),
-            tool_errors=has_errors,
-        )
+            # Per-run telemetry envelope (ADR: learning-telemetry-envelope). Append-only,
+            # one row per dispatch, AFTER the decision row so both share (topic, key).
+            # git_sha + session_id + run_id are always derivable, so this row is non-empty
+            # even when the best-effort fields (token_count, wall_clock_ms, model_id) are NULL.
+            import uuid
+
+            from learning_db_v2 import record_telemetry_run
+            from telemetry_capture import git_sha_cached, model_id_from, token_count_from, wall_clock_ms_from
+
+            record_telemetry_run(
+                topic="routing",
+                key=key,
+                run_id=str(uuid.uuid4()),
+                source="hook:routing-decision-recorder",
+                batch_id=os.environ.get("CLAUDE_TELEMETRY_BATCH") or session_id or None,
+                session_id=session_id or None,
+                git_sha=git_sha_cached(session_id),
+                model_id=model_id_from(event),
+                skill_version=None,  # PR-A: None (ADR Alternative D — populate when cheap)
+                token_count=token_count_from(event),
+                wall_clock_ms=wall_clock_ms_from(event),
+                tool_errors=has_errors,
+            )
+            try:
+                from learning_db_v2 import record_evidence_route_decision
+
+                # On a DB that lacks the v10 spec columns the DB layer keeps
+                # the decision row, drops the three fields, and logs one line.
+                record_evidence_route_decision(
+                    session_id=session_id or None,
+                    agent=agent,
+                    skill=skill or None,
+                    complexity=complexity or None,
+                    model=recorded_model,
+                    request_snippet=request_snippet,
+                    stack=stack,
+                    pipeline=pipeline,
+                    health=health["health"],
+                    n=health["n"],
+                    failure=bool(has_errors),
+                    action=health["action"],
+                    alternates=health["alternates"],
+                    gate_inputs_present=bool(health["gate_inputs_present"]),
+                    decision_id=decision_id,
+                    spec_score=spec_score,
+                    spec_missing=spec_missing,
+                    prompt_chars=prompt_chars,
+                )
+            except Exception as exc:
+                # Log evidence_route_decision failures so silent data loss is
+                # visible in the debug log (the bare `pass` hid 413 of 416
+                # failures before the deployed hook caught up with the repo).
+                hook_error("routing-decision-recorder:evidence", exc)
+
+            # Bridge to the outcome resolvers. The dispatch was already claimed
+            # (marked seen) atomically above, so no separate mark. Decision row
+            # is written BEFORE this append (ordering: A-before-B). Workflow
+            # inner agents fire no SubagentStop — that's fine: resolution lives
+            # in the UserPromptSubmit finalizer / Stop fallback, and any other
+            # dispatch's SubagentStop merely revalidates these entries (their
+            # decision rows exist, written above).
+            append_pending_outcome(session_id, key, has_errors, decision_id)
+
+        if not recorded_keys:
+            return  # every marker already claimed (duplicate delivery / resume)
 
         # (C) right-sizing feedback, parse-only. extract_output_text flattens
         # the LIVE Agent content-block shape (list of {"type","text"} blocks)
         # as well as the Bash-style {"output": "..."} the tests simulate, so the
-        # banner is found regardless of payload shape.
+        # banner is found regardless of payload shape. Runs once per EVENT (not
+        # per marker) and only when a decision was claimed, so a duplicate
+        # delivery / resubmitted script never double-accumulates the tier sums.
         from hook_utils import get_tool_result
 
-        output = extract_output_text(get_tool_result(event))
+        result = get_tool_result(event)
+
+        # A background Agent dispatch returns a launch receipt here, not the
+        # reply. Register the agent id so routing-outcome-recorder.py can read
+        # the rightsizing and route-fit banners when the reply arrives at
+        # SubagentStop. One decision only, as below: a Workflow has no single
+        # agent id.
+        if tool_name == "Agent" and len(recorded_keys) == 1:
+            launched = async_agent_id(result)
+            if launched:
+                register_async_dispatch(session_id, launched, recorded_keys[0], recorded_decision_ids[0])
+
+        output = extract_output_text(result)
         if output:
             record_rightsizing(output, session_id)
 
-        # Bridge to the SubagentStop outcome hook (action B). The dispatch was
-        # already claimed (marked seen) atomically above, so no separate mark.
-        # Decision row is written BEFORE this append (ordering: A-before-B).
-        append_pending_outcome(session_id, key, has_errors)
+            # (D) route-fit feedback, parse-only. Applied ONLY when this event
+            # recorded exactly ONE decision: a Workflow script carries N worker
+            # markers but ONE tool result, so a single banner cannot be
+            # attributed per worker — and decaying N routes off one verdict
+            # would be worse than recording nothing. Wrapped: a malformed
+            # banner, a DB hiccup, or an unexpected verdict must never affect
+            # the dispatch (fail open, same contract as the evidence row above).
+            if len(recorded_keys) == 1:
+                try:
+                    record_route_fit(output, recorded_keys[0], session_id, recorded_decision_ids[0])
+                except Exception:
+                    pass
 
     except Exception as e:
-        # Always surface ONE short line so a recorder failure is visible, not
-        # silent (the previous handler logged only under CLAUDE_HOOKS_DEBUG, so a
-        # dropped decision event left no trace). Exception class + message only —
-        # no prompt content, no secrets. Full traceback stays debug-gated.
-        try:
-            print(f"routing-decision-recorder: {type(e).__name__}: {e}", file=sys.stderr)
-        except Exception:
-            pass  # stderr write must never itself break the hook
-        if os.environ.get("CLAUDE_HOOKS_DEBUG"):
-            import traceback
-
-            traceback.print_exc(file=sys.stderr)
+        hook_error("routing-decision-recorder", e)
     finally:
         sys.exit(0)  # Never block
 

@@ -1,30 +1,15 @@
-"""Pytest suite validating progressive disclosure reference loading for agents and skills.
+"""Reference loading tables for agents: table/disk agreement.
 
-Five agent test categories:
-1. Reference Loading Table Completeness — every reference file has a table entry and vice-versa
-2. Keyword-to-Reference Mapping Validation — query keywords resolve to correct reference files
-3. Reference File Size Compliance — all reference files under 500 lines (warn at 400)
-4. Joy-Check Spot Validation — flag negative framing in reference file headings
-5. Cross-Agent Reference Isolation — no agent references files from another agent's directory
-
-Two skill test categories (Categories 6-7):
-6. Skill Reference File Size Compliance — all skills/*/references/**/*.md under 500 lines
-7. Skill Reference File Existence — every skills/ directory can be discovered and scanned
-
-Allowlist behavior (SKILL_REFS_STRICT env flag):
-  Default (xfail mode): files in _KNOWN_OVERSIZED_SKILL_REFS xfail so CI stays green while
-  the list serves as an authoritative TODO for gradual decomposition.
-  Set SKILL_REFS_STRICT=1 to force all known violations to hard-fail — useful for audit runs.
-  Any file NOT in the allowlist that exceeds 500 lines always hard-fails regardless of mode.
-
-  _KNOWN_OVERSIZED_SKILL_REFS is the authoritative TODO list. Removing a file from the list
-  without first decomposing it below 500 lines will cause that test to hard-fail.
+File size limits, the oversized-file debt registers, and empty references/
+dirs are checked by `scripts/validate-references.py --check-size` (a CI step);
+the tests at the bottom prove that check catches a bad fixture.
 """
 
 from __future__ import annotations
 
-import os
+import importlib
 import re
+import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import ClassVar
@@ -37,68 +22,6 @@ import pytest
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 AGENTS_DIR = REPO_ROOT / "agents"
-SKILLS_DIR = REPO_ROOT / "skills"
-
-# When SKILL_REFS_STRICT=1, pre-existing oversized skill files hard-fail instead of xfail.
-# Default is xfail (warn mode) so CI stays green while the allowlist tracks decomposition work.
-# Set SKILL_REFS_STRICT=1 for audit runs that should surface all violations as hard failures.
-_SKILL_REFS_STRICT: bool = os.environ.get("SKILL_REFS_STRICT", "0") == "1"
-
-REFERENCE_LINE_WARN = 400
-REFERENCE_LINE_LIMIT = 500
-
-NEGATIVE_FRAMING_WORDS = {"avoid", "don't", "never", "incorrect", "wrong", "bad", "anti-pattern"}
-
-# ---------------------------------------------------------------------------
-# Test data
-# ---------------------------------------------------------------------------
-
-REFERENCE_LOADING_TESTS: list[dict[str, object]] = [
-    {
-        "agent": "react-native-engineer",
-        "query": "optimize FlashList scrolling performance",
-        "expected_refs": ["list-performance.md"],
-        "unexpected_refs": ["animation-patterns.md", "navigation-patterns.md"],
-    },
-    {
-        "agent": "react-native-engineer",
-        "query": "add smooth Reanimated gesture animations",
-        "expected_refs": ["animation-patterns.md"],
-        "unexpected_refs": ["list-performance.md"],
-    },
-    {
-        "agent": "react-native-engineer",
-        "query": "set up native stack navigation with deep links",
-        "expected_refs": ["navigation-patterns.md"],
-        "unexpected_refs": ["animation-patterns.md"],
-    },
-    {
-        # "data fetching" also appears in the RSC row, so the query intentionally
-        # avoids that phrase to test SWR→client-patterns specificity.
-        "agent": "typescript-frontend-engineer",
-        "query": "implement SWR client-side caching with request deduplication",
-        "expected_refs": ["react-client-data-fetching.md"],
-        "unexpected_refs": ["react-server-patterns.md", "react-composition-patterns.md"],
-    },
-    {
-        "agent": "typescript-frontend-engineer",
-        "query": "add ViewTransition animations between routes",
-        "expected_refs": ["react-view-transitions.md"],
-        "unexpected_refs": ["react-server-patterns.md"],
-    },
-    {
-        "agent": "performance-optimization-engineer",
-        "query": "eliminate async waterfall in API calls",
-        "expected_refs": ["react-async-patterns.md"],
-        "unexpected_refs": ["js-algorithm-optimizations.md"],
-    },
-    {
-        "agent": "performance-optimization-engineer",
-        "query": "optimize Set and Map lookups in hot loop",
-        "expected_refs": ["js-algorithm-optimizations.md"],
-        "unexpected_refs": ["react-async-patterns.md"],
-    },
-]
 
 
 # ---------------------------------------------------------------------------
@@ -252,53 +175,6 @@ def _load_agent_info(agent_name: str) -> AgentReferenceInfo:
     )
 
 
-def _match_refs_for_query(query: str, entries: list[ReferenceTableEntry]) -> list[str]:
-    """Return reference filenames whose keywords appear in the query.
-
-    Each table entry is checked: if ANY of its keywords match the query as a
-    whole word or phrase (using word boundaries), the entry's reference file
-    is included. Word-boundary matching prevents short keywords like "min" or
-    "map" from matching inside longer words like "eliminate" or "bitmap".
-
-    Args:
-        query: Free-text task description.
-        entries: Reference loading table rows to match against.
-
-    Returns:
-        Deduplicated list of matched reference file basenames.
-    """
-    query_lower = query.lower()
-    matched: list[str] = []
-    seen: set[str] = set()
-
-    for entry in entries:
-        for keyword in entry.keywords:
-            if not keyword:
-                continue
-            # Use word-boundary anchors so "min" does not match "eliminate"
-            pattern = r"\b" + re.escape(keyword) + r"\b"
-            if re.search(pattern, query_lower):
-                if entry.ref_file not in seen:
-                    matched.append(entry.ref_file)
-                    seen.add(entry.ref_file)
-                break
-
-    return matched
-
-
-def _collect_all_agents_with_refs() -> list[str]:
-    """Return agent names that have a references/ subdirectory.
-
-    Returns:
-        Sorted list of agent name strings.
-    """
-    agents = []
-    for agent_dir in sorted(AGENTS_DIR.iterdir()):
-        if agent_dir.is_dir() and (agent_dir / "references").exists():
-            agents.append(agent_dir.name)
-    return agents
-
-
 # ---------------------------------------------------------------------------
 # Category 1: Reference Loading Table Completeness
 # ---------------------------------------------------------------------------
@@ -314,569 +190,68 @@ class TestReferenceLoadingTableCompleteness:
     ]
 
     @pytest.mark.parametrize("agent_name", AGENTS_WITH_TABLES)
-    def test_table_entries_point_to_existing_files(self, agent_name: str) -> None:
-        """Each row in the reference loading table must point to a file that exists on disk.
+    def test_table_and_disk_agree(self, agent_name: str) -> None:
+        """The table has rows, every row names a file on disk, and every file on disk has a row.
+
+        A file on disk with no row is dead: the agent never loads it.
 
         Args:
             agent_name: Agent under test.
         """
         info = _load_agent_info(agent_name)
         assert info.has_table, f"{agent_name}: no reference loading table found in agent markdown"
+        assert info.table_entries, f"{agent_name}: reference loading table is empty"
 
-        missing: list[str] = []
-        for entry in info.table_entries:
-            ref_path = info.refs_dir / entry.ref_file
-            if not ref_path.exists():
-                missing.append(entry.ref_file)
+        missing = [e.ref_file for e in info.table_entries if not (info.refs_dir / e.ref_file).exists()]
+        assert not missing, f"{agent_name}: table rows point to missing files: {missing}"
 
-        assert not missing, f"{agent_name}: table entries point to files that do not exist on disk:\n" + "\n".join(
-            f"  - {f}" for f in missing
-        )
-
-    @pytest.mark.parametrize("agent_name", AGENTS_WITH_TABLES)
-    def test_all_disk_files_have_table_entries(self, agent_name: str) -> None:
-        """Every .md file in the references/ directory must appear in the loading table.
-
-        Agents are expected to maintain complete tables. A file on disk with no
-        table entry is dead — the agent will never load it.
-
-        Args:
-            agent_name: Agent under test.
-        """
-        info = _load_agent_info(agent_name)
-        assert info.has_table, f"{agent_name}: no reference loading table found in agent markdown"
-
-        table_files = {entry.ref_file for entry in info.table_entries}
+        table_files = {e.ref_file for e in info.table_entries}
         orphaned = [f for f in info.files_on_disk if f not in table_files]
-
-        assert not orphaned, (
-            f"{agent_name}: reference files on disk have no corresponding table entry "
-            f"(agent will never load them):\n" + "\n".join(f"  - {f}" for f in orphaned)
-        )
-
-    @pytest.mark.parametrize("agent_name", AGENTS_WITH_TABLES)
-    def test_table_has_at_least_one_entry(self, agent_name: str) -> None:
-        """The reference loading table must contain at least one parseable row.
-
-        Args:
-            agent_name: Agent under test.
-        """
-        info = _load_agent_info(agent_name)
-        assert len(info.table_entries) > 0, f"{agent_name}: reference loading table is empty"
+        assert not orphaned, f"{agent_name}: files on disk have no table row (never loaded): {orphaned}"
 
 
 # ---------------------------------------------------------------------------
-# Category 2: Keyword-to-Reference Mapping Validation
+# Reference size + discoverability: `validate-references.py --check-size` (CI)
 # ---------------------------------------------------------------------------
 
-
-def _build_test_id(case: dict[str, object]) -> str:
-    """Build a readable pytest ID from a test case dict.
-
-    Args:
-        case: A dict from REFERENCE_LOADING_TESTS.
-
-    Returns:
-        String in the form ``agent-name::first 30 chars of query``.
-    """
-    agent = str(case["agent"])
-    query = str(case["query"])[:30]
-    return f"{agent}::{query}"
-
-
-class TestKeywordToReferenceMappingValidation:
-    """Keyword matching resolves to correct reference files for known queries."""
-
-    @pytest.mark.parametrize("case", REFERENCE_LOADING_TESTS, ids=[_build_test_id(c) for c in REFERENCE_LOADING_TESTS])
-    def test_expected_refs_are_matched(self, case: dict[str, object]) -> None:
-        """The expected reference file(s) must be selected for the given query.
-
-        Args:
-            case: A test case dict with agent, query, expected_refs, unexpected_refs.
-        """
-        agent_name = str(case["agent"])
-        query = str(case["query"])
-        expected_refs: list[str] = list(case["expected_refs"])  # type: ignore[arg-type]
-
-        info = _load_agent_info(agent_name)
-        if not info.has_table:
-            pytest.skip(f"{agent_name} has no reference loading table")
-
-        matched = _match_refs_for_query(query, info.table_entries)
-
-        missing_from_match = [r for r in expected_refs if r not in matched]
-        assert not missing_from_match, (
-            f"{agent_name}: query '{query}' did not match expected refs:\n"
-            + "\n".join(f"  - {r}" for r in missing_from_match)
-            + f"\n  Matched: {matched}"
-        )
-
-    @pytest.mark.parametrize("case", REFERENCE_LOADING_TESTS, ids=[_build_test_id(c) for c in REFERENCE_LOADING_TESTS])
-    def test_unexpected_refs_are_not_matched(self, case: dict[str, object]) -> None:
-        """Reference files listed as unexpected must not be selected for the query.
-
-        Args:
-            case: A test case dict with agent, query, expected_refs, unexpected_refs.
-        """
-        agent_name = str(case["agent"])
-        query = str(case["query"])
-        unexpected_refs: list[str] = list(case["unexpected_refs"])  # type: ignore[arg-type]
-
-        info = _load_agent_info(agent_name)
-        if not info.has_table:
-            pytest.skip(f"{agent_name} has no reference loading table")
-
-        matched = _match_refs_for_query(query, info.table_entries)
-
-        false_positives = [r for r in unexpected_refs if r in matched]
-        assert not false_positives, (
-            f"{agent_name}: query '{query}' incorrectly matched refs that should NOT be selected:\n"
-            + "\n".join(f"  - {r}" for r in false_positives)
-            + f"\n  All matched: {matched}"
-        )
-
-
-# ---------------------------------------------------------------------------
-# Category 3: Reference File Size Compliance
-# ---------------------------------------------------------------------------
-
-
-def _all_reference_files() -> list[Path]:
-    """Collect every .md file under any agent's references/ directory.
-
-    Returns:
-        Sorted list of Path objects.
-    """
-    files: list[Path] = []
-    for agent_dir in sorted(AGENTS_DIR.iterdir()):
-        refs_dir = agent_dir / "references"
-        if refs_dir.exists():
-            files.extend(sorted(refs_dir.glob("*.md")))
-    return files
-
-
-def _ref_file_id(p: Path) -> str:
-    """Return a short test ID for a reference file path.
-
-    Args:
-        p: Path to the reference file.
-
-    Returns:
-        String in the form ``agent-name/references/file.md``.
-    """
-    parts = p.parts
-    # Find agents/ in the path and return the two-level suffix
-    try:
-        agents_idx = list(parts).index("agents")
-        return "/".join(parts[agents_idx + 1 :])
-    except ValueError:
-        return p.name
-
-
-ALL_REFERENCE_FILES = _all_reference_files()
-
-
-_KNOWN_OVERSIZED: set[str] = {
-    "golang-general-engineer/references/go-errors.md",
-    "hook-development-engineer/references/code-examples.md",
-    "python-general-engineer/references/python-preferred-patterns.md",
-    "reviewer-domain/references/operational-preferred-patterns.md",
-    "typescript-debugging-engineer/references/debugging-workflows.md",
-    "typescript-frontend-engineer/references/react19-typescript-patterns.md",
-    "typescript-frontend-engineer/references/typescript-preferred-patterns.md",
-    "typescript-frontend-engineer/references/typescript-errors.md",
-}
-
-
-class TestReferenceFileSizeCompliance:
-    """Reference files must be under 500 lines; warn at 400."""
-
-    @pytest.mark.parametrize("ref_path", ALL_REFERENCE_FILES, ids=[_ref_file_id(p) for p in ALL_REFERENCE_FILES])
-    def test_file_under_hard_limit(self, ref_path: Path) -> None:
-        """Reference file must be under 500 lines.
-
-        Pre-existing oversized files are tracked in _KNOWN_OVERSIZED and marked
-        as xfail. New files that exceed the limit will hard-fail.
-
-        Args:
-            ref_path: Path to the reference .md file.
-        """
-        ref_id = _ref_file_id(ref_path)
-        line_count = len(ref_path.read_text(encoding="utf-8").splitlines())
-        if ref_id in _KNOWN_OVERSIZED:
-            pytest.xfail(f"{ref_id}: {line_count} lines (known oversized, tracked as tech debt)")
-        assert line_count <= REFERENCE_LINE_LIMIT, (
-            f"{ref_id}: {line_count} lines exceeds limit of {REFERENCE_LINE_LIMIT}. "
-            f"Split the file or remove stale content."
-        )
-
-    @pytest.mark.parametrize("ref_path", ALL_REFERENCE_FILES, ids=[_ref_file_id(p) for p in ALL_REFERENCE_FILES])
-    def test_file_approaching_limit_warning(self, ref_path: Path) -> None:
-        """Warn when a reference file is between 400 and 499 lines.
-
-        Args:
-            ref_path: Path to the reference .md file.
-        """
-        line_count = len(ref_path.read_text(encoding="utf-8").splitlines())
-        if line_count >= REFERENCE_LINE_WARN:
-            pytest.warns(
-                UserWarning,
-                match="approaching",
-            ) if False else None  # soft warning — emit via xfail marker
-            pytest.xfail(
-                f"{_ref_file_id(ref_path)}: {line_count} lines is approaching the {REFERENCE_LINE_LIMIT}-line limit "
-                f"(threshold: {REFERENCE_LINE_WARN}). Consider trimming."
-            )
-
-
-# ---------------------------------------------------------------------------
-# Category 4: Joy-Check Spot Validation
-# ---------------------------------------------------------------------------
-
-
-def _heading_lines(md_text: str) -> list[str]:
-    """Extract all ## heading lines from markdown text.
-
-    Args:
-        md_text: Raw markdown string.
-
-    Returns:
-        List of heading line strings (including the ## prefix).
-    """
-    return [line for line in md_text.splitlines() if re.match(r"^#{1,6}\s", line)]
-
-
-class TestJoyCheckSpotValidation:
-    """Reference file headings must not contain negative framing signals."""
-
-    @pytest.mark.parametrize("ref_path", ALL_REFERENCE_FILES, ids=[_ref_file_id(p) for p in ALL_REFERENCE_FILES])
-    def test_no_negative_framing_in_headings(self, ref_path: Path) -> None:
-        """Flag headings containing negative framing words as warnings (not hard failures).
-
-        Negative words: avoid, don't, never, incorrect, wrong, bad, anti-pattern.
-        These signal problem-oriented rather than solution-oriented framing.
-
-        Args:
-            ref_path: Path to the reference .md file.
-        """
-        md_text = ref_path.read_text(encoding="utf-8")
-        headings = _heading_lines(md_text)
-
-        flagged: list[str] = []
-        for heading in headings:
-            heading_lower = heading.lower()
-            for word in NEGATIVE_FRAMING_WORDS:
-                if word in heading_lower:
-                    flagged.append(heading.strip())
-                    break
-
-        if flagged:
-            pytest.xfail(
-                f"{_ref_file_id(ref_path)}: {len(flagged)} heading(s) contain negative framing signals "
-                f"(warning, not hard failure):\n" + "\n".join(f"  - {h}" for h in flagged)
-            )
-
-
-# ---------------------------------------------------------------------------
-# Category 5: Cross-Agent Reference Isolation
-# ---------------------------------------------------------------------------
-
-
-def _extract_reference_links(md_text: str) -> list[str]:
-    """Extract all relative markdown link targets from an agent file.
-
-    Args:
-        md_text: Raw markdown text of an agent file.
-
-    Returns:
-        List of link target strings (the href portion of ``[text](href)``).
-    """
-    return re.findall(r"\]\(([^)]+\.md)\)", md_text)
-
-
-class TestCrossAgentReferenceIsolation:
-    """Each agent must only reference files within its own directory."""
-
-    AGENTS_WITH_TABLES: ClassVar[list[str]] = [
-        "react-native-engineer",
-        "typescript-frontend-engineer",
-        "performance-optimization-engineer",
-        "ui-design-engineer",
-    ]
-
-    @pytest.mark.parametrize("agent_name", AGENTS_WITH_TABLES)
-    def test_agent_references_are_self_contained(self, agent_name: str) -> None:
-        """An agent's reference loading table must not link into another agent's directory.
-
-        Shared patterns (e.g. ``skills/shared-patterns/``) are excluded from this check
-        as they are intentionally cross-cutting.
-
-        Args:
-            agent_name: Agent under test.
-        """
-        info = _load_agent_info(agent_name)
-        agent_prefix = f"{agent_name}/references/"
-
-        cross_agent_refs: list[str] = []
-        for entry in info.table_entries:
-            # Reconstruct the full link target the table entry came from by checking
-            # the raw agent markdown for this filename
-            md_text = info.agent_file.read_text(encoding="utf-8")
-            all_links = _extract_reference_links(md_text)
-
-            for link in all_links:
-                if entry.ref_file in link:
-                    # Shared skills/ paths are allowed
-                    if link.startswith("../skills/") or link.startswith("skills/"):
-                        continue
-                    # Links must point into this agent's own directory
-                    if agent_prefix not in link and entry.ref_file in link:
-                        # Check it doesn't belong to another known agent
-                        for other_agent_dir in AGENTS_DIR.iterdir():
-                            if other_agent_dir.is_dir() and other_agent_dir.name != agent_name:
-                                if other_agent_dir.name in link:
-                                    cross_agent_refs.append(f"{link!r} (in {agent_name})")
-
-        assert not cross_agent_refs, f"{agent_name}: reference loading table contains cross-agent links:\n" + "\n".join(
-            f"  - {r}" for r in cross_agent_refs
-        )
-
-    def test_all_agent_dirs_are_isolated_from_each_other(self) -> None:
-        """No .md file in one agent's references/ directory should be symlinked
-        or physically co-located in another agent's references/ directory.
-
-        Args: none
-        """
-        agent_dirs = [d for d in AGENTS_DIR.iterdir() if d.is_dir()]
-        violations: list[str] = []
-
-        for agent_dir in sorted(agent_dirs):
-            refs_dir = agent_dir / "references"
-            if not refs_dir.exists():
-                continue
-            for ref_file in refs_dir.glob("*.md"):
-                # Check that this file's resolved path is actually inside this agent's dir
-                try:
-                    resolved = ref_file.resolve()
-                    if not str(resolved).startswith(str(agent_dir.resolve())):
-                        violations.append(f"{ref_file} resolves outside its agent dir to {resolved}")
-                except OSError:
-                    pass
-
-        assert not violations, "Cross-agent reference isolation violated:\n" + "\n".join(f"  - {v}" for v in violations)
-
-
-# ---------------------------------------------------------------------------
-# Skill reference helpers
-# ---------------------------------------------------------------------------
-
-
-def _collect_all_skill_reference_files() -> list[Path]:
-    """Collect every .md file under any skill's references/ directory, recursively.
-
-    Skills may have nested sub-directories inside references/ (e.g.
-    go-patterns/references/sapcc-conventions/). All .md files at any depth
-    are included so that deeply nested oversized files are caught.
-
-    Returns:
-        Sorted list of Path objects for every .md file under skills/*/references/.
-    """
-    files: list[Path] = []
-    if not SKILLS_DIR.exists():
-        return files
-    for skill_dir in sorted(SKILLS_DIR.iterdir()):
-        if not skill_dir.is_dir():
-            continue
-        refs_dir = skill_dir / "references"
-        if refs_dir.exists():
-            files.extend(sorted(refs_dir.rglob("*.md")))
-    return files
-
-
-def _skill_ref_file_id(p: Path) -> str:
-    """Return a short test ID for a skill reference file path.
-
-    Args:
-        p: Path to the skill reference file.
-
-    Returns:
-        String relative to the skills/ directory, e.g.
-        ``anti-ai-editor/references/detection-patterns.md`` or
-        ``go-patterns/references/sapcc-conventions/sapcc-code-patterns.md``.
-    """
-    try:
-        return str(p.relative_to(SKILLS_DIR))
-    except ValueError:
-        return p.name
-
-
-def _collect_skills_with_references() -> list[str]:
-    """Return skill names (directory stems) that have a references/ subdirectory.
-
-    Returns:
-        Sorted list of skill name strings.
-    """
-    if not SKILLS_DIR.exists():
-        return []
-    return sorted(
-        skill_dir.name
-        for skill_dir in SKILLS_DIR.iterdir()
-        if skill_dir.is_dir() and (skill_dir / "references").exists()
+sys.path.insert(0, str(REPO_ROOT / "scripts"))
+validate_references = importlib.import_module("validate-references")
+
+
+def _skill_tree(tmp_path: Path, ref_lines: int) -> tuple[Path, Path]:
+    agents = tmp_path / "agents"
+    (agents / "demo" / "references").mkdir(parents=True)
+    (agents / "demo" / "references" / "a.md").write_text("x\n", encoding="utf-8")
+    skills = tmp_path / "skills"
+    ref = skills / "cat" / "demo" / "references" / "nested" / "big.md"
+    ref.parent.mkdir(parents=True)
+    ref.write_text("line\n" * ref_lines, encoding="utf-8")
+    (skills / "cat" / "demo" / "SKILL.md").write_text("# Demo\n", encoding="utf-8")
+    return agents, skills
+
+
+def test_check_size_passes_clean_tree(tmp_path: Path) -> None:
+    agents, skills = _skill_tree(tmp_path, 10)
+    assert validate_references.check_reference_sizes(agents, skills, set(), {}) == []
+
+
+def test_check_size_catches_unregistered_nested_oversize_and_stale_entry(tmp_path: Path) -> None:
+    agents, skills = _skill_tree(tmp_path, validate_references.REFERENCE_LINE_LIMIT + 1)
+    failures = validate_references.check_reference_sizes(
+        agents, skills, {"demo/references/gone.md"}, {"cat/other/references/x.md": "not-a-date"}
     )
+    text = "\n".join(failures)
+    assert "skills/cat/demo/references/nested/big.md: 501 lines" in text
+    assert "agents/demo/references/gone.md: stale" in text
+    assert "skills/cat/other/references/x.md: stale" in text
+    assert "invalid baseline date" in text
 
 
-ALL_SKILL_REFERENCE_FILES: list[Path] = _collect_all_skill_reference_files()
-
-# Pre-existing oversized skill reference files (ADR-190 Finding 4).
-#
-# This is the authoritative TODO list for gradual decomposition. Each entry xfails by default
-# so CI stays green while decomposition work proceeds. Removing a file from this list without
-# first decomposing it below 500 lines will cause that test to hard-fail. The list can only
-# shrink — do not add new files here; fix the file instead.
-#
-# Line counts recorded at ADR-190 audit time (2026-04-16). Actual counts may drift.
-# Set SKILL_REFS_STRICT=1 to force all entries to hard-fail for a decomposition audit.
-_KNOWN_OVERSIZED_SKILL_REFS: set[str] = {
-    "anti-ai-editor/references/detection-patterns.md",  # 1240 lines
-    "skill-creator/references/agent-template.md",  #  579 lines (moved from root AGENT_TEMPLATE_V2.md)
-    "condition-based-waiting/references/implementation-patterns.md",  #  566 lines
-    "distinctive-frontend-design/references/animation-patterns.md",  #  534 lines
-    "docs-sync-checker/references/examples.md",  #  508 lines
-    "pr-workflow/references/commit-staging-rules.md",  #  590 lines
-    "go-patterns/references/sapcc-conventions.md",  #  677 lines
-    "go-patterns/references/sapcc-conventions/preferred-patterns.md",  #  566 lines
-    "go-patterns/references/sapcc-conventions/api-design-detailed.md",  #  697 lines
-    "go-patterns/references/sapcc-conventions/architecture-patterns.md",  #  543 lines
-    "go-patterns/references/sapcc-conventions/build-ci-detailed.md",  #  547 lines
-    "go-patterns/references/sapcc-conventions/error-handling-detailed.md",  #  570 lines
-    "go-patterns/references/sapcc-conventions/sapcc-code-patterns.md",  # 3872 lines
-    "go-patterns/references/sapcc-conventions/testing-patterns-detailed.md",  #  709 lines
-    "pr-workflow/references/miner.md",  #  512 lines
-    "pr-workflow/references/pipeline.md",  #  785 lines
-    "skill-composer/references/examples.md",  #  719 lines
-    "test-driven-development/references/examples.md",  #  874 lines
-    "testing-preferred-patterns/references/preferred-pattern-catalog.md",  #  568 lines
-    "threejs-builder/references/react-three-fiber.md",  #  595 lines
-    "threejs-builder/references/shader-patterns.md",  #  501 lines
-    "threejs-builder/references/visual-polish.md",  #  528 lines
-    "threejs-builder/references/webgpu.md",  #  649 lines
-    "verification-before-completion/references/verification-examples.md",  #  619 lines
-    "webgl-card-effects/references/shader-integration-react.md",  #  542 lines
-    "workflow/references/comprehensive-review.md",  #  546 lines
-    "workflow/references/domain-research.md",  #  650 lines
-    "workflow/references/pipeline-scaffolder/references/generated-skill-template.md",  # 1037 lines
-    "workflow/references/pipeline-scaffolder/references/pipeline-spec-format.md",  #  740 lines
-    "workflow/references/toolkit-improvement.md",  #  564 lines
-    "workflow/references/voice-calibrator.md",  #  801 lines
-    "workflow/references/workflow-orchestrator/references/plan-template.md",  #  672 lines
-    "workflow/references/workflow-orchestrator/references/task-patterns.md",  #  900 lines
-}
-
-_SKILLS_WITH_REFERENCES: list[str] = _collect_skills_with_references()
-
-# ---------------------------------------------------------------------------
-# Category 6: Skill Reference File Size Compliance
-# ---------------------------------------------------------------------------
-
-
-class TestSkillReferenceFileSizeCompliance:
-    """Skill reference files must be under 500 lines; warn at 400.
-
-    This is the same standard applied to agent reference files (Category 3).
-    Skills were previously unguarded — ADR-190 extends coverage to close that gap.
-
-    By default (xfail mode) files in _KNOWN_OVERSIZED_SKILL_REFS xfail so CI stays green
-    while the allowlist tracks gradual decomposition. Any file NOT in the allowlist that
-    exceeds 500 lines hard-fails immediately. Set SKILL_REFS_STRICT=1 to force all known
-    violations to hard-fail for audit runs.
-    """
-
-    @pytest.mark.parametrize(
-        "ref_path",
-        ALL_SKILL_REFERENCE_FILES,
-        ids=[_skill_ref_file_id(p) for p in ALL_SKILL_REFERENCE_FILES],
+def test_check_size_registered_debt_passes_and_empty_refs_dir_fails(tmp_path: Path) -> None:
+    agents, skills = _skill_tree(tmp_path, validate_references.REFERENCE_LINE_LIMIT + 1)
+    (skills / "cat" / "empty" / "references").mkdir(parents=True)
+    (skills / "cat" / "empty" / "SKILL.md").write_text("# Empty\n", encoding="utf-8")
+    failures = validate_references.check_reference_sizes(
+        agents, skills, set(), {"cat/demo/references/nested/big.md": "2026-09-18"}
     )
-    def test_skill_file_under_hard_limit(self, ref_path: Path) -> None:
-        """Skill reference file must be under 500 lines.
-
-        Pre-existing violations are tracked in _KNOWN_OVERSIZED_SKILL_REFS.
-        By default they xfail so CI stays green during gradual decomposition.
-        Set SKILL_REFS_STRICT=1 to force all known violations to hard-fail.
-        New files not in the allowlist that exceed the limit always hard-fail.
-
-        Args:
-            ref_path: Path to the skill reference .md file.
-        """
-        ref_id = _skill_ref_file_id(ref_path)
-        line_count = len(ref_path.read_text(encoding="utf-8").splitlines())
-
-        if ref_id in _KNOWN_OVERSIZED_SKILL_REFS:
-            if not _SKILL_REFS_STRICT:
-                pytest.xfail(
-                    f"skills/{ref_id}: {line_count} lines (known oversized, tracked as tech debt — "
-                    f"set SKILL_REFS_STRICT=1 or remove from _KNOWN_OVERSIZED_SKILL_REFS after decomposing)"
-                )
-            # Strict mode: fall through to the assertion so CI sees a hard failure.
-            assert line_count <= REFERENCE_LINE_LIMIT, (
-                f"skills/{ref_id}: {line_count} lines exceeds limit of {REFERENCE_LINE_LIMIT}. "
-                f"This is a pre-existing violation (ADR-190 Finding 4). "
-                f"Decompose the file into sub-references under 500 lines, then remove it from "
-                f"_KNOWN_OVERSIZED_SKILL_REFS in this test file."
-            )
-        else:
-            assert line_count <= REFERENCE_LINE_LIMIT, (
-                f"skills/{ref_id}: {line_count} lines exceeds limit of {REFERENCE_LINE_LIMIT}. "
-                f"Split the file or remove stale content. "
-                f"Do not add this file to _KNOWN_OVERSIZED_SKILL_REFS — fix it instead."
-            )
-
-    @pytest.mark.parametrize(
-        "ref_path",
-        ALL_SKILL_REFERENCE_FILES,
-        ids=[_skill_ref_file_id(p) for p in ALL_SKILL_REFERENCE_FILES],
-    )
-    def test_skill_file_approaching_limit_warning(self, ref_path: Path) -> None:
-        """Warn when a skill reference file is between 400 and 499 lines.
-
-        Args:
-            ref_path: Path to the skill reference .md file.
-        """
-        line_count = len(ref_path.read_text(encoding="utf-8").splitlines())
-        if line_count >= REFERENCE_LINE_WARN:
-            pytest.xfail(
-                f"skills/{_skill_ref_file_id(ref_path)}: {line_count} lines is approaching the "
-                f"{REFERENCE_LINE_LIMIT}-line limit (threshold: {REFERENCE_LINE_WARN}). "
-                f"Consider trimming or splitting before it exceeds the hard limit."
-            )
-
-
-# ---------------------------------------------------------------------------
-# Category 7: Skill Reference Directory Discoverability
-# ---------------------------------------------------------------------------
-
-
-class TestSkillReferenceDirectoryDiscoverability:
-    """Every skill with a references/ directory must be discoverable and non-empty.
-
-    This is a structural sanity check — it catches skills whose references/
-    directory exists but contains no .md files (empty directory, only non-md
-    files, or broken symlinks). An empty references/ dir provides no value
-    and may indicate an incomplete scaffold.
-    """
-
-    @pytest.mark.parametrize("skill_name", _SKILLS_WITH_REFERENCES)
-    def test_skill_references_dir_contains_md_files(self, skill_name: str) -> None:
-        """A skill's references/ directory must contain at least one .md file.
-
-        An empty references/ directory is dead weight — either populate it or
-        remove it so the skill body does not declare references that cannot load.
-
-        Args:
-            skill_name: Skill directory name under skills/.
-        """
-        refs_dir = SKILLS_DIR / skill_name / "references"
-        md_files = list(refs_dir.rglob("*.md"))
-        assert md_files, (
-            f"skills/{skill_name}/references/ exists but contains no .md files. "
-            f"Either add reference content or remove the empty directory."
-        )
+    assert failures == ["skills/cat/empty/references/ has no .md files"]

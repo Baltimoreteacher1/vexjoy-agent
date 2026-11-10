@@ -8,8 +8,8 @@ import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
-AGENTS_DIR = Path(__file__).parent.parent / "agents"
-REPO_ROOT = Path(__file__).parent.parent
+AGENTS_DIR = Path(__file__).resolve().parent.parent / "agents"
+REPO_ROOT = Path(__file__).resolve().parent.parent
 
 # ---------------------------------------------------------------------------
 # Do-framing validation
@@ -55,7 +55,7 @@ _TABLE_POSITIVE_COLUMNS = re.compile(
 
 _TABLE_HEADER_ROW = re.compile(r"^\|(.+)\|", re.MULTILINE)
 
-_SKIP_FILENAMES = {"INDEX.json", "README.md"}
+_SKIP_FILENAMES = {"README.md"}
 
 
 def _strip_fenced_blocks(content: str) -> str:
@@ -230,6 +230,11 @@ def run_check_do_framing(json_output: bool, allowlist_path: Path | None = None) 
     return 1 if all_issues else 0
 
 
+# VERDICT template headings are output-format instructions (e.g.
+# ``## VERDICT: [PASS | NEEDS_CHANGES | BLOCK]``). They are intentionally
+# empty — the section body is filled at review time. Exempt from EMPTY_SECTION.
+_VERDICT_HEADING = re.compile(r"^##\s+VERDICT:", re.IGNORECASE)
+
 VALID_IMPACT_LEVELS = {"CRITICAL", "HIGH", "MEDIUM-HIGH", "MEDIUM", "LOW-MEDIUM", "LOW"}
 
 IMPACT_PATTERN = re.compile(r"\*\*Impact:\*\*\s+(\S+)")
@@ -259,7 +264,8 @@ class AgentResult:
 def find_declared_references(agent_file: Path) -> list[str]:
     """Extract all references/... paths mentioned in an agent .md file."""
     content = agent_file.read_text(encoding="utf-8")
-    agent_dir = AGENTS_DIR / agent_file.stem
+    agents_dir = agent_file.parent
+    agent_dir = agents_dir / agent_file.stem
 
     raw_paths: list[str] = []
 
@@ -277,7 +283,7 @@ def find_declared_references(agent_file: Path) -> list[str]:
         elif raw.startswith("../"):
             candidate = str((agent_file.parent / raw).resolve())
         else:
-            candidate = str(AGENTS_DIR / raw)
+            candidate = str(agents_dir / raw)
 
         if candidate not in seen:
             seen.add(candidate)
@@ -286,12 +292,12 @@ def find_declared_references(agent_file: Path) -> list[str]:
     return resolved
 
 
-def validate_reference_file(ref_path: Path) -> list[ReferenceIssue]:
+def validate_reference_file(ref_path: Path, agents_dir: Path = AGENTS_DIR) -> list[ReferenceIssue]:
     """Check structural requirements of a single reference .md file."""
     issues: list[ReferenceIssue] = []
     content = ref_path.read_text(encoding="utf-8")
     try:
-        rel = str(ref_path.relative_to(AGENTS_DIR))
+        rel = str(ref_path.relative_to(agents_dir))
     except ValueError:
         rel = str(ref_path.relative_to(REPO_ROOT))
 
@@ -305,6 +311,9 @@ def validate_reference_file(ref_path: Path) -> list[ReferenceIssue]:
     for heading, body in zip(headings, body_sections):
         stripped = body.strip()
         if not stripped:
+            # VERDICT template headings are intentionally body-less output templates
+            if _VERDICT_HEADING.match(heading.strip()):
+                continue
             issues.append(ReferenceIssue("empty-section", rel, f"Section '{heading.strip()}' has no body text"))
 
     if "```" not in content:
@@ -335,7 +344,7 @@ def validate_agent(agent_file: Path, check_structure: bool = True) -> AgentResul
         if not ref_path.exists():
             result.missing.append(path_str)
         elif check_structure:
-            result.issues.extend(validate_reference_file(ref_path))
+            result.issues.extend(validate_reference_file(ref_path, agent_file.parent))
 
     return result
 
@@ -389,12 +398,324 @@ def run_check_placeholders(json_output: bool) -> int:
     return 1 if hits else 0
 
 
-def find_all_reference_files() -> list[Path]:
+# ---------------------------------------------------------------------------
+# Reference size and discoverability (--check-size)
+# ---------------------------------------------------------------------------
+
+SKILLS_DIR = REPO_ROOT / "skills"
+REFERENCE_LINE_LIMIT = 500
+
+# Agent reference files over the limit, keyed agent/references/file.md.
+_KNOWN_OVERSIZED_AGENT_REFS: set[str] = {
+    "typescript-debugging-engineer/references/debugging-workflows.md",
+}
+
+# Skill reference files over the limit, keyed relative to skills/, with the
+# baseline date. This is the dated debt register for gradual decomposition.
+# The check rejects both unregistered oversized files and stale entries, so a
+# new violation cannot hide here: decompose it instead.
+_KNOWN_OVERSIZED_SKILL_REFS: dict[str, str] = {
+    "frontend/frontend/references/distinctive-frontend-design-refs/animation-patterns.md": "2026-09-18",
+    "frontend/frontend/references/distinctive-frontend-design-refs/shader-integration-react.md": "2026-09-18",
+    "frontend/frontend/references/threejs-builder-refs/react-three-fiber.md": "2026-09-18",
+    "frontend/frontend/references/threejs-builder-refs/visual-polish.md": "2026-09-18",
+    "frontend/frontend/references/threejs-builder-refs/webgpu.md": "2026-09-18",
+    "meta/toolkit/references/skill-composer/examples.md": "2026-09-18",
+    "meta/toolkit/references/skill-creator/agent-template.md": "2026-09-18",
+    "meta/toolkit/references/skill-creator.md": "2026-09-18",
+    "process/pr-workflow/references/commit-staging-rules.md": "2026-07-09",
+    "process/pr-workflow/references/miner.md": "2026-07-09",
+    "process/pr-workflow/references/pipeline.md": "2026-07-09",
+    "process/process/references/cbw-implementation-patterns.md": "2026-09-18",
+    "process/testing/references/patterns-preferred-pattern-catalog.md": "2026-09-18",
+    "process/testing/references/tdd-examples.md": "2026-09-18",
+    "process/testing/references/verify-verification-examples.md": "2026-09-18",
+    "process/workflow/references/comprehensive-review.md": "2026-07-09",
+    "process/workflow/references/domain-research.md": "2026-07-09",
+    "process/workflow/references/pipeline-scaffolder/references/pipeline-spec-format.md": "2026-07-09",
+    "process/workflow/references/toolkit-improvement.md": "2026-07-09",
+    "process/workflow/references/workflow-orchestrator/references/task-patterns.md": "2026-07-09",
+    "programming/programming/references/go/sapcc-conventions/api-design-detailed.md": "2026-09-18",
+    "programming/programming/references/go/sapcc-conventions/architecture-patterns.md": "2026-09-18",
+    "programming/programming/references/go/sapcc-conventions/build-ci-detailed.md": "2026-09-18",
+    "programming/programming/references/go/sapcc-conventions/error-handling-detailed.md": "2026-09-18",
+    "programming/programming/references/go/sapcc-conventions/sapcc-code-patterns.md": "2026-09-18",
+    "programming/programming/references/go/sapcc-conventions.md": "2026-09-18",
+}
+
+
+def _line_count(path: Path) -> int:
+    return len(path.read_text(encoding="utf-8").splitlines())
+
+
+def collect_agent_reference_files(agents_dir: Path) -> list[Path]:
+    """Every .md directly under agents/<name>/references/."""
+    files: list[Path] = []
+    if not agents_dir.is_dir():
+        return files
+    for agent_dir in sorted(agents_dir.iterdir()):
+        refs = agent_dir / "references"
+        if refs.is_dir():
+            files.extend(sorted(refs.glob("*.md")))
+    return files
+
+
+def collect_skill_reference_files(skills_dir: Path) -> list[Path]:
+    """Every .md at any depth under a skill's references/ dir (skills nest by category)."""
+    files: list[Path] = []
+    if not skills_dir.is_dir():
+        return files
+    for skill_file in sorted(skills_dir.rglob("SKILL.md")):
+        refs = skill_file.parent / "references"
+        if refs.is_dir():
+            files.extend(sorted(refs.rglob("*.md")))
+    return files
+
+
+def collect_skills_with_references(skills_dir: Path) -> list[Path]:
+    """Skill dirs that declare a references/ dir."""
+    if not skills_dir.is_dir():
+        return []
+    return sorted(s.parent for s in skills_dir.rglob("SKILL.md") if (s.parent / "references").is_dir())
+
+
+def check_reference_sizes(
+    agents_dir: Path = AGENTS_DIR,
+    skills_dir: Path = SKILLS_DIR,
+    agent_register: set[str] | None = None,
+    skill_register: dict[str, str] | None = None,
+) -> list[str]:
+    """Return failures for the reference size, debt-register, and discoverability rules.
+
+    - A reference file over REFERENCE_LINE_LIMIT lines must be in its register.
+    - Each register must name exactly the current violations (no stale entries).
+    - Skill register dates must be ISO-8601.
+    - A skill references/ dir must hold at least one .md file.
+    - An agent reference file must resolve inside its own agent dir.
+    """
+    from datetime import date
+
+    agent_register = _KNOWN_OVERSIZED_AGENT_REFS if agent_register is None else agent_register
+    skill_register = _KNOWN_OVERSIZED_SKILL_REFS if skill_register is None else skill_register
+    failures: list[str] = []
+
+    agent_files = collect_agent_reference_files(agents_dir)
+    agent_over = {
+        str(f.relative_to(agents_dir)): _line_count(f) for f in agent_files if _line_count(f) > REFERENCE_LINE_LIMIT
+    }
+    for ref_id, lines in sorted(agent_over.items()):
+        if ref_id not in agent_register:
+            failures.append(f"agents/{ref_id}: {lines} lines exceeds {REFERENCE_LINE_LIMIT}; split it")
+    for ref_id in sorted(agent_register - set(agent_over)):
+        failures.append(f"agents/{ref_id}: stale size-debt entry (now within limit or gone); remove it")
+    for f in agent_files:
+        agent_dir = f.parent.parent
+        if not f.resolve().is_relative_to(agent_dir.resolve()):
+            failures.append(f"{f}: resolves outside its agent dir to {f.resolve()}")
+
+    skill_over = {
+        str(f.relative_to(skills_dir)): _line_count(f)
+        for f in collect_skill_reference_files(skills_dir)
+        if _line_count(f) > REFERENCE_LINE_LIMIT
+    }
+    for ref_id, lines in sorted(skill_over.items()):
+        if ref_id not in skill_register:
+            failures.append(f"skills/{ref_id}: {lines} lines exceeds {REFERENCE_LINE_LIMIT}; split it")
+    for ref_id in sorted(set(skill_register) - set(skill_over)):
+        failures.append(f"skills/{ref_id}: stale size-debt entry (now within limit or gone); remove it")
+    for ref_id, baseline in sorted(skill_register.items()):
+        try:
+            date.fromisoformat(baseline)
+        except ValueError:
+            failures.append(f"skills/{ref_id}: invalid baseline date {baseline!r}")
+
+    for skill_dir in collect_skills_with_references(skills_dir):
+        if not any((skill_dir / "references").rglob("*.md")):
+            failures.append(f"skills/{skill_dir.relative_to(skills_dir)}/references/ has no .md files")
+    return failures
+
+
+def run_check_size(json_output: bool) -> int:
+    """Run --check-size and return the exit code."""
+    failures = check_reference_sizes()
+    if json_output:
+        print(json.dumps({"failures": failures, "exit_code": 1 if failures else 0}, indent=2))
+    else:
+        for line in failures:
+            print(f"  SIZE: {line}")
+        print(f"\n{len(failures)} reference size issue(s)" if failures else "SIZE: all reference files OK")
+    return 1 if failures else 0
+
+
+# ---------------------------------------------------------------------------
+# Skill-tool call contract (--check-skill-calls)
+# ---------------------------------------------------------------------------
+
+_SKILL_CALL_RUNTIME_ROOTS = ("agents", "commands", "docs", "hooks", "skills")
+_SKILL_CALL_SUFFIXES = {".js", ".md", ".mjs", ".py"}
+CONCRETE_SKILL_CALL = re.compile(r"(?i)call the Skill tool with `([a-z0-9][a-z0-9-]*)`")
+_COMMAND_LEGACY_HANDOFF = re.compile(
+    r"(?i)(?:read|load) and follow (?:the )?(?:full )?skill(?: file)? at|invoke the [a-z0-9-]+ skill"
+)
+
+
+# Dispatch text: the files whose agent and skill names reach a dispatch call verbatim.
+_DISPATCH_NAME_GLOBS = ("skills/**/SKILL.md", "skills/meta/do/references/*.md")
+# Harness-provided agent types, plus `main` (the main-thread route in the [do-route] marker).
+_BUILTIN_AGENTS = frozenset({"general-purpose", "main", "Explore", "Plan"})
+_NAME = r"[A-Za-z0-9][A-Za-z0-9-]*"
+_DISPATCH_AGENT = re.compile(
+    rf"""(?:\b(?:agentType|subagent_type)|["']agent["'])\s*[:=]\s*["'`]({_NAME})["'`]|\bagent=({_NAME})"""
+)
+_DISPATCH_SKILL = re.compile(rf"""["']skill["']\s*:\s*["'`]({_NAME})["'`]|\bskill=({_NAME})""")
+_DISPATCH_SKILL_LIST = re.compile(r"\bskills\s*:\s*\[([^\]]*)\]")
+_QUOTED_NAME = re.compile(rf"""["']({_NAME})["']""")
+
+
+def _agent_names(root: Path) -> set[str]:
+    """Agent names from agents/INDEX.json when built, plus every agents/*.md file."""
+    names = {p.stem for p in (root / "agents").glob("*.md") if p.name not in _SKIP_FILENAMES}
+    index = root / "agents" / "INDEX.json"
+    if index.is_file():
+        names |= set(json.loads(index.read_text(encoding="utf-8")).get("agents", {}))
+    return names
+
+
+def check_dispatch_names(root: Path, skill_names: set[str]) -> list[str]:
+    """Return failures for agent and skill names in dispatch text that resolve to nothing.
+
+    Checks only keyed slots, where the name is passed to a dispatch as written:
+    `agentType: "x"`, `subagent_type: "x"`, `"agent": "x"`, `agent=x`, `"skill": "x"`,
+    `skill=x`, and `skills: ["x", "y"]`. Placeholders (`<agent>`, `{a}`) never match.
+    """
+    agents = _agent_names(root) | _BUILTIN_AGENTS
+    files = sorted({p for pattern in _DISPATCH_NAME_GLOBS for p in root.glob(pattern) if p.is_file()})
+    failures: list[str] = []
+    for path in files:
+        rel = path.relative_to(root)
+        for lineno, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+            for match in _DISPATCH_AGENT.finditer(line):
+                name = match.group(1) or match.group(2)
+                if name not in agents:
+                    failures.append(f"{rel}:{lineno}: dispatches agent {name!r}, which is no indexed agent")
+            named = [m.group(1) or m.group(2) for m in _DISPATCH_SKILL.finditer(line)]
+            for match in _DISPATCH_SKILL_LIST.finditer(line):
+                named.extend(_QUOTED_NAME.findall(match.group(1)))
+            for name in named:
+                if name not in skill_names:
+                    failures.append(f"{rel}:{lineno}: dispatches skill {name!r}, which is no indexed skill or command")
+    return failures
+
+
+def _skill_call_runtime_files(root: Path) -> list[Path]:
+    files: list[Path] = []
+    for name in _SKILL_CALL_RUNTIME_ROOTS:
+        base = root / name
+        if base.is_dir():
+            files.extend(
+                p
+                for p in base.rglob("*")
+                if p.is_file() and p.suffix in _SKILL_CALL_SUFFIXES and "tests" not in p.parts
+            )
+    return sorted(files)
+
+
+def check_skill_calls(root: Path = REPO_ROOT) -> list[str]:
+    """Return failures for the Skill-tool call contract.
+
+    - A command that says "Call the Skill tool with `x`" must grant the Skill tool.
+    - Commands hand off with that exact call, not "read and follow the skill at" wording.
+    - A pipeline that is not also a skill is reached through the workflow skill,
+      never by a direct "invoke/route to/hand off to <pipeline>" instruction.
+    - Every "Call the Skill tool with `x`" outside tests names an indexed skill or a
+      command; a retired or misspelled name fails at runtime, and the failed call
+      leaves no usage record.
+    - Every agent and skill name in a keyed dispatch slot of a SKILL.md or a /do
+      reference resolves (see ``check_dispatch_names``).
+    """
+    repo = str(REPO_ROOT.resolve())
+    if repo not in sys.path:
+        sys.path.insert(0, repo)
+    from scripts.lib.frontmatter import parse_frontmatter
+
+    failures: list[str] = []
+    for path in sorted((root / "commands").glob("*.md")):
+        source = path.read_text(encoding="utf-8")
+        rel = path.relative_to(root)
+        if CONCRETE_SKILL_CALL.search(source):
+            frontmatter, _ = parse_frontmatter(source)
+            tools = frontmatter.get("allowed-tools", []) if frontmatter else []
+            if "Skill" not in tools:
+                failures.append(f"{rel}: calls the Skill tool but allowed-tools lacks Skill")
+        if _COMMAND_LEGACY_HANDOFF.search(source):
+            failures.append(f"{rel}: legacy skill handoff wording; use 'Call the Skill tool with `name`.'")
+
+    skills_index = root / "skills" / "INDEX.json"
+    pipeline_index = root / "skills" / "process" / "workflow" / "references" / "pipeline-index.json"
+    if not skills_index.is_file() or not pipeline_index.is_file():
+        failures.append("skills/INDEX.json or pipeline-index.json missing; run scripts/generate-skill-index.py")
+        return failures
+    skills = set(json.loads(skills_index.read_text(encoding="utf-8"))["skills"])
+    pipelines = set(json.loads(pipeline_index.read_text(encoding="utf-8"))["pipelines"])
+    # Commands are Skill-tool targets too: the harness lists each one as a skill.
+    callable_names = skills | {p.stem for p in (root / "commands").glob("*.md")}
+    patterns = [
+        (
+            name,
+            re.compile(
+                rf"(?i)\b(?:hand off to|invoke(?::| the)?|route to|follow(?: the)?)\s+"
+                rf"(?:/)?`?{re.escape(name)}`?(?![a-z0-9-])"
+            ),
+        )
+        for name in sorted(pipelines - skills)
+    ]
+    for path in _skill_call_runtime_files(root):
+        for lineno, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+            for name, rx in patterns:
+                if rx.search(line):
+                    failures.append(f"{path.relative_to(root)}:{lineno}: direct handoff to pipeline {name!r}")
+            for match in CONCRETE_SKILL_CALL.finditer(line):
+                if match.group(1) not in callable_names:
+                    failures.append(
+                        f"{path.relative_to(root)}:{lineno}: calls the Skill tool with {match.group(1)!r}, "
+                        "which is no indexed skill or command"
+                    )
+    failures.extend(check_dispatch_names(root, callable_names))
+    return failures
+
+
+def run_check_skill_calls(json_output: bool) -> int:
+    """Run --check-skill-calls and return the exit code.
+
+    Regenerates a missing or stale skills or agents index first, so a renamed
+    or removed component does not resolve through an old index.
+    """
+    lib = str(REPO_ROOT / "scripts" / "lib")
+    if lib not in sys.path:
+        sys.path.append(lib)
+    from index_freshness import ensure_fresh_indexes
+
+    try:
+        ensure_fresh_indexes(REPO_ROOT)
+    except RuntimeError as exc:
+        failures = [f"index not current: {exc}"]
+    else:
+        failures = check_skill_calls()
+    if json_output:
+        print(json.dumps({"failures": failures, "exit_code": 1 if failures else 0}, indent=2))
+    else:
+        for line in failures:
+            print(f"  SKILL-CALL: {line}")
+        print(f"\n{len(failures)} skill-call issue(s)" if failures else "SKILL-CALLS: contract OK")
+    return 1 if failures else 0
+
+
+def find_all_reference_files(agents_dir: Path = AGENTS_DIR) -> list[Path]:
     """Find every .md file inside any references/ subdirectory under agents/."""
-    return list(AGENTS_DIR.rglob("references/*.md"))
+    return list(agents_dir.rglob("references/*.md"))
 
 
-def find_orphan_references(all_results: list[AgentResult]) -> list[Path]:
+def find_orphan_references(all_results: list[AgentResult], agents_dir: Path = AGENTS_DIR) -> list[Path]:
     """Return reference files that exist on disk but aren't declared by any agent."""
     declared_set: set[str] = set()
     for result in all_results:
@@ -402,7 +723,7 @@ def find_orphan_references(all_results: list[AgentResult]) -> list[Path]:
             declared_set.add(str(Path(path_str).resolve()))
 
     orphans: list[Path] = []
-    for ref_file in find_all_reference_files():
+    for ref_file in find_all_reference_files(agents_dir):
         if str(ref_file.resolve()) not in declared_set:
             orphans.append(ref_file)
     return orphans
@@ -412,6 +733,7 @@ def print_text_results(
     results: list[AgentResult],
     orphans: list[Path],
     placeholders: list[tuple[str, int, str]] | None = None,
+    agents_dir: Path = AGENTS_DIR,
 ) -> None:
     """Print human-readable validation output."""
     for result in results:
@@ -425,7 +747,7 @@ def print_text_results(
         else:
             print(f"  {result.name}: {present_count}/{total} references present, {issue_count} issues")
             for path_str in result.missing:
-                rel = Path(path_str).relative_to(AGENTS_DIR) if AGENTS_DIR in Path(path_str).parents else path_str
+                rel = Path(path_str).relative_to(agents_dir) if agents_dir in Path(path_str).parents else path_str
                 print(f"    MISSING: {rel}")
             for issue in result.issues:
                 label = issue.kind.upper().replace("-", "_")
@@ -434,7 +756,7 @@ def print_text_results(
     if orphans:
         print("\nOrphan reference files (not declared by any agent):")
         for orphan in orphans:
-            print(f"  ORPHAN: {orphan.relative_to(AGENTS_DIR)}")
+            print(f"  ORPHAN: {orphan.relative_to(agents_dir)}")
 
     if placeholders:
         print("\nPlaceholder loading-table signals (cannot disambiguate which reference to load):")
@@ -465,6 +787,7 @@ def build_json_results(
     results: list[AgentResult],
     orphans: list[Path],
     placeholders: list[tuple[str, int, str]] | None = None,
+    agents_dir: Path = AGENTS_DIR,
 ) -> dict:
     """Build JSON-serializable results dict."""
     agents_out = []
@@ -489,7 +812,7 @@ def build_json_results(
     placeholders = placeholders or []
     return {
         "agents": agents_out,
-        "orphans": [str(o.relative_to(AGENTS_DIR)) for o in orphans],
+        "orphans": [str(o.relative_to(agents_dir)) for o in orphans],
         "placeholder_signals": [
             {"file": rel, "line": lineno, "signal": signal} for rel, lineno, signal in placeholders
         ],
@@ -518,9 +841,26 @@ def main() -> None:
         help="Check loading tables for placeholder signals only",
     )
     parser.add_argument(
+        "--check-size",
+        action="store_true",
+        help="Check reference file sizes against the debt registers and empty references/ dirs",
+    )
+    parser.add_argument(
+        "--check-skill-calls",
+        action="store_true",
+        help="Check Skill-tool call wording, pipeline handoffs, and that each called or dispatched name exists",
+    )
+    parser.add_argument(
         "--allowlist",
         metavar="PATH",
         help="Backlog JSON to skip known violations (default: artifacts/joy-check-sweep-backlog.json)",
+    )
+    parser.add_argument(
+        "--agents-dir",
+        type=Path,
+        default=AGENTS_DIR,
+        metavar="PATH",
+        help="Agents directory for --agent and --all (default: the repo agents/ dir)",
     )
     parser.add_argument("--json", dest="json_output", action="store_true", help="JSON output for CI")
     parser.add_argument(
@@ -537,21 +877,30 @@ def main() -> None:
     if args.check_placeholders:
         sys.exit(run_check_placeholders(json_output=args.json_output))
 
+    if args.check_size:
+        sys.exit(run_check_size(json_output=args.json_output))
+
+    if args.check_skill_calls:
+        sys.exit(run_check_skill_calls(json_output=args.json_output))
+
     if not args.agent and not args.all:
-        parser.error("Specify --agent <name>, --all, --check-do-framing, or --check-placeholders")
+        parser.error(
+            "Specify --agent <name>, --all, --check-do-framing, --check-placeholders, --check-size, or --check-skill-calls"
+        )
 
     check_structure = not args.check_declared
+    agents_dir: Path = args.agents_dir
 
     agent_files: list[Path] = []
     if args.agent:
-        candidate = AGENTS_DIR / f"{args.agent}.md"
+        candidate = agents_dir / f"{args.agent}.md"
         if not candidate.exists():
             print(f"ERROR: Agent file not found: {candidate}", file=sys.stderr)
             sys.exit(1)
         agent_files = [candidate]
     else:
-        agent_files = sorted(AGENTS_DIR.glob("*.md"))
-        agent_files = [f for f in agent_files if f.name not in {"README.md", "INDEX.json"}]
+        agent_files = sorted(agents_dir.glob("*.md"))
+        agent_files = [f for f in agent_files if f.name not in {"README.md"}]
 
     results: list[AgentResult] = []
     for agent_file in agent_files:
@@ -565,8 +914,8 @@ def main() -> None:
     orphans: list[Path] = []
     placeholders: list[tuple[str, int, str]] = []
     if args.all and check_structure:
-        all_agent_results = [validate_agent(f, check_structure=False) for f in sorted(AGENTS_DIR.glob("*.md"))]
-        orphans = find_orphan_references(all_agent_results)
+        all_agent_results = [validate_agent(f, check_structure=False) for f in sorted(agents_dir.glob("*.md"))]
+        orphans = find_orphan_references(all_agent_results, agents_dir)
         placeholders = find_placeholder_signals()
 
     # Filter for --failures-only: only agents with issues
@@ -576,13 +925,13 @@ def main() -> None:
     display_orphans = orphans  # always show orphans (they are issues)
 
     if args.json_output:
-        output = build_json_results(display_results, display_orphans, placeholders)
+        output = build_json_results(display_results, display_orphans, placeholders, agents_dir)
         if args.failures_only:
             output["summary"]["message"] = f"{passing_agents} of {total_agents} agents passed validation"
         print(json.dumps(output, indent=2))
         sys.exit(1 if any(not r.ok for r in results) or bool(orphans) or bool(placeholders) else 0)
     else:
-        print_text_results(display_results, display_orphans, placeholders)
+        print_text_results(display_results, display_orphans, placeholders, agents_dir)
         if args.failures_only:
             print(f"\n{passing_agents} of {total_agents} agents passed validation")
         has_failures = any(not r.ok for r in results) or bool(orphans) or bool(placeholders)

@@ -2,9 +2,10 @@
 """Composing hook-health validator — permanent defense against dormant/broken hooks.
 
 Read-only. Reads repo `hooks/` and repo `.claude/settings.json` directly, so the
-dormancy / schema / mirror checks need NO sync to ~/.claude. Only the liveness
-check (--with-liveness) shells out to smoke-test-hooks.py, which reads the
-deployed hooks at ~/.claude/hooks.
+dormancy / schema / mirror checks need NO sync to ~/.claude. The liveness checks
+(--with-liveness) run hooks: matcher-liveness runs the repo's hooks in a
+throwaway HOME seeded like the CI job, and liveness shells out to
+smoke-test-hooks.py, which reads the deployed hooks at ~/.claude/hooks.
 
 Checks (ADR hook-health-gate):
   (a) Zero dormant: disk hooks/*.py - __init__.py - lib/ - tests/ - registered
@@ -13,7 +14,7 @@ Checks (ADR hook-health-gate):
   (c) Liveness: delegate to smoke-test-hooks.py --ci (opt-in via --with-liveness;
       always on under --ci).
   (d) Schema: settings.json parses; event names ∈ known set; matcher is a string;
-      each command matches the canonical python3 "$HOME/.claude/hooks/<file>.py" form.
+      each command matches the canonical launcher form (see CANONICAL_CMD).
   (e) Mirror sanity: every file named in codex-hooks-allowlist.txt exists
       AND is registered in .claude/settings.json (no phantom mirror entries).
       Mirrors are intentional subsets — full coverage is NOT required.
@@ -28,10 +29,18 @@ from __future__ import annotations
 
 import argparse
 import ast
+import contextlib
 import json
+import os
 import re
+import shutil
+import signal
+import site
 import subprocess
 import sys
+import tempfile
+import time
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -39,6 +48,7 @@ SETTINGS_PATH = REPO_ROOT / ".claude" / "settings.json"
 HOOKS_DIR = REPO_ROOT / "hooks"
 ALLOWLIST_PATH = REPO_ROOT / "scripts" / "hook-health-allowlist.txt"
 CODEX_MIRROR = REPO_ROOT / "scripts" / "codex-hooks-allowlist.txt"
+AGY_MIRROR = REPO_ROOT / "scripts" / "agy-hooks-allowlist.txt"
 
 KNOWN_EVENTS = {
     "SessionStart",
@@ -49,14 +59,21 @@ KNOWN_EVENTS = {
     "PostCompact",
     "Stop",
     "StopFailure",
+    "SessionEnd",
+    "SubagentStart",
     "SubagentStop",
     "TaskCompleted",
 }
 
-# Canonical command form: python3 "$HOME/.claude/hooks/<file>.py"
-CANONICAL_CMD = re.compile(r'^python3\s+"\$HOME/\.claude/hooks/([A-Za-z0-9._-]+\.py)"$')
+# Canonical command form (scripts/vexinstall/interp.py hook_command): run the hook through
+# hooks/lib/pyrun.sh, which picks the installer-linked python 3.10+:
+#   sh "$HOME/.claude/hooks/lib/pyrun.sh" "$HOME/.claude/hooks/<file>.py"
+CANONICAL_CMD = re.compile(r'^sh "\$HOME/\.claude/hooks/lib/pyrun\.sh" "\$HOME/\.claude/hooks/([A-Za-z0-9._-]+\.py)"$')
 # Extract a hooks/<file>.py basename from any command (looser, for registered set)
 CMD_BASENAME = re.compile(r"hooks/([A-Za-z0-9._-]+\.py)")
+# The repo-only SessionStart bootstrap (scripts/vexinstall/interp.py REPO_BOOTSTRAP): runs
+# scripts/session-bootstrap.sh from the checkout, so it is exempt from the launcher form.
+REPO_BOOTSTRAP = 'sh "$CLAUDE_PROJECT_DIR/scripts/session-bootstrap.sh"'
 
 
 def load_settings() -> dict:
@@ -126,7 +143,7 @@ def _lone_path_basename(value: str) -> str | None:
 def _hookish_basename(path: str) -> str | None:
     """Return the .py basename of `path` ONLY if the path's DIRECTORY is the
     hooks dir — using an ALLOWLIST (not a denylist), so an unrelated repo dir
-    (evals/, scripts/, /tmp/, ...) can never alias onto a same-named hook.
+    (tools/, scripts/, /tmp/, ...) can never alias onto a same-named hook.
 
     Accepted directories:
       - empty (a bare basename like "x.py" — real hooks dispatch builds these
@@ -420,6 +437,16 @@ def dispatched_basenames() -> set[str]:
         except OSError:
             continue
         dispatched |= dispatched_targets_in_source(raw, names, self_name=src.name)
+
+    # Codex hooks.json invokes this wrapper before every allowlisted target.
+    # It is generated from the mirror inventory rather than registered in
+    # Claude settings or subprocess-dispatched by another hook source.
+    codex_adapter = "codex-hook-adapter.py"
+    if codex_adapter in names and parse_mirror(CODEX_MIRROR):
+        dispatched.add(codex_adapter)
+    agy_adapter = "agy-hook-adapter.py"
+    if agy_adapter in names and parse_mirror(AGY_MIRROR):
+        dispatched.add(agy_adapter)
     return dispatched
 
 
@@ -582,10 +609,12 @@ def check_schema(settings: dict) -> list[str]:
                     msgs.append(f"SCHEMA: {event} hook entry is not an object.")
                     continue
                 cmd = entry.get("command", "")
+                if cmd == REPO_BOOTSTRAP and event == "SessionStart":
+                    continue
                 if not CANONICAL_CMD.match(cmd):
                     msgs.append(
-                        f"SCHEMA: {event} command not in canonical form "
-                        f'python3 "$HOME/.claude/hooks/<file>.py": {cmd!r}.'
+                        f"SCHEMA: {event} command not in canonical launcher form "
+                        f'sh "$HOME/.claude/hooks/lib/pyrun.sh" "$HOME/.claude/hooks/<file>.py": {cmd!r}.'
                     )
     return msgs
 
@@ -593,7 +622,7 @@ def check_schema(settings: dict) -> list[str]:
 def check_mirror(settings: dict) -> list[str]:
     registered = registered_basenames(settings)
     msgs = []
-    for path in (CODEX_MIRROR,):
+    for path in (CODEX_MIRROR, AGY_MIRROR):
         for event, fname in parse_mirror(path):
             if not (HOOKS_DIR / fname).exists():
                 msgs.append(f"MIRROR: {path.name} names hooks/{fname} but no repo file exists (phantom).")
@@ -635,11 +664,29 @@ _EVENT_BASE = {
     "SessionStart": {"hook_event_name": "SessionStart", "session_id": "hh"},
     "UserPromptSubmit": {"hook_event_name": "UserPromptSubmit", "prompt": "hello", "session_id": "hh"},
     "PreToolUse": {"hook_event_name": "PreToolUse", "session_id": "hh"},
-    "PostToolUse": {"hook_event_name": "PostToolUse", "tool_result": "ok", "session_id": "hh"},
+    "PostToolUse": {
+        "hook_event_name": "PostToolUse",
+        "tool_result": {"output": "ok", "is_error": False},
+        "session_id": "hh",
+    },
     "PreCompact": {"hook_event_name": "PreCompact", "summary": "x"},
     "PostCompact": {"hook_event_name": "PostCompact"},
-    "Stop": {"hook_event_name": "Stop", "stop_hook_active": False, "session_id": "hh"},
+    # Stop hooks may inspect the working tree and launch nested validators. A
+    # neutral directory keeps this probe about hook liveness, not repo state.
+    "Stop": {
+        "hook_event_name": "Stop",
+        "stop_hook_active": False,
+        "session_id": "hh",
+        "cwd": tempfile.gettempdir(),
+    },
     "StopFailure": {"hook_event_name": "StopFailure"},
+    "SessionEnd": {"hook_event_name": "SessionEnd", "reason": "other", "session_id": "hh"},
+    "SubagentStart": {
+        "hook_event_name": "SubagentStart",
+        "agent_id": "hh-agent",
+        "agent_type": "hh",
+        "session_id": "hh",
+    },
     "SubagentStop": {"hook_event_name": "SubagentStop", "tool_name": "Agent", "tool_result": "ok", "session_id": "hh"},
     "TaskCompleted": {"hook_event_name": "TaskCompleted", "task": "x", "session_id": "hh"},
 }
@@ -652,55 +699,212 @@ def _matcher_tool(matcher: str) -> str | None:
     return matcher.split("|")[0].strip()
 
 
+def _tracked_files(rel_dir: str) -> list[str] | None:
+    """Git-tracked paths under REPO_ROOT/<rel_dir>, or None when REPO_ROOT is not a git checkout."""
+    env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+    try:
+        out = subprocess.run(
+            ["git", "-C", str(REPO_ROOT), "ls-files", "-z", "--", rel_dir],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=True,
+            env=env,
+        ).stdout
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return [p for p in out.split("\0") if p]
+
+
+def _seed_ci_home(home: Path) -> Path:
+    """Lay out <home>/.claude the way the CI hook-health job deploys the toolkit.
+
+    hooks/*.py, hooks/lib/*.py, settings.json, and scripts/, which hooks import
+    from (routing-decision-recorder needs scripts/lib) and run. scripts/ is
+    copied, never linked: a script resolving its own path would otherwise land
+    in the checkout. In a git checkout only tracked files are copied, as the CI
+    job's fresh checkout has them. Returns the hooks directory.
+    """
+    claude = home / ".claude"
+    hooks = claude / "hooks"
+    (hooks / "lib").mkdir(parents=True)
+    for src in HOOKS_DIR.glob("*.py"):
+        shutil.copy2(src, hooks / src.name)
+    for src in (HOOKS_DIR / "lib").glob("*.py"):
+        shutil.copy2(src, hooks / "lib" / src.name)
+    shutil.copy2(SETTINGS_PATH, claude / "settings.json")
+    tracked = _tracked_files("scripts")
+    if tracked is None:
+        shutil.copytree(REPO_ROOT / "scripts", claude / "scripts", ignore=shutil.ignore_patterns("__pycache__"))
+    else:
+        for rel in tracked:
+            src = REPO_ROOT / rel
+            if src.is_file():
+                dst = claude / rel
+                dst.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(src, dst)
+    return hooks
+
+
+def _error_lines(path: Path) -> list[str]:
+    try:
+        return [line for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+    except OSError:
+        return []
+
+
+def _error_summary(line: str) -> str:
+    """'Type: message' of one hook-errors.jsonl entry (hook_error already redacts it)."""
+    try:
+        entry = json.loads(line)
+        return f"{entry.get('type', '?')}: {entry.get('msg', '')}"[:200]
+    except (json.JSONDecodeError, AttributeError):
+        return line[:200]
+
+
+_TRACEBACK = "Traceback (most recent call last):"
+
+_LIVENESS_TIMEOUT_S = 15
+# How long a hook's background work may keep running after the hook exits
+# before it is killed. rules-distill-trigger starts rules-distill.py, which
+# finishes in well under a second in the throwaway HOME.
+_BACKGROUND_GRACE_S = 5.0
+
+
+def _session_alive(pgid: int) -> bool:
+    try:
+        os.killpg(pgid, 0)
+    except OSError:  # ProcessLookupError: nothing is left in the session
+        return False
+    return True
+
+
+def _wait_session(pgid: int, timeout_s: float) -> bool:
+    """True once session *pgid* is empty; False when something still runs after *timeout_s*."""
+    deadline = time.monotonic() + timeout_s
+    while _session_alive(pgid):
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(0.02)
+    return True
+
+
+def _end_session(pgid: int, grace_s: float) -> None:
+    """Give what a hook left in session *pgid* *grace_s* to finish, then kill the rest."""
+    if not _wait_session(pgid, grace_s):
+        with contextlib.suppress(OSError):
+            os.killpg(pgid, signal.SIGKILL)
+        _wait_session(pgid, 1.0)
+
+
+def _run_liveness_hook(script: Path, payload: str, env: dict[str, str]) -> subprocess.CompletedProcess[str]:
+    """subprocess.run for one hook that also ends whatever the hook left running.
+
+    The hook runs in its own session. A hook may start background work and exit
+    at once (rules-distill-trigger starts rules-distill.py). Left running, that
+    work overlaps the next hook's check and writes into the throwaway HOME while
+    it is deleted, so the cleanup fails with "Directory not empty" or the write
+    recreates the deleted tree. It gets _BACKGROUND_GRACE_S to finish and is then
+    killed. Raises subprocess.TimeoutExpired like subprocess.run.
+    """
+    session = hasattr(os, "killpg")
+    grace_s = _BACKGROUND_GRACE_S
+    with subprocess.Popen(
+        [sys.executable, str(script)],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        cwd=str(REPO_ROOT),
+        env=env,
+        start_new_session=session,
+    ) as proc:
+        try:
+            stdout, stderr = proc.communicate(payload, timeout=_LIVENESS_TIMEOUT_S)
+        except BaseException:
+            grace_s = 0.0
+            proc.kill()
+            proc.wait()
+            raise
+        finally:
+            if session:
+                _end_session(proc.pid, grace_s)
+    return subprocess.CompletedProcess(proc.args, proc.returncode, stdout, stderr)
+
+
 def check_matcher_liveness() -> list[str]:
     """Run each registered hook against a payload whose tool_name matches its
-    group matcher, asserting exit code in {0,2}. Proves every registered hook
-    RUNS on its real registered path (closes the smoke-test matcher gap)."""
-    import os
+    group matcher. Proves every registered hook RUNS on its real registered path
+    (closes the smoke-test matcher gap).
 
+    The repo's hooks run in a throwaway HOME seeded like the CI job, never the
+    real one, with the SessionStart sync disabled and a private hook-errors.jsonl.
+    A hook fails when it exits other than 0 or 2, records a hook error, or prints
+    a traceback: most hooks catch their own exceptions and exit 0, so the exit
+    code alone passes a hook that crashes on every call. Background work a hook
+    starts is finished or killed before the next hook runs.
+    """
     settings = load_settings()
     msgs: list[str] = []
-    deployed = Path.home() / ".claude" / "hooks"
-    env = {**os.environ, "REF_GATE_BYPASS": "1", "CLAUDE_HOOKS_DEBUG": ""}
-    for event, matcher, cmd in iter_hook_entries(settings):
-        m = CMD_BASENAME.search(cmd)
-        if not m:
-            continue
-        fname = m.group(1)
-        script = deployed / fname
-        if not script.exists():
-            # registered-files-exist + register-hook validate cover deployment;
-            # skip here so this check is purely about runtime behavior.
-            continue
-        payload = dict(_EVENT_BASE.get(event, _EVENT_BASE["PostToolUse"]))
-        tool = _matcher_tool(matcher)
-        if tool and "tool_name" not in payload:
-            payload["tool_name"] = tool
-            payload.setdefault("tool_input", {"file_path": "/tmp/hh-probe.txt", "command": "ls"})
-        elif tool:
-            payload["tool_name"] = tool
-            payload["tool_input"] = {"file_path": "/tmp/hh-probe.txt", "command": "ls"}
-        try:
-            result = subprocess.run(
-                [sys.executable, str(script)],
-                input=json.dumps(payload),
-                capture_output=True,
-                text=True,
-                timeout=15,
-                cwd=str(REPO_ROOT),
-                env=env,
-            )
-        except subprocess.TimeoutExpired:
-            msgs.append(f"MATCHER-LIVENESS: {event}/{fname} timed out on matcher '{matcher}'.")
-            continue
-        except Exception as e:
-            msgs.append(f"MATCHER-LIVENESS: {event}/{fname} crashed: {e}.")
-            continue
-        if result.returncode not in (0, 2):
-            msgs.append(
-                f"MATCHER-LIVENESS: {event}/{fname} exited {result.returncode} on matcher "
-                f"'{matcher}' (tool={tool}) — expected 0 or 2."
-            )
+    with tempfile.TemporaryDirectory(prefix="hook-health-liveness-") as tmp:
+        home = Path(tmp) / "home"
+        deployed = _seed_ci_home(home)
+        errors = Path(tmp) / "hook-errors.jsonl"
+        env = {
+            **os.environ,
+            "HOME": str(home),
+            "VEXJOY_SYNC_DISABLED": "1",
+            "REF_GATE_BYPASS": "1",
+            "CLAUDE_HOOKS_DEBUG": "",
+            "CLAUDE_HOOK_ERRORS_PATH": str(errors),
+            "CLAUDE_LEARNING_DIR": str(home / ".claude" / "learning"),
+            # Moving HOME moves the user site: keep the packages the hooks really import.
+            "PYTHONUSERBASE": os.environ.get("PYTHONUSERBASE") or site.getuserbase(),
+        }
+        for event, matcher, cmd in iter_hook_entries(settings):
+            m = CMD_BASENAME.search(cmd)
+            if not m:
+                continue
+            fname = m.group(1)
+            script = deployed / fname
+            if not script.exists():
+                # registered-files-exist + register-hook validate cover deployment;
+                # skip here so this check is purely about runtime behavior.
+                continue
+            payload = dict(_EVENT_BASE.get(event, _EVENT_BASE["PostToolUse"]))
+            tool = _matcher_tool(matcher)
+            if tool and "tool_name" not in payload:
+                payload["tool_name"] = tool
+                payload.setdefault("tool_input", {"file_path": "/tmp/hh-probe.txt", "command": "ls"})
+            elif tool:
+                payload["tool_name"] = tool
+                payload["tool_input"] = {"file_path": "/tmp/hh-probe.txt", "command": "ls"}
+            logged = len(_error_lines(errors))
+            try:
+                result = _run_liveness_hook(script, json.dumps(payload), env)
+            except subprocess.TimeoutExpired:
+                msgs.append(f"MATCHER-LIVENESS: {event}/{fname} timed out on matcher '{matcher}'.")
+                continue
+            except Exception as e:
+                msgs.append(f"MATCHER-LIVENESS: {event}/{fname} crashed: {e}.")
+                continue
+            new_errors = _error_lines(errors)[logged:]
+            if result.returncode not in (0, 2):
+                msgs.append(
+                    f"MATCHER-LIVENESS: {event}/{fname} exited {result.returncode} on matcher "
+                    f"'{matcher}' (tool={tool}) — expected 0 or 2."
+                )
+            elif new_errors:
+                msgs.append(
+                    f"MATCHER-LIVENESS: {event}/{fname} recorded a hook error on matcher '{matcher}' "
+                    f"(tool={tool}): {_error_summary(new_errors[0])}."
+                )
+            elif _TRACEBACK in result.stderr:
+                last = result.stderr.strip().splitlines()[-1][:200]
+                msgs.append(
+                    f"MATCHER-LIVENESS: {event}/{fname} printed a traceback on matcher '{matcher}' "
+                    f"(tool={tool}) and exited {result.returncode}: {last}"
+                )
     return msgs
 
 
@@ -721,7 +925,121 @@ def check_liveness() -> list[str]:
     return []
 
 
-def run_all(with_liveness: bool) -> list[str]:
+DEFAULT_HOOK_ERRORS_JSONL = Path.home() / ".claude" / "learning" / "hook-errors.jsonl"
+# 7 days: a 24-hour window missed adr-enforcement's 1,795-crash streak (spread
+# over 8 days) while flagging only small same-day offenders. A week of lookback
+# surfaces sustained crash loops without keeping long-fixed hooks failing forever.
+DEFAULT_HOOK_ERROR_LOOKBACK_HOURS = 168.0
+
+# A hook that errors more than this many times is a repeat offender.
+_REPEAT_THRESHOLD = 5
+
+
+def _hook_errors_path() -> Path:
+    override = os.environ.get("CLAUDE_HOOK_ERRORS_PATH")
+    return Path(override) if override else DEFAULT_HOOK_ERRORS_JSONL
+
+
+def _parse_timestamp(value: object) -> datetime | None:
+    if not isinstance(value, str):
+        return None
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _count_hook_errors(
+    *,
+    lookback_hours: float,
+    now: datetime | None,
+) -> dict[str, int]:
+    """Count errors per hook name inside the lookback window."""
+    path = _hook_errors_path()
+    if not path.is_file():
+        return {}
+    current = now or datetime.now(tz=timezone.utc)
+    if current.tzinfo is None:
+        current = current.replace(tzinfo=timezone.utc)
+    cutoff = current.astimezone(timezone.utc) - timedelta(hours=lookback_hours)
+    counts: dict[str, int] = {}
+    try:
+        for line in path.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                entry = json.loads(line)
+                timestamp = _parse_timestamp(entry.get("ts"))
+                if timestamp is None or timestamp < cutoff:
+                    continue
+                hook = entry.get("hook", "unknown")
+                if not isinstance(hook, str) or not hook:
+                    hook = "unknown"
+                counts[hook] = counts.get(hook, 0) + 1
+            except (AttributeError, json.JSONDecodeError, TypeError):
+                continue
+    except OSError:
+        return {}
+    return counts
+
+
+def _hook_file_exists(hook: str) -> bool:
+    """True when `hooks/<hook>.py` is still present in the repo."""
+    if not hook or "/" in hook or "\\" in hook or hook.startswith("."):
+        return False
+    return (HOOKS_DIR / f"{hook}.py").is_file()
+
+
+def check_hook_error_repeat_offenders(
+    *,
+    lookback_hours: float = DEFAULT_HOOK_ERROR_LOOKBACK_HOURS,
+    now: datetime | None = None,
+) -> list[str]:
+    """Fail on hooks that repeatedly errored and still exist in the repo.
+
+    A retired hook keeps its historical errors inside the lookback window for up
+    to a week after deletion, and no maintainer action can clear them. Those are
+    reported by `hook_error_repeat_offender_notes` as informational lines
+    instead of being dropped, so an unrecognised hook name stays visible.
+    """
+    counts = _count_hook_errors(lookback_hours=lookback_hours, now=now)
+    msgs: list[str] = []
+    for hook, count in sorted(counts.items(), key=lambda x: -x[1]):
+        if count >= _REPEAT_THRESHOLD and _hook_file_exists(hook):
+            msgs.append(
+                f"REPEAT-OFFENDER: hooks/{hook}.py has {count} errors in hook-errors.jsonl "
+                f"in the last {lookback_hours:g} hours (threshold: {_REPEAT_THRESHOLD}). "
+                "Investigate and fix the root cause."
+            )
+    return msgs
+
+
+def hook_error_repeat_offender_notes(
+    *,
+    lookback_hours: float = DEFAULT_HOOK_ERROR_LOOKBACK_HOURS,
+    now: datetime | None = None,
+) -> list[str]:
+    """Informational lines for repeat offenders with no hook file on disk."""
+    counts = _count_hook_errors(lookback_hours=lookback_hours, now=now)
+    notes: list[str] = []
+    for hook, count in sorted(counts.items(), key=lambda x: -x[1]):
+        if count >= _REPEAT_THRESHOLD and not _hook_file_exists(hook):
+            notes.append(
+                f"RETIRED-HOOK: hooks/{hook}.py has {count} historical errors in "
+                f"hook-errors.jsonl in the last {lookback_hours:g} hours but no longer "
+                "exists in the repo. No action needed; the entries age out of the window."
+            )
+    return notes
+
+
+def run_all(
+    with_liveness: bool,
+    hook_error_lookback_hours: float = DEFAULT_HOOK_ERROR_LOOKBACK_HOURS,
+) -> list[str]:
     settings = load_settings()
     failures: list[str] = []
     failures += check_schema(settings)
@@ -730,6 +1048,7 @@ def run_all(with_liveness: bool) -> list[str]:
     failures += check_mirror(settings)
     failures += check_allowlist_not_stale()
     failures += check_allowlist_entries_have_reasons()
+    failures += check_hook_error_repeat_offenders(lookback_hours=hook_error_lookback_hours)
     if with_liveness:
         failures += check_matcher_liveness()
         failures += check_liveness()
@@ -740,10 +1059,21 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Composing hook-health validator")
     parser.add_argument("--ci", action="store_true", help="Exit 1 on any failure; runs liveness too")
     parser.add_argument("--with-liveness", action="store_true", help="Also run smoke-test liveness")
+    parser.add_argument(
+        "--hook-error-lookback-hours",
+        type=float,
+        default=DEFAULT_HOOK_ERROR_LOOKBACK_HOURS,
+        help="Repeat-offender lookback window (default: 168 hours / 7 days)",
+    )
     args = parser.parse_args()
+    if args.hook_error_lookback_hours <= 0:
+        parser.error("--hook-error-lookback-hours must be greater than zero")
 
     with_liveness = args.ci or args.with_liveness
-    failures = run_all(with_liveness=with_liveness)
+    failures = run_all(
+        with_liveness=with_liveness,
+        hook_error_lookback_hours=args.hook_error_lookback_hours,
+    )
 
     checks = [
         "schema",
@@ -752,11 +1082,15 @@ def main() -> int:
         "mirror-sanity",
         "allowlist-not-stale",
         "allowlist-reasons",
+        "repeat-offenders",
     ]
     if with_liveness:
         checks.append("matcher-liveness")
         checks.append("liveness")
     print(f"hook-health: ran {len(checks)} checks ({', '.join(checks)})")
+
+    for note in hook_error_repeat_offender_notes(lookback_hours=args.hook_error_lookback_hours):
+        print(f"hook-health: note: {note}")
 
     if failures:
         print(f"\n{len(failures)} FAILURE(S):", file=sys.stderr)

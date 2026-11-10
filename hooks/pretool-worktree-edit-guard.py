@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# hook-version: 1.0.0
+# hook-version: 1.0.2
 """
 PreToolUse Hook: Worktree Edit Guard (ADR: worktree-edit-guard)
 
@@ -46,6 +46,25 @@ not on the common pass-through. Any git failure (missing, not-a-repo, timeout,
 non-zero) falls back to the string-split and ultimately fails OPEN.
 """
 
+import sys  # vexjoy-pyguard
+
+if sys.version_info < (3, 10):  # vexjoy-pyguard gate
+    import os
+
+    if not os.environ.get("VEXJOY_PYGUARD_REEXEC"):
+        os.environ["VEXJOY_PYGUARD_REEXEC"] = "1"
+        for _d in [*os.environ.get("PATH", "").split(os.pathsep), "/opt/homebrew/bin", "/usr/local/bin", "/usr/bin"]:
+            for _v in ("14", "13", "12", "11", "10"):
+                _p = os.path.join(_d, "python3." + _v)
+                if _d and "/shims" not in _d and os.access(_p, os.X_OK):
+                    os.execv(_p, [_p, *sys.argv])
+    sys.stderr.write(
+        "[vexjoy] hook %s needs Python 3.10+, got %s (%s); run ./install.sh in vexjoy-agent from a terminal"
+        " outside Claude Code (gated tool calls stay blocked until then)\n"
+        % (__file__.rsplit("/", 1)[-1], sys.version.split()[0], sys.executable)
+    )
+    sys.exit(2)
+
 import json
 import os
 import subprocess
@@ -60,7 +79,42 @@ try:
 except Exception:  # pragma: no cover - lib import must never hard-fail the hook
 
     def read_stdin(timeout: int = 10) -> str:
-        return sys.stdin.read()
+        """Same contract as lib/stdin_timeout: "" once *timeout* seconds pass."""
+        import signal
+
+        if not hasattr(signal, "SIGALRM"):
+            return sys.stdin.read()
+
+        def _expired(_signum: int, _frame: object) -> None:
+            raise TimeoutError
+
+        previous = signal.signal(signal.SIGALRM, _expired)
+        signal.alarm(timeout)
+        try:
+            return sys.stdin.read()
+        except (TimeoutError, OSError):
+            return ""
+        finally:
+            signal.alarm(0)
+            signal.signal(signal.SIGALRM, previous)
+
+
+try:
+    from hook_utils import deny_tool_use, hook_error
+except Exception:  # pragma: no cover - lib import must never hard-fail the hook
+
+    def deny_tool_use(event_name: str, reason: str) -> None:
+        print(
+            json.dumps(
+                {
+                    "hookSpecificOutput": {
+                        "hookEventName": event_name,
+                        "permissionDecision": "deny",
+                        "permissionDecisionReason": reason,
+                    }
+                }
+            )
+        )
 
 
 _BYPASS_ENV = "WORKTREE_EDIT_GUARD_BYPASS"
@@ -227,30 +281,18 @@ def _deny(target_real: str, main_repo_root: str, worktree_root: str, tool_name: 
     print(reason, file=sys.stderr)
 
     # Best-effort governance record; never let it prevent the block.
-    try:
-        from learning_db_v2 import record_governance_event
+    from hook_utils import record_governance
 
-        record_governance_event(
-            "policy_violation",
-            tool_name=tool_name,
-            hook_phase="pre",
-            severity="high",
-            blocked=True,
-        )
-    except Exception:
-        pass
-
-    print(
-        json.dumps(
-            {
-                "hookSpecificOutput": {
-                    "hookEventName": "PreToolUse",
-                    "permissionDecision": "deny",
-                    "permissionDecisionReason": reason,
-                }
-            }
-        )
+    record_governance(
+        "policy_violation",
+        hook_name="pretool-worktree-edit-guard",
+        tool_name=tool_name,
+        hook_phase="pre",
+        severity="high",
+        blocked=True,
     )
+
+    deny_tool_use("PreToolUse", reason)
     sys.exit(0)
 
 
@@ -322,9 +364,6 @@ if __name__ == "__main__":
     except SystemExit:
         raise  # Preserve intentional exit code (0).
     except Exception as e:
-        if os.environ.get("CLAUDE_HOOKS_DEBUG"):
-            traceback.print_exc(file=sys.stderr)
-        else:
-            print(f"[worktree-edit-guard] Error: {type(e).__name__}: {e}", file=sys.stderr)
+        hook_error("pretool-worktree-edit-guard", e)
         # A crashed hook must fail OPEN -- never block tools on a hook bug.
         sys.exit(0)

@@ -1,16 +1,20 @@
 #!/usr/bin/env python3
 """Fast static coverage test for hook registration health (ADR hook-health-gate).
 
-Mirrors scripts/validate-hook-health.py so dormancy/schema/mirror/allowlist
-regressions surface in the `test` job too, not only the dedicated `hook-health`
-CI job. No subprocess, no ~/.claude dependency — reads repo files directly.
+Detector-precision tests for scripts/validate-hook-health.py: the allowlist
+reason floor and the dispatch detector must not open a dormancy bypass. The
+repo-state checks run once here and in full (with liveness) in the
+`hook-health` CI job via `validate-hook-health.py --ci`. No subprocess, no
+~/.claude dependency — reads repo files directly.
 
 Run with: python3 -m pytest hooks/tests/test_hook_registration_coverage.py -v
 """
 
 from __future__ import annotations
 
+import ast
 import importlib.util
+import sys
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
@@ -21,45 +25,24 @@ _spec = importlib.util.spec_from_file_location("validate_hook_health", VALIDATOR
 vhh = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(vhh)
 
-
-def _settings() -> dict:
-    return vhh.load_settings()
-
-
-def test_no_dormant_hooks():
-    """Every disk hook is registered, dispatched, or allowlisted-with-reason."""
-    msgs = vhh.check_no_dormant(_settings())
-    assert not msgs, "Dormant hooks found:\n" + "\n".join(msgs)
+HOOKS_LIB = REPO_ROOT / "hooks" / "lib"
+sys.path.insert(0, str(HOOKS_LIB))
 
 
-def test_every_registered_hook_has_repo_file():
-    """No registered command points at a missing repo file (deadlock guard)."""
-    msgs = vhh.check_registered_files_exist(_settings())
-    assert not msgs, "Registered hooks without backing files:\n" + "\n".join(msgs)
-
-
-def test_settings_hooks_schema():
-    """Event names known, matchers are strings, commands are canonical."""
-    msgs = vhh.check_schema(_settings())
-    assert not msgs, "Settings schema violations:\n" + "\n".join(msgs)
-
-
-def test_allowlist_has_no_stale_entries():
-    """Every allowlist entry names a file that still exists on disk."""
-    msgs = vhh.check_allowlist_not_stale()
-    assert not msgs, "Stale allowlist entries:\n" + "\n".join(msgs)
-
-
-def test_mirror_allowlists_have_no_phantom_entries():
-    """Every codex mirror entry exists AND is registered (no phantoms)."""
-    msgs = vhh.check_mirror(_settings())
-    assert not msgs, "Phantom mirror entries:\n" + "\n".join(msgs)
-
-
-def test_allowlist_entries_all_have_reasons():
-    """No allowlist entry may silence the gate without a '# reason'."""
-    msgs = vhh.check_allowlist_entries_have_reasons()
-    assert not msgs, "Allowlist entries missing reasons:\n" + "\n".join(msgs)
+def test_repo_passes_static_hook_health_checks():
+    """One pass over the repo-state checks (dormant, backing files, schema, stale
+    allowlist, mirror phantoms, allowlist reasons), so a regression fails the
+    `test` job too. The `hook-health` job runs the same checks plus liveness."""
+    settings = vhh.load_settings()
+    msgs = (
+        vhh.check_no_dormant(settings)
+        + vhh.check_registered_files_exist(settings)
+        + vhh.check_schema(settings)
+        + vhh.check_allowlist_not_stale()
+        + vhh.check_mirror(settings)
+        + vhh.check_allowlist_entries_have_reasons()
+    )
+    assert not msgs, "Hook health failures:\n" + "\n".join(msgs)
 
 
 def test_bare_allowlist_filename_does_not_silence_gate(tmp_path):
@@ -78,7 +61,7 @@ def test_invisible_unicode_reason_does_not_silence_gate(tmp_path):
     cannot mask a dormant hook — closes the hidden-Unicode bypass."""
     al = tmp_path / "al.txt"
     # ghost.py followed by '#' + a zero-width space (U+200B) only.
-    al.write_text("ghost.py            # ​‌\nreal.py  # legitimate deferred reason here\n")
+    al.write_text("ghost.py            # ​‌\nreal.py  # legitimate deferred reason here\n", encoding="utf-8")
     parsed = vhh.parse_allowlist(al)
     assert "real.py" in parsed
     assert "ghost.py" not in parsed
@@ -107,7 +90,7 @@ def test_meaningful_reason_floor():
     for good in (
         "deferred opt-in pending",
         "retired stub superseded",
-        "superseded by voice-writer skill",
+        "superseded by writing skill",
     ):
         assert vhh._meaningful_reason(good), good
     for bad in ("", "___", "123", "aaa", "x", "aa bb", "aaa bbb", "aa bb cc"):
@@ -126,7 +109,7 @@ def test_dispatched_detection_is_precise():
     assert "voice-pipeline-tracker.py" in dispatched
     # These are only ever mentioned in comments/docstrings of other hooks; they
     # must NOT be classified as dispatched.
-    for prose_only in ("pretool-config-protection.py", "retro-knowledge-injector.py"):
+    for prose_only in ("retro-knowledge-injector.py",):
         assert prose_only not in dispatched, (
             f"{prose_only} is mentioned in prose, not dispatched — detection is too loose and would mask dormancy."
         )
@@ -283,17 +266,17 @@ def test_scripts_dir_dispatch_does_not_alias_hook():
         "subprocess.run([sys.executable, str(script)])\n"
     )
     rel_scripts = 'import subprocess\nsubprocess.run(["python3", "scripts/x.py"])\n'
-    # evals/, or any non-hooks dir, must also not alias (allowlist model).
-    evals_call = (
+    # tools/, or any non-hooks dir, must also not alias (allowlist model).
+    tools_call = (
         "import subprocess, sys\n"
         "from pathlib import Path\n"
-        'script = Path(__file__).parent.parent / "evals" / "harness.py"\n'
+        'script = Path(__file__).parent.parent / "tools" / "harness.py"\n'
         "subprocess.run([sys.executable, str(script)])\n"
     )
     opaque_dir = 'import subprocess, sys\nd = some_unknown_dir()\nsubprocess.run([sys.executable, str(d / "x.py")])\n'
     assert _ast_dispatched(scripts_call, {"x.py"}) == set()
     assert _ast_dispatched(rel_scripts, {"x.py"}) == set()
-    assert _ast_dispatched(evals_call, {"harness.py"}) == set()
+    assert _ast_dispatched(tools_call, {"harness.py"}) == set()
     assert _ast_dispatched(opaque_dir, {"x.py"}) == set()
 
 
@@ -318,3 +301,34 @@ def test_real_subprocess_dispatch_is_detected():
     assert _ast_dispatched(inline, {"x.py"}) == {"x.py"}
     assert _ast_dispatched(slot0, {"x.py"}) == {"x.py"}
     assert _ast_dispatched(path_join, {"x.py"}) == {"x.py"}
+
+
+def test_hook_lib_exports_every_imported_helper():
+    """Every hooks/lib named import in hooks/*.py must exist in that module."""
+    lib_modules = {path.stem for path in HOOKS_LIB.glob("*.py") if path.name != "__init__.py"}
+    imported: dict[str, dict[str, set[str]]] = {}
+    for hook_path in sorted((REPO_ROOT / "hooks").glob("*.py")):
+        tree = ast.parse(hook_path.read_text(encoding="utf-8"), filename=str(hook_path))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom) and node.module in lib_modules:
+                imported.setdefault(hook_path.name, {}).setdefault(node.module, set()).update(
+                    alias.name for alias in node.names
+                )
+
+    missing = []
+    loaded_modules = {}
+    for hook_name, modules in imported.items():
+        for module_name, names in modules.items():
+            if module_name not in loaded_modules:
+                module_path = HOOKS_LIB / f"{module_name}.py"
+                spec = importlib.util.spec_from_file_location(f"repo_hook_lib_{module_name}", module_path)
+                module = importlib.util.module_from_spec(spec)
+                sys.modules[spec.name] = module
+                spec.loader.exec_module(module)
+                loaded_modules[module_name] = module
+            module = loaded_modules[module_name]
+            for name in sorted(names):
+                if not hasattr(module, name):
+                    missing.append(f"{hook_name}: {module_name}.{name}")
+
+    assert not missing, "hooks/lib missing imported helper(s):\n" + "\n".join(missing)

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# hook-version: 2.0.0
+# hook-version: 2.0.1
 """
 UserPromptSubmit hook — stub retained for settings.json compatibility.
 
@@ -17,10 +17,20 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent / "lib"))
 
-from hook_utils import empty_output
+from hook_utils import empty_output, hook_error
+
+_BYPASS_ENV = "CREATION_REQUEST_ENFORCER_USERPROMPT_BYPASS"
 
 
 def main():
+    if os.environ.get(_BYPASS_ENV) == "1":
+        if os.environ.get("CLAUDE_HOOKS_DEBUG"):
+            print(
+                "[creation-request-enforcer-userprompt] Bypassed via CREATION_REQUEST_ENFORCER_USERPROMPT_BYPASS=1",
+                file=sys.stderr,
+            )
+        sys.exit(0)
+
     empty_output("UserPromptSubmit").print_and_exit()
 
 
@@ -28,10 +38,6 @@ if __name__ == "__main__":
     try:
         main()
     except Exception as e:
-        if os.environ.get("CLAUDE_HOOKS_DEBUG"):
-            import traceback
-
-            print(f"[creation-request-enforcer-userprompt] HOOK-ERROR: {type(e).__name__}: {e}", file=sys.stderr)
-            traceback.print_exc(file=sys.stderr)
+        hook_error("creation-request-enforcer-userprompt", e)
     finally:
         sys.exit(0)

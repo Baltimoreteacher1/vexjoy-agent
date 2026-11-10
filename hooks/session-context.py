@@ -1,22 +1,40 @@
 #!/usr/bin/env python3
-# hook-version: 2.0.0
+# hook-version: 3.0.2
 """
-SessionStart Hook: Learning Context Loader
+SessionStart Hook: Dream Payload Injector (ADR-147)
 
-Loads relevant learned patterns at session start from unified learning database.
-Injects high-confidence solutions into context.
+Injects the pre-built dream payload (if present and fresh) and surfaces a
+one-line overnight dream notice (if dream ran recently).
 
-ADR-147 addition: also injects the pre-built dream payload (if present and fresh)
-and surfaces a one-line overnight dream notice (if dream ran recently).
+The learning-injection path was removed with the rest of the learning loop:
+this hook no longer queries learning.db and records no activations.
 
 Design Principles:
-- SILENT unless meaningful patterns found
-- Project-aware (loads patterns for current directory)
-- High-confidence only (>0.7 threshold)
+- SILENT unless a fresh dream payload or notice exists
+- Project-aware (reads the payload for the current directory)
 - Fast execution (<50ms target)
 - Non-blocking (always exits 0)
-- Pure file reader for dream integration — no LLM work, no learning.db queries
+- Pure file reader — no LLM work, no learning.db queries
 """
+
+import sys  # vexjoy-pyguard
+
+if sys.version_info < (3, 10):  # vexjoy-pyguard advisory
+    import os
+
+    if not os.environ.get("VEXJOY_PYGUARD_REEXEC"):
+        os.environ["VEXJOY_PYGUARD_REEXEC"] = "1"
+        for _d in [*os.environ.get("PATH", "").split(os.pathsep), "/opt/homebrew/bin", "/usr/local/bin", "/usr/bin"]:
+            for _v in ("14", "13", "12", "11", "10"):
+                _p = os.path.join(_d, "python3." + _v)
+                if _d and "/shims" not in _d and os.access(_p, os.X_OK):
+                    os.execv(_p, [_p, *sys.argv])
+    sys.stderr.write(
+        "[vexjoy] hook %s needs Python 3.10+, got %s (%s); run ./install.sh in vexjoy-agent from a terminal"
+        " outside Claude Code (gated tool calls stay blocked until then)\n"
+        % (__file__.rsplit("/", 1)[-1], sys.version.split()[0], sys.executable)
+    )
+    sys.exit(0)
 
 import os
 import sys
@@ -26,12 +44,8 @@ from pathlib import Path
 # Add lib directory to path for imports
 sys.path.insert(0, str(Path(__file__).parent / "lib"))
 
-from hook_utils import context_output, empty_output, get_session_id, record_activations_safe
-from learning_db_v2 import (
-    get_stats,
-    query_learnings,
-    sanitize_for_context,
-)
+from hook_utils import context_output, empty_output, hook_error
+from learning_db_v2 import sanitize_for_context
 
 EVENT_NAME = "SessionStart"
 
@@ -138,8 +152,16 @@ def surface_dream_report() -> str:
         return ""
 
 
+_BYPASS_ENV = "SESSION_CONTEXT_BYPASS"
+
+
 def main():
-    """Load learned patterns at session start."""
+    """Inject the overnight dream payload and notice at session start."""
+    if os.environ.get(_BYPASS_ENV) == "1":
+        if os.environ.get("CLAUDE_HOOKS_DEBUG"):
+            print("[session-context] Bypassed via SESSION_CONTEXT_BYPASS=1", file=sys.stderr)
+        sys.exit(0)
+
     try:
         cwd = os.getcwd()
 
@@ -155,58 +177,19 @@ def main():
         if dream_notice:
             context_parts.append(dream_notice)
 
-        # Get high-confidence learnings from learning.db
-        learnings = query_learnings(
-            category="error",
-            min_confidence=0.7,
-            project_path=cwd,
-            limit=10,
-        )
-
-        if learnings:
-            # Record activations for ROI tracking
-            debug = bool(os.environ.get("CLAUDE_HOOKS_DEBUG"))
-            session_id = get_session_id()
-            record_activations_safe(learnings, session_id, debug=debug)
-
-            lines = []
-            lines.append(f"[learned-context] Loaded {len(learnings)} high-confidence patterns")
-
-            # Group by error type
-            by_type = {}
-            for learning in learnings:
-                et = learning.get("error_type") or learning.get("topic", "unknown")
-                by_type[et] = by_type.get(et, 0) + 1
-
-            type_summary = ", ".join(f"{et}({count})" for et, count in sorted(by_type.items()))
-            lines.append(f"[learned-context] Types: {type_summary}")
-
-            # Show stats
-            stats = get_stats()
-            total = stats.get("total_learnings", 0)
-            if total > 0:
-                high_conf = stats.get("high_confidence", 0)
-                lines.append(f"[learned-context] {high_conf}/{total} patterns at high confidence")
-
-            context_parts.append("\n".join(lines))
-
         if context_parts:
             context_output(EVENT_NAME, "\n\n".join(context_parts)).print_and_exit()
 
         empty_output(EVENT_NAME).print_and_exit()
 
     except Exception as e:
-        # Log to stderr if debug enabled, but never fail
-        if os.environ.get("CLAUDE_HOOKS_DEBUG"):
-            print(f"[learned-context] Error: {e}", file=sys.stderr)
-        empty_output(EVENT_NAME).print_and_exit()
+        hook_error("session-context", e)
 
 
 if __name__ == "__main__":
     try:
         main()
     except Exception as e:
-        if os.environ.get("CLAUDE_HOOKS_DEBUG"):
-            print(f"[session-context] Fatal: {type(e).__name__}: {e}", file=sys.stderr)
+        hook_error("session-context", e)
     finally:
         sys.exit(0)  # ALWAYS exit 0 — non-blocking requirement

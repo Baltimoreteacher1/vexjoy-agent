@@ -36,8 +36,48 @@ GOLDEN = FIX / "golden"
 # SHA-256 of json.dumps(test_cases[:49], sort_keys=True, ensure_ascii=False)
 # at corpus v1.0. The legacy cases are immutable; extending the corpus means
 # APPENDING cases, never editing these.
-LEGACY_CASES_SHA = "c2098af10277cc3350a3d39ebc0e9d9a3e0091923b8e1104e6fb79cd7ea53aa3"
-NEW_BUCKETS = {"stub-tier", "sibling-disambiguation", "pipeline-pick", "vague-interview", "plain-english"}
+#
+# Exception (2026-07-04, post-merge fixup I3): commit 87977cdb (codebase-analyzer
+# demoted to assessment) edited the `notes` field of legacy entries 18-20
+# to rename the skill reference — an owner-approved content correction, not a
+# scope change to the pinned cases. The pin is updated to the new digest rather
+# than reverted, because the old digest now describes stale prose (a skill name
+# that no longer exists), which is a worse invariant to protect than "notes
+# mention the current skill name." Future edits to cases[:49] still require the
+# same scrutiny this pin exists to enforce.
+# Exception (2026-07-05, skill consolidation): 35 skills folded into 13 parents
+# via promoted_to. Legacy edits, all rename-class: notes in cases 18-20 and 31
+# (codebase-analyzer -> assessment, fish-deploy -> deploy)
+# and case 42 gold label (roast -> assessment, its parent). Same
+# rationale as the 87977cdb exception above: the old digest pins gold labels
+# for skills that no longer exist.
+# Updated during skill consolidation (125→59 skills)
+# Updated again when cases 34 and 44 had notes reworded to name the public
+# `writing` skill; gold labels unchanged.
+LEGACY_CASES_SHA = "8be94951cd3b4e77f71e444947fa86aa2762f4c55bc59bdbeb1568e6722d1229"
+NEW_BUCKETS = {
+    "stub-tier",
+    "sibling-disambiguation",
+    "pipeline-pick",
+    "vague-interview",
+    "plain-english",
+    "reachability",
+    # v1.3: cases drawn from recorded production general-purpose fallbacks.
+    "prod-fallback-specialist",
+    "prod-fallback-general",
+    "prod-fallback-coordinator",
+    "prod-fallback-ambiguous",
+}
+
+# v1.4 provenance. Absence resolves to unknown-legacy: the 49 pinned v1.0 cases
+# cannot carry the field, and their provenance was never recorded.
+PROVENANCE_SOURCES = frozenset({"local-telemetry", "catalog-derived", "unknown-legacy"})
+UNKNOWN_PROVENANCE = {"source": "unknown-legacy", "workload": None, "sample": None}
+
+
+def resolve_provenance(case: dict) -> dict:
+    """Provenance of one case; absent means unknown-legacy, never guessed."""
+    return case.get("provenance", UNKNOWN_PROVENANCE)
 
 
 def load_harness(workdir: Path):
@@ -81,11 +121,6 @@ class TestCorpus:
         digest = hashlib.sha256(json.dumps(cases[:49], sort_keys=True, ensure_ascii=False).encode()).hexdigest()
         assert digest == LEGACY_CASES_SHA, "the 49 legacy corpus cases must never change — append only"
 
-    def test_legacy_cases_have_no_new_fields(self, cases):
-        for case in cases[:49]:
-            for field in ("expected_pipeline", "acceptable", "uncertain"):
-                assert field not in case, f"legacy case gained new field {field}: {case['request']!r}"
-
     def test_required_schema_all_cases(self, cases):
         for case in cases:
             for field in ("request", "expected_agent", "expected_skill", "category", "bucket", "notes"):
@@ -119,9 +154,81 @@ class TestCorpus:
             "pipeline-pick": 8,
             "vague-interview": 6,
             "plain-english": 8,
+            "prod-fallback-specialist": 40,
+            "prod-fallback-general": 20,
+            "prod-fallback-coordinator": 12,
         }
         for bucket, minimum in minimums.items():
             assert counts.get(bucket, 0) >= minimum, f"{bucket}: {counts.get(bucket, 0)} < {minimum}"
+
+    def test_null_agent_rate_stays_bounded(self, cases):
+        """A corpus that mostly expects no agent cannot detect under-routing.
+
+        At v1.2 the corpus asserted expected_agent null on 142/178 cases (79.8%),
+        so a router that grew more timid scored BETTER on it. Keep the rate low
+        enough that the agent slot carries real signal.
+        """
+        nulls = sum(1 for case in cases if case["expected_agent"] is None)
+        rate = 100.0 * nulls / len(cases)
+        assert rate <= 60.0, f"expected_agent null rate {rate:.1f}% — corpus is blind to under-routing"
+
+    def test_general_purpose_is_labelled_explicitly(self, cases):
+        """`general-purpose` must be an asserted label, not the meaning of null.
+
+        Explicit labels are what makes an over-aggressive router fail too.
+        """
+        explicit = [c for c in cases if c["expected_agent"] == "general-purpose"]
+        assert len(explicit) >= 20, f"only {len(explicit)} cases assert general-purpose explicitly"
+
+    def test_provenance_is_declared_and_well_formed(self, cases):
+        """Every case says where it came from, so telemetry is separable from catalog work.
+
+        The 49 pinned v1.0 cases cannot carry the field (SHA-256 pin), so absence resolves to
+        unknown-legacy rather than being guessed at.
+        """
+        for i, case in enumerate(cases):
+            prov = resolve_provenance(case)
+            assert set(prov) == {"source", "workload", "sample"}, f"case {i}: bad provenance keys {sorted(prov)}"
+            assert prov["source"] in PROVENANCE_SOURCES, f"case {i}: unknown source {prov['source']!r}"
+            if prov["source"] == "local-telemetry":
+                assert prov["workload"], f"case {i}: local-telemetry must name the workload it was sampled from"
+            else:
+                assert prov["workload"] is None, f"case {i}: only local-telemetry carries a workload"
+            if i >= 49:
+                assert "provenance" in case, f"case {i} is taggable and must declare provenance"
+
+    def test_no_single_workload_dominates_agent_labels(self, cases):
+        """One machine's telemetry must not decide what "correct routing" means.
+
+        This toolkit runs on several machines with different workloads. learning.db
+        is per-box — no host or project column, no cross-box aggregation — so a
+        local sample describes ONE box, and local absence of an agent is not
+        evidence that the agent is unused elsewhere. The v1.3 cases came from a
+        single Flask/Peewee/SQLite workload; left uncapped, a routing change that
+        suits that one box scores as a win and can regress every other box. That is
+        the #860 failure mode (a corpus that could not see under-routing certifying
+        a regression as a 7-point gain) pointed the other way.
+
+        The cap is a ratchet, not a target. At v1.4 the top workload holds 70.0% of
+        the agent-asserting cases; the cap sits just above that so the share cannot
+        grow, and it should be lowered as maintainers on other machines contribute
+        cases from their own workloads. Balance comes from real cases other boxes
+        record — never from inventing cases for workloads nobody has observed.
+        """
+        asserting = [c for c in cases if c["expected_agent"]]
+        counts: dict[str, int] = {}
+        for case in asserting:
+            workload = resolve_provenance(case)["workload"]
+            if workload:
+                counts[workload] = counts.get(workload, 0) + 1
+        if not counts:
+            return
+        workload, top = max(counts.items(), key=lambda kv: kv[1])
+        share = 100.0 * top / len(asserting)
+        assert share <= 75.0, (
+            f"workload {workload!r} holds {share:.1f}% of the {len(asserting)} agent-asserting cases "
+            "— the corpus now measures one machine. Add cases from other workloads; do not invent them."
+        )
 
     def test_pipeline_pick_cases_carry_expected_pipeline(self, cases):
         for case in cases:
@@ -138,9 +245,8 @@ class TestLegacyByteIdentical:
         mod = load_harness(tmp_path_factory.mktemp("legacy"))
         return run_legacy_pipeline(mod)
 
-    @pytest.mark.parametrize(
-        "name",
-        [
+    def test_artifact_bytes(self, results: Path):
+        names = (
             "queries.json",
             "manifest-used.txt",
             "raw.json",
@@ -148,10 +254,9 @@ class TestLegacyByteIdentical:
             "uid-map.json",
             "scoreboard.json",
             "pre-route-map.json",
-        ],
-    )
-    def test_artifact_bytes(self, results: Path, name: str):
-        assert (results / name).read_bytes() == (GOLDEN / name).read_bytes(), f"{name} diverged from golden"
+        )
+        diverged = [n for n in names if (results / n).read_bytes() != (GOLDEN / n).read_bytes()]
+        assert not diverged, f"diverged from golden: {diverged}"
 
     def test_prompt_bytes(self, results: Path):
         golden_prompts = sorted((GOLDEN / "prompts").glob("*.txt"))
@@ -233,12 +338,12 @@ class TestManifestArms:
         qids = ["q00", "q01", "q02", "q03"]
         # full: routes q00 correctly via safety net, misses q02.
         full = {
-            "q00": {"agent": None, "skill": "publish", "pipeline": None, "confidence": "medium"},
+            "q00": {"agent": None, "skill": "content", "pipeline": None, "confidence": "medium"},
             "q01": {"agent": None, "skill": None, "pipeline": None, "confidence": "low"},
             "q02": {"agent": None, "skill": "quick", "pipeline": None, "confidence": "low"},
             "q03": {
                 "agent": "python-general-engineer",
-                "skill": "python-quality-gate",
+                "skill": "code-quality",
                 "pipeline": None,
                 "confidence": "high",
             },
@@ -254,7 +359,7 @@ class TestManifestArms:
         assert raw["arms"] == ["full", "tiered"]
         assert raw["cost"]["haiku_calls_total"] == {"full": 4, "tiered": 4}
         q00 = raw["records"][0]
-        # Safety net: pre-route high force pr-workflow overrides the 'publish' pick.
+        # Safety net: pre-route high force pr-workflow overrides the 'content' pick.
         assert q00["arms"]["full"]["route"] == {
             "agent": None,
             "skill": "pr-workflow",
@@ -421,8 +526,8 @@ class TestGateLogic:
         rows = [
             _row(
                 "sibling-disambiguation",
-                (None, "systematic-code-review"),
-                (None, "systematic-code-review"),
+                (None, "review"),
+                (None, "review"),
                 (None, "quick"),
                 acceptable=[{"agent": None, "skill": "quick"}],
             )
@@ -434,9 +539,9 @@ class TestGateLogic:
         rec = {"expected_agent": None, "expected_skill": None}
         assert mod.route_correct(rec, {"agent": None, "skill": None})
         assert not mod.route_correct(rec, {"agent": None, "skill": "pr-workflow"})
-        rec2 = {"expected_agent": "golang-general-engineer", "expected_skill": "go-patterns"}
-        assert mod.route_correct(rec2, {"agent": "golang-general-engineer", "skill": "go-patterns"})
-        assert not mod.route_correct(rec2, {"agent": None, "skill": "go-patterns"})
+        rec2 = {"expected_agent": "golang-general-engineer", "expected_skill": "programming"}
+        assert mod.route_correct(rec2, {"agent": "golang-general-engineer", "skill": "programming"})
+        assert not mod.route_correct(rec2, {"agent": None, "skill": "programming"})
 
 
 # --------------------------------------------------------------------------- #

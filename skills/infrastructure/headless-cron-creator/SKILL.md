@@ -1,5 +1,6 @@
 ---
 name: headless-cron-creator
+promoted_to: deploy
 description: "Generate headless Claude Code cron jobs with safety."
 user-invocable: false
 argument-hint: "<name> <schedule> <prompt>"
@@ -20,8 +21,7 @@ routing:
     - "recurring agent"
   category: process
   pairs_with:
-    - cron-job-auditor
-    - shell-process-patterns
+    - deploy
 ---
 
 # Headless Cron Creator Skill
@@ -76,7 +76,7 @@ Review the generated script. Verify it contains:
 - [ ] `set -euo pipefail`
 - [ ] `flock` lockfile -- prevents concurrent runs of the same job
 - [ ] `--permission-mode auto` -- never use `--dangerously-skip-permissions` (auto is sufficient) or `--bare` (breaks OAuth/keychain auth)
-- [ ] `--max-budget-usd` -- caps spend per run (default $2.00)
+- [ ] `--max-budget-usd` -- caps spend per run (default 2.00 USD)
 - [ ] `--no-session-persistence`
 - [ ] `--allowedTools`
 - [ ] `tee` to per-run timestamped log file
@@ -96,7 +96,7 @@ Verify the generated script meets cron best practices.
    bash -n scripts/{name}-cron.sh  # syntax check
    ```
 
-2. Run `cron-job-auditor` checks:
+2. Check the script by hand (no auditor skill exists):
    - [ ] Error handling (`set -e`)
    - [ ] Lock file (`flock`)
    - [ ] Logging (`tee`, `LOG_DIR`)
@@ -173,4 +173,4 @@ Solution: Check `crontab -l` manually. Restore from `~/.claude/crontab-backups/`
 ## References
 
 - `scripts/crontab-manager.py` -- all crontab mutations (add, remove, list, verify, generate-wrapper)
-- `skills/infrastructure/cron-job-auditor/SKILL.md` -- validation checks for generated scripts
+- `skills/infrastructure/deploy/references/cron-automation.md` -- validation checks for generated scripts

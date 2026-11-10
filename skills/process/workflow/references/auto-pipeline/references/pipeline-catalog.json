@@ -1,0 +1,570 @@
+{
+  "version": "1.0",
+  "generated": "2026-08-15T15:25:52Z",
+  "generated_by": "scripts/generate-pipeline-catalog.py",
+  "pipelines": [
+    {
+      "name": "agent-upgrade",
+      "description": "5-phase agent/skill improvement: AUDIT, DIFF, PLAN, IMPLEMENT, RE-EVALUATE.",
+      "phase_count": 5,
+      "phases": [
+        "AUDIT",
+        "DIFF",
+        "PLAN",
+        "IMPLEMENT",
+        "RE-EVALUATE"
+      ],
+      "chain": "AUDIT → DIFF → PLAN → IMPLEMENT → RE-EVALUATE",
+      "task_type": "meta",
+      "triggers": [
+        "upgrade agent",
+        "improve agent",
+        "agent upgrade",
+        "fix agent quality",
+        "align agent to template"
+      ]
+    },
+    {
+      "name": "article-evaluation-pipeline",
+      "description": "Wabi-sabi-aware 4-phase article evaluation for voice authenticity.",
+      "phase_count": 4,
+      "phases": [
+        "FETCH",
+        "VALIDATE",
+        "ANALYZE",
+        "REPORT"
+      ],
+      "chain": "FETCH → VALIDATE → ANALYZE → REPORT",
+      "task_type": "content",
+      "triggers": [
+        "evaluate article",
+        "check article voice",
+        "is this authentic",
+        "review my article",
+        "voice evaluation",
+        "article evaluation",
+        "check my voice"
+      ]
+    },
+    {
+      "name": "chain-composer",
+      "description": "Compose valid pipeline chains from the step menu per subdomain.",
+      "phase_count": 4,
+      "phases": [
+        "LOAD",
+        "COMPOSE",
+        "VALIDATE",
+        "PRODUCE"
+      ],
+      "chain": "LOAD → COMPOSE → VALIDATE → PRODUCE",
+      "task_type": "meta",
+      "triggers": [
+        "compose chains",
+        "build pipeline chains",
+        "chain composition",
+        "pipeline spec",
+        "compose pipeline"
+      ]
+    },
+    {
+      "name": "comprehensive-review",
+      "description": "Four-wave code review pipeline for large or high-risk changes.",
+      "phase_count": 4,
+      "phases": [
+        "CRITICAL",
+        "HIGH",
+        "MEDIUM",
+        "LOW"
+      ],
+      "chain": "CRITICAL → HIGH → MEDIUM → LOW",
+      "task_type": "review",
+      "triggers": [
+        "comprehensive review",
+        "full code review",
+        "review everything",
+        "review and fix",
+        "thorough review",
+        "multi-agent review",
+        "complete code review",
+        "20-agent review",
+        "25-agent review",
+        "per-package review",
+        "3-wave review",
+        "4-wave review",
+        "adversarial review",
+        "full code review",
+        "review all packages"
+      ]
+    },
+    {
+      "name": "de-ai-pipeline",
+      "description": "Scan-fix-verify loop for removing AI writing patterns from docs.",
+      "phase_count": 4,
+      "phases": [
+        "SCAN",
+        "FIX",
+        "VERIFY",
+        "REPORT"
+      ],
+      "chain": "SCAN → FIX → VERIFY → REPORT",
+      "task_type": "content",
+      "triggers": [
+        "de-ai docs",
+        "clean ai patterns",
+        "fix ai writing",
+        "scan and fix docs",
+        "remove ai tells",
+        "de-ai pipeline"
+      ]
+    },
+    {
+      "name": "do-perspectives",
+      "description": "Inline multi-perspective analysis with 10 analytical lenses.",
+      "phase_count": 5,
+      "phases": [
+        "VALIDATE INPUTS",
+        "MULTI-PERSPECTIVE ANALYSIS",
+        "SYNTHESIZE",
+        "APPLY",
+        "VERIFY AND REPORT"
+      ],
+      "chain": "VALIDATE INPUTS → MULTI-PERSPECTIVE ANALYSIS → SYNTHESIZE → APPLY → VERIFY AND REPORT",
+      "task_type": "content",
+      "triggers": [
+        "multi-perspective analysis",
+        "do-perspectives",
+        "analyze from multiple angles"
+      ]
+    },
+    {
+      "name": "doc-pipeline",
+      "description": "Structured 5-phase documentation pipeline with research.",
+      "phase_count": 5,
+      "phases": [
+        "RESEARCH",
+        "OUTLINE",
+        "GENERATE",
+        "VERIFY",
+        "OUTPUT"
+      ],
+      "chain": "RESEARCH → OUTLINE → GENERATE → VERIFY → OUTPUT",
+      "task_type": "documentation",
+      "triggers": [
+        "document this",
+        "create readme",
+        "write documentation",
+        "document codebase",
+        "generate docs",
+        "technical documentation",
+        "create documentation",
+        "write docs",
+        "generate README",
+        "document the API"
+      ]
+    },
+    {
+      "name": "domain-research",
+      "description": "Discover and classify subdomains for pipeline generation.",
+      "phase_count": 4,
+      "phases": [
+        "DISCOVER",
+        "CLASSIFY",
+        "MAP",
+        "PRODUCE"
+      ],
+      "chain": "DISCOVER → CLASSIFY → MAP → PRODUCE",
+      "task_type": "meta",
+      "triggers": [
+        "research domain",
+        "discover subdomains",
+        "domain decomposition",
+        "what pipelines",
+        "domain research"
+      ]
+    },
+    {
+      "name": "explore-pipeline",
+      "description": "Systematic codebase exploration with parallel subagents.",
+      "phase_count": 8,
+      "phases": [
+        "SCAN",
+        "MAP",
+        "ANALYZE",
+        "COMPILE",
+        "ASSESS",
+        "SYNTHESIZE",
+        "REFINE",
+        "REPORT"
+      ],
+      "chain": "SCAN → MAP → ANALYZE → COMPILE → ASSESS → SYNTHESIZE → REFINE → REPORT",
+      "task_type": "meta",
+      "triggers": [
+        "understand codebase",
+        "explore repo",
+        "how does this work",
+        "codebase exploration",
+        "understand this code",
+        "map architecture",
+        "analyze quality",
+        "assess consistency",
+        "evaluate patterns",
+        "explore codebase",
+        "understand this repo",
+        "map the codebase",
+        "what is in this repo"
+      ]
+    },
+    {
+      "name": "github-profile-rules",
+      "description": "Extract coding conventions from a GitHub user's public profile.",
+      "phase_count": 8,
+      "phases": [
+        "ADR",
+        "FETCH",
+        "RESEARCH",
+        "SAMPLE",
+        "COMPILE",
+        "GENERATE",
+        "VALIDATE",
+        "OUTPUT"
+      ],
+      "chain": "ADR → FETCH → RESEARCH → SAMPLE → COMPILE → GENERATE → VALIDATE → OUTPUT",
+      "task_type": "meta",
+      "triggers": [
+        "github rules",
+        "profile analysis",
+        "coding style extraction",
+        "github conventions"
+      ]
+    },
+    {
+      "name": "hook-development-pipeline",
+      "description": "5-phase hook creation pipeline with performance gates.",
+      "phase_count": 5,
+      "phases": [
+        "SPEC",
+        "IMPLEMENT",
+        "TEST",
+        "REGISTER",
+        "DOCUMENT"
+      ],
+      "chain": "SPEC → IMPLEMENT → TEST → REGISTER → DOCUMENT",
+      "task_type": "infrastructure",
+      "triggers": [
+        "create hook pipeline",
+        "new hook formal",
+        "hook with gates"
+      ]
+    },
+    {
+      "name": "mcp-pipeline-builder",
+      "description": "Convert any repository into a registered MCP server.",
+      "phase_count": 6,
+      "phases": [
+        "ANALYZE",
+        "DESIGN",
+        "GENERATE",
+        "VALIDATE",
+        "EVALUATE",
+        "REGISTER"
+      ],
+      "chain": "ANALYZE → DESIGN → GENERATE → VALIDATE → EVALUATE → REGISTER",
+      "task_type": "meta",
+      "triggers": [
+        "mcp pipeline",
+        "repo to mcp",
+        "create mcp from repo",
+        "generate mcp",
+        "mcp builder",
+        "mcp from repo"
+      ]
+    },
+    {
+      "name": "pipeline-retro",
+      "description": "Trace pipeline test failures to generator root causes.",
+      "phase_count": 5,
+      "phases": [
+        "INGEST",
+        "TRACE",
+        "PROPOSE",
+        "REGENERATE",
+        "REPORT"
+      ],
+      "chain": "INGEST → TRACE → PROPOSE → REGENERATE → REPORT",
+      "task_type": "meta",
+      "triggers": [
+        "pipeline retro",
+        "trace failures",
+        "generator improvement",
+        "three-layer fix",
+        "fix generator"
+      ]
+    },
+    {
+      "name": "pipeline-scaffolder",
+      "description": "Scaffold pipeline components from a Pipeline Spec JSON.",
+      "phase_count": 5,
+      "phases": [
+        "LOAD",
+        "SCAFFOLD AGENT",
+        "SCAFFOLD SKILLS",
+        "INTEGRATE",
+        "REPORT"
+      ],
+      "chain": "LOAD → SCAFFOLD AGENT → SCAFFOLD SKILLS → INTEGRATE → REPORT",
+      "task_type": "meta",
+      "triggers": [
+        "scaffold pipeline",
+        "create pipeline components",
+        "generate pipeline from spec"
+      ]
+    },
+    {
+      "name": "pipeline-test-runner",
+      "description": "Test generated pipeline skills against real targets.",
+      "phase_count": 4,
+      "phases": [
+        "DISCOVER TARGETS",
+        "EXECUTE",
+        "VALIDATE OUTPUTS",
+        "REPORT"
+      ],
+      "chain": "DISCOVER TARGETS → EXECUTE → VALIDATE OUTPUTS → REPORT",
+      "task_type": "meta",
+      "triggers": [
+        "test generated pipelines",
+        "run pipeline tests",
+        "validate scaffolded skills",
+        "pipeline test runner"
+      ]
+    },
+    {
+      "name": "research-pipeline",
+      "description": "Formal 5-phase research pipeline with artifact saving and source quality gates. Min 3 parallel agents.",
+      "phase_count": 5,
+      "phases": [
+        "SCOPE",
+        "GATHER",
+        "SYNTHESIZE",
+        "VALIDATE",
+        "DELIVER"
+      ],
+      "chain": "SCOPE → GATHER → SYNTHESIZE → VALIDATE → DELIVER",
+      "task_type": "meta",
+      "triggers": [
+        "research pipeline",
+        "formal research",
+        "research with artifacts",
+        "structured research",
+        "research topic",
+        "research this",
+        "investigate thoroughly",
+        "deep research",
+        "systematic research",
+        "multi-source research"
+      ]
+    },
+    {
+      "name": "research-to-article",
+      "description": "Multi-agent research pipeline for voice content generation.",
+      "phase_count": 6,
+      "phases": [
+        "GATHER",
+        "COMPILE",
+        "GROUND",
+        "GENERATE",
+        "VALIDATE",
+        "OUTPUT"
+      ],
+      "chain": "GATHER → COMPILE → GROUND → GENERATE → VALIDATE → OUTPUT",
+      "task_type": "content",
+      "triggers": [
+        "research then write",
+        "article with research",
+        "write about",
+        "research and article",
+        "full article pipeline",
+        "comprehensive article"
+      ]
+    },
+    {
+      "name": "skill-creation-pipeline",
+      "description": "5-phase skill creation pipeline with quality gates.",
+      "phase_count": 5,
+      "phases": [
+        "DISCOVER",
+        "DESIGN",
+        "SCAFFOLD",
+        "VALIDATE",
+        "INTEGRATE"
+      ],
+      "chain": "DISCOVER → DESIGN → SCAFFOLD → VALIDATE → INTEGRATE",
+      "task_type": "meta",
+      "triggers": [
+        "create skill pipeline",
+        "new skill formal",
+        "skill with gates",
+        "create skill formally",
+        "new skill with gates",
+        "skill creation pipeline",
+        "formal skill creation"
+      ]
+    },
+    {
+      "name": "system-upgrade",
+      "description": "6-phase pipeline for adapting agents, skills, and hooks to changes.",
+      "phase_count": 6,
+      "phases": [
+        "CHANGELOG",
+        "AUDIT",
+        "PLAN",
+        "IMPLEMENT",
+        "VALIDATE",
+        "DEPLOY"
+      ],
+      "chain": "CHANGELOG → AUDIT → PLAN → IMPLEMENT → VALIDATE → DEPLOY",
+      "task_type": "meta",
+      "triggers": [
+        "system upgrade",
+        "upgrade agents",
+        "claude update",
+        "upgrade skills",
+        "adapt workflow",
+        "system health"
+      ]
+    },
+    {
+      "name": "systematic-debugging",
+      "description": "Evidence-based 5-phase debugging: OBSERVE, HYPOTHESIZE, TEST, FIX, RECORD.",
+      "phase_count": 5,
+      "phases": [
+        "OBSERVE",
+        "HYPOTHESIZE",
+        "TEST",
+        "FIX",
+        "RECORD"
+      ],
+      "chain": "OBSERVE → HYPOTHESIZE → TEST → FIX → RECORD",
+      "task_type": "process",
+      "triggers": [
+        "debug",
+        "find root cause",
+        "reproduce bug",
+        "fix this bug",
+        "this is broken",
+        "not working",
+        "why is this broken",
+        "getting an error",
+        "unexpected behavior",
+        "investigate error"
+      ]
+    },
+    {
+      "name": "systematic-refactoring",
+      "description": "Safe 5-phase refactoring with test characterization and learning.",
+      "phase_count": 5,
+      "phases": [
+        "CHARACTERIZE",
+        "PLAN",
+        "REFACTOR",
+        "VERIFY",
+        "RECORD"
+      ],
+      "chain": "CHARACTERIZE → PLAN → REFACTOR → VERIFY → RECORD",
+      "task_type": "process",
+      "triggers": [
+        "refactor safely",
+        "rename symbol",
+        "extract function",
+        "refactor",
+        "simplify this",
+        "restructure code",
+        "reduce complexity",
+        "split this file",
+        "restructure",
+        "move to separate file"
+      ]
+    },
+    {
+      "name": "toolkit-improvement",
+      "description": "Multi-angle toolkit evaluation, ADR creation, and fix pipeline.",
+      "phase_count": 0,
+      "phases": [],
+      "chain": "—",
+      "task_type": "meta",
+      "triggers": [
+        "improve the toolkit",
+        "evaluate the repo",
+        "find ways to improve",
+        "make the toolkit better",
+        "upgrade the toolkit",
+        "improve yourself",
+        "improve this system",
+        "repo health check",
+        "toolkit audit",
+        "audit the system",
+        "toolkit system health",
+        "health check",
+        "run a health check",
+        "check system health",
+        "audit everything",
+        "comprehensive improvement",
+        "full evaluation",
+        "toolkit evaluation",
+        "repo evaluation",
+        "evaluate everything",
+        "evaluate the system",
+        "deep evaluation",
+        "thorough evaluation",
+        "evaluate all components",
+        "find issues",
+        "find problems",
+        "find bugs",
+        "what needs fixing",
+        "what's broken",
+        "what can be better",
+        "how can we improve",
+        "show me what's wrong",
+        "diagnose the toolkit",
+        "scan for issues",
+        "self-improvement",
+        "meta improvement",
+        "improvement pipeline",
+        "continuous improvement",
+        "self-evaluate",
+        "introspect",
+        "self-audit",
+        "self-review",
+        "send agents to evaluate",
+        "multi-agent evaluation",
+        "30 agent review",
+        "wave evaluation",
+        "parallel evaluation",
+        "swarm evaluation",
+        "agent swarm",
+        "team evaluation",
+        "dispatch evaluation agents"
+      ]
+    },
+    {
+      "name": "workflow-orchestrator",
+      "description": "Three-phase task orchestration: BRAINSTORM, WRITE-PLAN, EXECUTE-PLAN.",
+      "phase_count": 4,
+      "phases": [
+        "BRAINSTORM",
+        "WRITE-PLAN",
+        "VALIDATE-PLAN",
+        "EXECUTE-PLAN"
+      ],
+      "chain": "BRAINSTORM → WRITE-PLAN → VALIDATE-PLAN → EXECUTE-PLAN",
+      "task_type": "meta",
+      "triggers": [
+        "orchestrate",
+        "complex task",
+        "plan and execute",
+        "break this down",
+        "multi-step implementation"
+      ]
+    }
+  ]
+}

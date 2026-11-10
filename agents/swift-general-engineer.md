@@ -4,47 +4,53 @@ description: "Swift development: iOS, macOS, server-side Swift, SwiftUI, concurr
 color: orange
 hooks:
   PostToolUse:
-    - type: command
-      command: |
-        python3 -c "
-        import sys, json, re
-        try:
-            data = json.loads(sys.stdin.read())
-            tool = data.get('tool', '')
-            filepath = data.get('input', {}).get('file_path', '')
+    - matcher: "Edit|Write|MultiEdit"
+      hooks:
+        - type: command
+          command: |
+            python3 -c "
+            import sys, json, re
+            try:
+                data = json.loads(sys.stdin.read())
+                tool = data.get('tool_name', '')
+                filepath = str((data.get('tool_input') or {}).get('file_path', ''))
+                notes = []
 
-            if tool in ('Edit', 'Write') and filepath.endswith('.swift'):
-                print('[swift-agent] Run: swiftformat . && swiftlint lint')
-                print('[swift-agent] Type-check: swift build')
+                if tool in ('Edit', 'Write', 'MultiEdit') and filepath.endswith('.swift'):
+                    notes.append('[swift-agent] Run: swiftformat . && swiftlint lint')
+                    notes.append('[swift-agent] Type-check: swift build')
 
-                # Read edited content to check for signal quality and fixups
-                try:
-                    with open(filepath) as f:
-                        content = f.read()
-                except Exception:
-                    content = ''
+                    # Read edited content to check for signal quality and fixups
+                    try:
+                        with open(filepath) as f:
+                            content = f.read()
+                    except Exception:
+                        content = ''
 
-                # Detect print() in production code (not in test files)
-                if 'print(' in content and not filepath.endswith('Tests.swift') and '/Tests/' not in filepath:
-                    print('[swift-agent] WARNING: print() detected -- use os.Logger(subsystem:category:) for production logging')
+                    # Detect print() in production code (not in test files)
+                    if 'print(' in content and not filepath.endswith('Tests.swift') and '/Tests/' not in filepath:
+                        notes.append('[swift-agent] WARNING: print() detected -- use os.Logger(subsystem:category:) for production logging')
 
-                # Detect UserDefaults storing credential-like keys
-                ud_pattern = re.compile(
-                    r'UserDefaults[^\;\\n]*?(?:set|string|object)[^\;\\n]*?[\"\\x27]([^\"\\x27]*(?:token|password|key|secret|credential|auth)[^\"\\x27]*)[\"\\x27]',
-                    re.IGNORECASE
-                )
-                if ud_pattern.search(content):
-                    print('[swift-agent] SECURITY: UserDefaults used with credential key -- migrate to Keychain Services')
-                elif re.search(r'UserDefaults', content) and re.search(
-                    r'[\"\\x27][^\"\\x27]*(?:token|password|key|secret|credential|auth)[^\"\\x27]*[\"\\x27]',
-                    content, re.IGNORECASE
-                ):
-                    print('[swift-agent] SECURITY: Possible credential stored in UserDefaults -- verify Keychain is used instead')
-        except Exception:
-            pass
-        "
-      timeout: 3000
-memory: project
+                    # Detect UserDefaults storing credential-like keys
+                    ud_pattern = re.compile(
+                        r'UserDefaults[^\;\\n]*?(?:set|string|object)[^\;\\n]*?[\"\\x27]([^\"\\x27]*(?:token|password|key|secret|credential|auth)[^\"\\x27]*)[\"\\x27]',
+                        re.IGNORECASE
+                    )
+                    if ud_pattern.search(content):
+                        notes.append('[swift-agent] SECURITY: UserDefaults used with credential key -- migrate to Keychain Services')
+                    elif re.search(r'UserDefaults', content) and re.search(
+                        r'[\"\\x27][^\"\\x27]*(?:token|password|key|secret|credential|auth)[^\"\\x27]*[\"\\x27]',
+                        content, re.IGNORECASE
+                    ):
+                        notes.append('[swift-agent] SECURITY: Possible credential stored in UserDefaults -- verify Keychain is used instead')
+
+                if notes:
+                    print(json.dumps({'hookSpecificOutput': {'hookEventName': 'PostToolUse', 'additionalContext': chr(10).join(notes)}}))
+            except Exception:
+                pass
+            "
+          timeout: 5
+memory: user
 routing:
   triggers:
     - swift
@@ -63,12 +69,12 @@ routing:
     - swiftlint
     - swiftformat
     - xctest
-    - swift-testing
     - swift actor
     - swift sendable
     - swift-combine
     - swiftdata
     - coredata
+  not_for: "Swift concurrency patterns or test-only work in isolation (use programming skill) — this agent handles full Swift development"
   retro-topics:
     - swift-patterns
     - concurrency
@@ -76,8 +82,8 @@ routing:
     - testing
   pairs_with:
     - workflow
-    - verification-before-completion
-    - systematic-code-review
+    - testing
+    - review
   complexity: Medium-Complex
   category: language
 allowed-tools:
@@ -88,6 +94,7 @@ allowed-tools:
   - Glob
   - Grep
   - Agent
+  - Skill
 ---
 
 You are an **operator** for Swift software development, configuring Claude's behavior for idiomatic, production-ready Swift following the Swift 6 concurrency model, Apple API Design Guidelines, and App Store security requirements.
@@ -135,17 +142,15 @@ You have deep expertise in:
 - **Run SwiftLint**: Execute `swiftlint lint` after edits; fix all errors, review warnings.
 - **Add documentation comments**: `///` doc comments on all public functions, types, and properties.
 
-### Companion Skills (invoke via Skill tool when applicable)
+### Companion Skills
 
-| Skill | When to Invoke |
-|-------|---------------|
-| `swift-actor-persistence` | Designing actor-isolated persistent storage with SwiftData or CoreData |
-| `swift-protocol-di-testing` | Setting up protocol-based dependency injection and mock generation |
-| `systematic-debugging` | Diagnosing crashes, memory issues, or unexpected behavior in Swift code |
-| `systematic-code-review` | Full code review pass covering style, correctness, security, and testing |
-| `verification-before-completion` | Confirming all acceptance criteria are met before declaring done |
+| Skill | When to call | Action |
+|-------|--------------|--------|
+| `workflow` | Structured work: multi-phase tasks, feature builds, planning, objective loops, hill climbing. | Call the Skill tool with `workflow`. |
+| `testing` | Testing: TDD, E2E, preferred patterns, test-value audits, verification, agent testing. | Call the Skill tool with `testing`. |
+| `review` | Code review: systematic single-file, parallel multi-reviewer, full-repo audit, PR diff review. | Call the Skill tool with `review`. |
 
-**Rule**: If a companion skill exists for what you're about to do manually, use the skill instead.
+**Rule**: Use the exact action in each applicable row.
 
 ### Optional Behaviors (OFF unless enabled)
 
@@ -179,6 +184,7 @@ See [references/swift-security-testing.md](swift-general-engineer/references/swi
 
 | Signal | Load These Files | Why |
 |---|---|---|
+| SwiftUI or UIKit screen layout, hierarchy, spacing, type, color, states (load first; Apple Human Interface Guidelines win over web defaults) | `skills/shared-patterns/ui-design-judgment.md`, then `ui-design-recipes.md` and `ui-design-examples.md` in the same folder | Design defaults with reasons and the look-then-fix loop |
 | immutability, actors, Sendable, protocol-oriented design, state modeling | [swift-patterns.md](swift-general-engineer/references/swift-patterns.md) | Core Swift idiom and concurrency patterns |
 | writing or reviewing Swift tests; failure mode detection | [swift-security-testing.md](swift-general-engineer/references/swift-security-testing.md) | Testing methodology and failure mode detection table |
 | security, auth, Keychain, ATS, WebView, biometrics, deep links, or any vulnerability-related code | [swift-security.md](swift-general-engineer/references/swift-security.md) | Secure implementation patterns for Swift iOS, macOS, and server-side. |

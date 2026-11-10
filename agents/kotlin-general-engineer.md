@@ -4,45 +4,52 @@ description: "Kotlin development: features, coroutines, debugging, code quality,
 color: purple
 hooks:
   PostToolUse:
-    - type: command
-      command: |
-        python3 -c "
-        import sys, json, subprocess, os
-        try:
-            data = json.loads(sys.stdin.read())
-            tool = data.get('tool', '')
+    - matcher: "Bash|Edit|Write|MultiEdit"
+      hooks:
+        - type: command
+          command: |
+            python3 -c "
+            import sys, json, subprocess, os
+            try:
+                data = json.loads(sys.stdin.read())
+                tool = data.get('tool_name', '')
+                inp = data.get('tool_input') or {}
+                notes = []
 
-            if tool == 'Edit' or tool == 'Write':
-                filepath = data.get('input', {}).get('file_path', '')
-                if filepath and (filepath.endswith('.kt') or filepath.endswith('.kts')):
-                    print('[kotlin-agent] Format: run ktfmt or ktlint --format on ' + os.path.basename(filepath))
-                if filepath and filepath.endswith('.kt'):
-                    try:
-                        result = subprocess.run(
-                            ['grep', '-n', '!!', filepath],
-                            capture_output=True, text=True, timeout=5
-                        )
-                        if result.stdout.strip():
-                            lines = result.stdout.strip().splitlines()
-                            print('[kotlin-agent] WARNING: !! operator detected (' + str(len(lines)) + ' occurrence(s)) -- use ?., ?:, require(), or checkNotNull() instead:')
-                            for line in lines[:5]:
-                                print('  ' + line)
-                    except Exception:
-                        pass
-                    print('[kotlin-agent] Static analysis: run ./gradlew detekt to catch style violations')
-                    print('[kotlin-agent] Type-check: run ./gradlew compileKotlin to verify compilation (faster than full build)')
+                if tool in ('Edit', 'Write', 'MultiEdit'):
+                    filepath = str(inp.get('file_path', ''))
+                    if filepath and (filepath.endswith('.kt') or filepath.endswith('.kts')):
+                        notes.append('[kotlin-agent] Format: run ktfmt or ktlint --format on ' + os.path.basename(filepath))
+                    if filepath and filepath.endswith('.kt'):
+                        try:
+                            result = subprocess.run(
+                                ['grep', '-n', '!!', filepath],
+                                capture_output=True, text=True, timeout=5
+                            )
+                            if result.stdout.strip():
+                                lines = result.stdout.strip().splitlines()
+                                notes.append('[kotlin-agent] WARNING: !! operator detected (' + str(len(lines)) + ' occurrence(s)) -- use ?., ?:, require(), or checkNotNull() instead:')
+                                for line in lines[:5]:
+                                    notes.append('  ' + line)
+                        except Exception:
+                            pass
+                        notes.append('[kotlin-agent] Static analysis: run ./gradlew detekt to catch style violations')
+                        notes.append('[kotlin-agent] Type-check: run ./gradlew compileKotlin to verify compilation (faster than full build)')
 
-            if tool == 'Bash':
-                cmd = data.get('input', {}).get('command', '')
-                if './gradlew' in cmd and 'compileKotlin' in cmd:
-                    result_text = str(data.get('result', ''))
-                    if 'error:' in result_text.lower():
-                        print('[kotlin-agent] Compilation errors detected -- review above output before proceeding')
-        except Exception:
-            pass
-        "
-      timeout: 5000
-memory: project
+                if tool == 'Bash':
+                    cmd = str(inp.get('command', ''))
+                    if './gradlew' in cmd and 'compileKotlin' in cmd:
+                        result_text = str(data.get('tool_response', ''))
+                        if 'error:' in result_text.lower():
+                            notes.append('[kotlin-agent] Compilation errors detected -- review above output before proceeding')
+
+                if notes:
+                    print(json.dumps({'hookSpecificOutput': {'hookEventName': 'PostToolUse', 'additionalContext': chr(10).join(notes)}}))
+            except Exception:
+                pass
+            "
+          timeout: 10
+memory: user
 routing:
   triggers:
     - kotlin
@@ -60,7 +67,7 @@ routing:
     - ktfmt
     - android kotlin
     - kotlin-multiplatform
-  not_for: "writing Kotlin tests (use kotlin-testing); coroutine or Flow patterns in isolation (use kotlin-coroutines). This agent writes and debugs Kotlin features."
+  not_for: "writing Kotlin tests (use programming); coroutine or Flow patterns in isolation (use programming); Go goroutine work (use golang-general-engineer). This agent writes and debugs Kotlin features."
   retro-topics:
     - kotlin-patterns
     - coroutines
@@ -69,8 +76,8 @@ routing:
     - ktor-backend
   pairs_with:
     - workflow
-    - verification-before-completion
-    - systematic-code-review
+    - testing
+    - review
   complexity: Medium-Complex
   category: language
 allowed-tools:
@@ -81,6 +88,7 @@ allowed-tools:
   - Glob
   - Grep
   - Agent
+  - Skill
 ---
 
 You are an **operator** for Kotlin software development, configuring Claude's behavior for idiomatic, production-ready Kotlin on JVM and Android platforms following Kotlin 1.9+/2.0 conventions.
@@ -170,15 +178,15 @@ Read `build.gradle.kts` or `settings.gradle.kts` for the `kotlin()` plugin versi
 - **Type-check after edits**: Run `./gradlew compileKotlin` to catch compilation errors early (faster than full build).
 - **Format after edits**: Run `ktfmt` or `ktlint --format` on edited `.kt`/`.kts` files.
 
-### Companion Skills (invoke via Skill tool when applicable)
+### Companion Skills
 
-| Skill | When to Invoke |
-|-------|---------------|
-| `systematic-debugging` | When investigating coroutine deadlocks, state management bugs, or null pointer crashes |
-| `verification-before-completion` | Before marking any Kotlin task complete -- verify tests pass, detekt clean, compilation succeeds |
-| `systematic-code-review` | When asked to review Kotlin PRs or assess code quality |
+| Skill | When to call | Action |
+|-------|--------------|--------|
+| `workflow` | Structured work: multi-phase tasks, feature builds, planning, objective loops, hill climbing. | Call the Skill tool with `workflow`. |
+| `testing` | Testing: TDD, E2E, preferred patterns, test-value audits, verification, agent testing. | Call the Skill tool with `testing`. |
+| `review` | Code review: systematic single-file, parallel multi-reviewer, full-repo audit, PR diff review. | Call the Skill tool with `review`. |
 
-**Rule**: If a companion skill exists for what you are about to do manually, use the skill instead.
+**Rule**: Use the exact action in each applicable row.
 
 ### Optional Behaviors (OFF unless enabled)
 
@@ -211,6 +219,7 @@ See [references/kotlin-security-testing.md](references/kotlin-security-testing.m
 
 | Signal | Load These Files | Why |
 |---|---|---|
+| Jetpack Compose screen layout, hierarchy, spacing, type, color, states (load first; Material conventions win over web defaults) | `skills/shared-patterns/ui-design-judgment.md`, then `ui-design-recipes.md` and `ui-design-examples.md` in the same folder | Design defaults with reasons and the look-then-fix loop |
 | [`references/kotlin-patterns.md`](references/kotlin-patterns.md) | `kotlin-patterns.md)` | Null safety (`!!` alternatives, Java interop), coroutines/Flow (structured concurrency, dispatchers, StateFlow, `runTest`), sealed classes/enums/data classes, Koin DI |
 | [`references/kotlin-security-testing.md`](references/kotlin-security-testing.md) | `kotlin-security-testing.md)` | Secrets via environment, Exposed DSL parameterized queries, Ktor JWT auth, null safety as security property, pattern corrections table, Kotest styles, MockK, Kover coverage |
 | Security, auth, injection, deserialization, WebView, content provider, or any vulnerability-related code | [`references/kotlin-security.md`](references/kotlin-security.md) | Secure implementation patterns for Kotlin JVM and Android |

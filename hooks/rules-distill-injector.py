@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# hook-version: 1.0.0
+# hook-version: 1.0.2
 """
 SessionStart Hook: Rules Distillation Candidate Injector — ADR-114.
 
@@ -15,6 +15,25 @@ Design Principles:
 - Silent when no pending candidates exist
 """
 
+import sys  # vexjoy-pyguard
+
+if sys.version_info < (3, 10):  # vexjoy-pyguard advisory
+    import os
+
+    if not os.environ.get("VEXJOY_PYGUARD_REEXEC"):
+        os.environ["VEXJOY_PYGUARD_REEXEC"] = "1"
+        for _d in [*os.environ.get("PATH", "").split(os.pathsep), "/opt/homebrew/bin", "/usr/local/bin", "/usr/bin"]:
+            for _v in ("14", "13", "12", "11", "10"):
+                _p = os.path.join(_d, "python3." + _v)
+                if _d and "/shims" not in _d and os.access(_p, os.X_OK):
+                    os.execv(_p, [_p, *sys.argv])
+    sys.stderr.write(
+        "[vexjoy] hook %s needs Python 3.10+, got %s (%s); run ./install.sh in vexjoy-agent from a terminal"
+        " outside Claude Code (gated tool calls stay blocked until then)\n"
+        % (__file__.rsplit("/", 1)[-1], sys.version.split()[0], sys.executable)
+    )
+    sys.exit(0)
+
 import json
 import os
 import sys
@@ -23,7 +42,7 @@ from pathlib import Path
 # Add lib directory to path for imports
 sys.path.insert(0, str(Path(__file__).parent / "lib"))
 
-from hook_utils import context_output, empty_output
+from hook_utils import context_output, empty_output, hook_error
 from stdin_timeout import read_stdin
 
 EVENT_NAME = "SessionStart"
@@ -57,8 +76,8 @@ def build_injection(candidates: list[dict], distilled_at: str) -> str:
         "These principles appear in 2+ skills and passed the four-layer filter",
         "(multi-skill, actionable, violation risk, not already in shared-patterns/).",
         "",
-        "IMPORTANT: These are proposals only. Never auto-apply.",
-        "The user must explicitly approve, skip, or defer each candidate.",
+        "These are proposals. Apply none of them until the user explicitly",
+        "approves, skips, or defers each candidate.",
         "",
         "| # | Confidence | Verdict | Principle |",
         "|---|-----------|---------|-----------|",
@@ -93,7 +112,15 @@ def build_injection(candidates: list[dict], distilled_at: str) -> str:
     return "\n".join(lines)
 
 
+_BYPASS_ENV = "RULES_DISTILL_INJECTOR_BYPASS"
+
+
 def main() -> None:
+    if os.environ.get(_BYPASS_ENV) == "1":
+        if os.environ.get("CLAUDE_HOOKS_DEBUG"):
+            print("[rules-distill-injector] Bypassed via RULES_DISTILL_INJECTOR_BYPASS=1", file=sys.stderr)
+        sys.exit(0)
+
     debug = os.environ.get("CLAUDE_HOOKS_DEBUG")
 
     try:
@@ -130,12 +157,7 @@ def main() -> None:
         context_output(EVENT_NAME, injection).print_and_exit()
 
     except Exception as e:
-        if debug:
-            import traceback
-
-            traceback.print_exc(file=sys.stderr)
-        else:
-            print(f"[rules-distill-injector] Error: {type(e).__name__}: {e}", file=sys.stderr)
+        hook_error("rules-distill-injector", e)
         empty_output(EVENT_NAME).print_and_exit()
 
 

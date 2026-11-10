@@ -9,7 +9,7 @@
 ## Overview
 
 The system-upgrade workflow has mandatory gates and specialist dispatch rules. The most damaging
-failures are silent: implementing without user approval at Phase 3, making domain changes inline
+failures are silent: implementing outside authorized scope, making domain changes inline
 instead of delegating to specialists, and running full-repo audits for scoped changes. These
 produce either unauthorized bulk edits or subtly incorrect results that bypass domain validation.
 
@@ -18,28 +18,13 @@ produce either unauthorized bulk edits or subtly incorrect results that bypass d
 <!-- no-pair-required: section header, not a standalone failure mode block -->
 ## Failure Mode Catalog
 
-### Implementing Without Phase 3 Approval
+### Implementing Without Authorized Scope
 
-**Detection**:
-```bash
-# Check if task_plan.md has a PLAN section followed immediately by IMPLEMENT
-grep -n "^## Phase 3\|^## Phase 4\|PLAN\|IMPLEMENT" task_plan.md
-# If Phase 4 timestamp precedes user approval acknowledgment, gate was skipped
+**What it looks like**: Applying changes outside the user’s request or skipping the ranked PLAN presentation.
 
-# Check git log for commits that skip the plan-present step
-git log --oneline --since="1 hour ago" | grep "chore/system-upgrade"
-```
+**Why wrong**: The user must control which upgrades happen. Requiring a second approval for an accepted plan also blocks requested work.
 
-**What it looks like**: Moving from Phase 2 AUDIT directly to Phase 4 IMPLEMENT without
-presenting the ranked table and waiting for a response.
-
-**Why wrong**: Users lose control of what changes in their system. Bulk edits to governance
-infrastructure (hooks, routing tables, agent frontmatter) are hard to reverse and affect
-every subsequent session. The approval gate exists specifically because the agent cannot
-know which changes the user wants to prioritize or defer.
-
-Do instead: Present the Phase 3 table (Tier | Component | Change Type | Effort | Group)
-and wait for explicit acknowledgment before any writes.
+Do instead: Follow `skills/process/workflow/references/system-upgrade.md` Phase 3. Present the ranked table, continue within existing authorization, and ask about uncovered changes. Honor interactive and plan-only requests.
 
 ---
 
@@ -47,10 +32,10 @@ and wait for explicit acknowledgment before any writes.
 
 **What it looks like**: Directly editing `hooks/posttool-rename-sweep.py` instead of
 dispatching `hook-development-engineer`. Writing new agent frontmatter inline instead of
-dispatching `skill-creator`.
+dispatching `toolkit`.
 
-Do instead: dispatch `hook-development-engineer` for hook changes, `skill-creator` for agent
-and skill changes, and `routing-table-updater` for routing table changes. Details follow.
+Do instead: dispatch `hook-development-engineer` for hook changes, `toolkit` for agent
+and skill changes, and `toolkit` for routing table changes. Details follow.
 
 **Detection**:
 ```bash
@@ -59,15 +44,15 @@ grep -rn "Edit\|Write" hooks/*.py agents/*.md --include="*.py" --include="*.md" 
 # system-upgrade-engineer should only create task_plan.md and branch setup files
 ```
 
-**Why wrong**: Domain specialists (hook-development-engineer, skill-creator) carry template
+**Why wrong**: Domain specialists (hook-development-engineer, toolkit) carry template
 conventions, event schema knowledge, and frontmatter validation that inline edits bypass.
 A hook written inline without hook-development-engineer's exit code contract knowledge will
 likely use wrong exit codes. An agent written inline will miss required frontmatter fields.
 
 Do instead:
 - Hook changes → dispatch `hook-development-engineer`
-- Agent/skill changes → dispatch `skill-creator`
-- Routing table changes → dispatch `routing-table-updater` skill
+- Agent/skill changes → dispatch `toolkit`
+- Routing table changes → dispatch `toolkit` skill
 - Only create `task_plan.md` and branch setup files directly
 
 ---
@@ -95,24 +80,13 @@ audit only with the explicit "comprehensive" keyword from the user.
 
 ---
 
-### Skipping Validation Scoring
+### Skipping Required Validation
 
-**Detection**:
-```bash
-# Check if VALIDATE phase ran agent-evaluation
-grep -n "agent-evaluation\|before.*score\|after.*score" task_plan.md
-# Should appear in Phase 5 section; if absent, validation was skipped
-```
+**What it looks like**: Shipping directly after IMPLEMENT without checking changed behavior and affected contracts.
 
-**What it looks like**: Creating PR directly after IMPLEMENT without running
-`agent-evaluation` on modified components.
+**Why wrong**: Neither a smaller file nor a model score proves correctness.
 
-**Why wrong**: An agent that scores lower after modification has regressed. Without the
-before/after delta, regressions are invisible until users report breakage. The upgrade
-pipeline exists to *improve* quality, not maintain it.
-
-Do instead: Run `agent-evaluation` on each modified component. Report the numeric delta.
-If any component scores lower, surface it to the user and keep the modified component in place until they choose a rollback. Do not downgrade the regression as "necessary."
+Do instead: Follow the pipeline’s VALIDATE phase and report real checks and findings. Scoring is optional; required checks and blocking findings still govern delivery.
 
 ---
 
@@ -173,7 +147,7 @@ Dispatch parallel Agent calls when:
 | Critical | hooks/rename-sweep.py | upgrade | S | Group A |
 | Critical | hooks/branch-safety.py | upgrade | S | Group A |
 | Important | agents/hook-dev-engineer.md | inject-pattern | M | Group B |
-| Important | skills/routing-table-updater | upgrade | M | Group B |
+| Important | skills/toolkit | upgrade | M | Group B |
 | Minor | routing-tables.md | update | S | Group C |
 ```
 
@@ -195,7 +169,7 @@ Use a single agent when:
 | Session deadlock after hook deploy | Hook deployed before syntax verification | `python3 -m py_compile hook.py` before `cp` to `~/.claude/hooks/` |
 | PR merge fails — CI checks failed | Ruff lint or format error in .py files created during upgrade | `ruff check . && ruff format --check .` before push |
 | Agent dispatch returns empty output | Dispatched specialist had insufficient context | Re-dispatch with narrower scope and explicit file paths |
-| Routing gap after upgrade | New agent not added to routing tables | Invoke `routing-table-updater` skill after every new agent |
+| Routing gap after upgrade | New agent not added to routing tables | Call the Skill tool with `toolkit`. Do this after every new agent. |
 | Component scores unchanged (no improvement) | Upgrade changed names but not behavior | Verify upgrade touched functional content, not just formatting |
 
 ---
@@ -206,9 +180,9 @@ Use a single agent when:
 |-------|------|------------------------|
 | Phase 1 → Phase 2 | 0 signals check | Audit scans everything with no focus |
 | Phase 2 → Phase 3 | All components opened and checked | Plan tier assignments are wrong |
-| Phase 3 → Phase 4 | User approval received | Unauthorized bulk edits |
+| Phase 3 → Phase 4 | Plan presented and scope authorized | Unauthorized bulk edits |
 | Phase 4 → Phase 5 | Branch exists, not main | Risk of main commit or force push |
-| Phase 5 → Phase 6 | Validation delta reported | Regressions ship without user awareness |
+| Phase 5 → Phase 6 | Required checks pass and blocking findings resolved | Regressions ship without user awareness |
 
 ---
 
@@ -221,8 +195,8 @@ git branch --show-current
 # Check Phase 3 plan was presented before writes
 grep "PLAN\|approval\|proceed" task_plan.md
 
-# Verify agent-evaluation was run (Phase 5)
-grep "agent-evaluation\|score.*before\|score.*after" task_plan.md
+# Verify toolkit was run (Phase 5)
+grep "toolkit\|score.*before\|score.*after" task_plan.md
 
 # Check for regression rationalization phrases
 grep -i "necessary\|intentional\|expected trade" task_plan.md

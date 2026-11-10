@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# hook-version: 1.0.0
+# hook-version: 1.0.3
 """
 PreToolUse:Write,Edit Hook: Pipeline Phase Gate
 
@@ -49,6 +49,25 @@ Triggering file paths (gate applies when write target is in one of these):
   "perspectives-analysis.md" is absent in the same directory, block.
 """
 
+import sys  # vexjoy-pyguard
+
+if sys.version_info < (3, 10):  # vexjoy-pyguard gate
+    import os
+
+    if not os.environ.get("VEXJOY_PYGUARD_REEXEC"):
+        os.environ["VEXJOY_PYGUARD_REEXEC"] = "1"
+        for _d in [*os.environ.get("PATH", "").split(os.pathsep), "/opt/homebrew/bin", "/usr/local/bin", "/usr/bin"]:
+            for _v in ("14", "13", "12", "11", "10"):
+                _p = os.path.join(_d, "python3." + _v)
+                if _d and "/shims" not in _d and os.access(_p, os.X_OK):
+                    os.execv(_p, [_p, *sys.argv])
+    sys.stderr.write(
+        "[vexjoy] hook %s needs Python 3.10+, got %s (%s); run ./install.sh in vexjoy-agent from a terminal"
+        " outside Claude Code (gated tool calls stay blocked until then)\n"
+        % (__file__.rsplit("/", 1)[-1], sys.version.split()[0], sys.executable)
+    )
+    sys.exit(2)
+
 import json
 import os
 import sys
@@ -56,6 +75,7 @@ import traceback
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent / "lib"))
+from hook_utils import hook_error
 from stdin_timeout import read_stdin
 
 _BYPASS_ENV = "PIPELINE_PHASE_GATE_BYPASS"
@@ -104,9 +124,9 @@ PHASE_SENTINEL_REGISTRY: dict[str, dict[int, str]] = {
         # Phase 3 (PR creation) requires committed changes on branch — checked via git, not file artifact
         # These are git-state gates, not file-artifact gates. Handled by _check_git_prerequisite.
     },
-    # voice-writer (13 phases: LOAD, GROUND, STATS-CHECKPOINT, GENERATE, HOOK-GATE,
+    # writing voice pipeline (13 phases: LOAD, GROUND, STATS-CHECKPOINT, GENERATE, HOOK-GATE,
     #   VALIDATE, REFINE, VARIETY-GATE, JOY-CHECK, ANTI-AI, CLOSE-GATE, OUTPUT, CLEANUP)
-    "voice-writer": {
+    "writing": {
         4: ".voice-grounding.md",  # Phase 4 (GENERATE) requires Phase 2 (GROUND) artifact
         6: ".voice-stats-baseline.md",  # Phase 6 (VALIDATE) requires Phase 3 (STATS-CHECKPOINT)
         10: ".voice-validation-report.md",  # Phase 10 (ANTI-AI) requires Phase 6 (VALIDATE) report
@@ -264,11 +284,11 @@ def main() -> None:
                     _debug(f"Phase artifact {required_path} exists — allowing")
                     sys.exit(0)
 
-    # --- Strategy 3: Blog post voice-writer gate ---
-    # Any write to content/posts/*.md requires the voice-writer pipeline to
+    # --- Strategy 3: Blog post voice pipeline gate ---
+    # Any write to content/posts/*.md requires the writing skill's voice pipeline to
     # have completed. Checked via a .voice-pipeline-complete marker file.
     if "content/posts/" in file_path and file_path.endswith(".md"):
-        # Allow the voice-writer itself to write during pipeline execution
+        # Allow the voice pipeline itself to write during pipeline execution
         if os.environ.get("VOICE_WRITER_ACTIVE") == "1":
             _debug("VOICE_WRITER_ACTIVE=1 — allowing blog post write during pipeline")
             sys.exit(0)
@@ -276,8 +296,9 @@ def main() -> None:
         marker_path = cwd / ".voice-pipeline-complete"
         if not marker_path.is_file():
             print(
-                "[pipeline-phase-gate] BLOCKED: Blog post writes require the voice-writer pipeline. "
-                "Run /voice-writer first. The voice pipeline creates .voice-pipeline-complete "
+                "[pipeline-phase-gate] BLOCKED: Blog post writes require the writing skill's voice pipeline. "
+                "[fix-with-skill] writing\n"
+                "Call the Skill tool with `writing`. The voice pipeline creates .voice-pipeline-complete "
                 "when all 13 phases pass.",
                 file=sys.stderr,
             )
@@ -299,7 +320,8 @@ def main() -> None:
             print(
                 f"[pipeline-phase-gate] BLOCKED: .voice-pipeline-complete target_file "
                 f"'{marker_target}' does not match write target '{target_basename}'. "
-                f"Run /voice-writer for this specific post.",
+                f"[fix-with-skill] writing\n"
+                f"Call the Skill tool with `writing`. Run it for this specific post.",
                 file=sys.stderr,
             )
             sys.exit(2)
@@ -330,7 +352,7 @@ def main() -> None:
             )
             sys.exit(2)
 
-        _debug(f"Voice-writer pipeline complete for {target_basename} — allowing")
+        _debug(f"Voice pipeline complete for {target_basename} — allowing")
         sys.exit(0)
 
     _debug(f"No gate matched for {file_path} — allowing through")
@@ -343,9 +365,4 @@ if __name__ == "__main__":
     except SystemExit:
         raise
     except Exception as e:
-        if os.environ.get("CLAUDE_HOOKS_DEBUG"):
-            traceback.print_exc(file=sys.stderr)
-        else:
-            print(f"[pipeline-phase-gate] Error: {type(e).__name__}: {e}", file=sys.stderr)
-        # Crashed hook fails OPEN — never block tools on unexpected error.
-        sys.exit(0)
+        hook_error("pipeline-phase-gate", e)

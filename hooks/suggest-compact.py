@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# hook-version: 1.0.0
+# hook-version: 1.0.3
 """
 PreToolUse hook: Strategic Compact Advisor
 
@@ -23,9 +23,29 @@ Output (to stdout as JSON hook response):
   Otherwise:          exits 0 silently
 
 State:
-  Counter persisted to session-keyed temp file via get_state_file("compact-count")
-  from hooks.lib.hook_utils. Uses file locking to reduce race window.
+  Counter persisted to a temp file keyed on the event's session_id via
+  get_state_file("compact-count", event) from hooks.lib.hook_utils. Uses file
+  locking to reduce race window.
 """
+
+import sys  # vexjoy-pyguard
+
+if sys.version_info < (3, 10):  # vexjoy-pyguard advisory
+    import os
+
+    if not os.environ.get("VEXJOY_PYGUARD_REEXEC"):
+        os.environ["VEXJOY_PYGUARD_REEXEC"] = "1"
+        for _d in [*os.environ.get("PATH", "").split(os.pathsep), "/opt/homebrew/bin", "/usr/local/bin", "/usr/bin"]:
+            for _v in ("14", "13", "12", "11", "10"):
+                _p = os.path.join(_d, "python3." + _v)
+                if _d and "/shims" not in _d and os.access(_p, os.X_OK):
+                    os.execv(_p, [_p, *sys.argv])
+    sys.stderr.write(
+        "[vexjoy] hook %s needs Python 3.10+, got %s (%s); run ./install.sh in vexjoy-agent from a terminal"
+        " outside Claude Code (gated tool calls stay blocked until then)\n"
+        % (__file__.rsplit("/", 1)[-1], sys.version.split()[0], sys.executable)
+    )
+    sys.exit(0)
 
 try:
     import fcntl
@@ -46,7 +66,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent / "lib"))
 
-from hook_utils import context_output, empty_output, get_state_file
+from hook_utils import context_output, empty_output, get_state_file, hook_error
 from stdin_timeout import read_stdin
 
 # --- Configuration -----------------------------------------------------------
@@ -68,13 +88,15 @@ def _get_threshold() -> int:
         return _DEFAULT_THRESHOLD
 
 
-def _get_and_increment_count() -> int:
+def _get_and_increment_count(event: dict) -> int:
     """Read, increment, and persist the call counter; return the new count.
 
+    The counter file is keyed on the event's session_id, so it accumulates
+    across the calls of one session.
     Uses an exclusive flock to reduce the race window on concurrent invocations.
     Falls back to count=1 if the state file cannot be read or parsed.
     """
-    state_file = get_state_file("compact-count")
+    state_file = get_state_file("compact-count", event)
     count = 0
 
     try:
@@ -100,18 +122,19 @@ def _get_and_increment_count() -> int:
 # --- Main --------------------------------------------------------------------
 
 
+_BYPASS_ENV = "SUGGEST_COMPACT_BYPASS"
+
+
 def main() -> None:
+    if os.environ.get(_BYPASS_ENV) == "1":
+        if os.environ.get("CLAUDE_HOOKS_DEBUG"):
+            print("[suggest-compact] Bypassed via SUGGEST_COMPACT_BYPASS=1", file=sys.stderr)
+        sys.exit(0)
+
     try:
         _run()
     except Exception as e:
-        if os.environ.get("CLAUDE_HOOKS_DEBUG"):
-            import traceback
-
-            print(
-                f"[suggest-compact] HOOK-ERROR: {type(e).__name__}: {e}",
-                file=sys.stderr,
-            )
-            traceback.print_exc(file=sys.stderr)
+        hook_error("suggest-compact", e)
     finally:
         sys.exit(0)
 
@@ -132,7 +155,7 @@ def _run() -> None:
         return
 
     threshold = _get_threshold()
-    count = _get_and_increment_count()
+    count = _get_and_increment_count(event)
 
     if debug:
         print(
@@ -155,13 +178,6 @@ if __name__ == "__main__":
     try:
         main()
     except Exception as e:
-        if os.environ.get("CLAUDE_HOOKS_DEBUG"):
-            import traceback
-
-            print(
-                f"[suggest-compact] HOOK-ERROR: {type(e).__name__}: {e}",
-                file=sys.stderr,
-            )
-            traceback.print_exc(file=sys.stderr)
+        hook_error("suggest-compact", e)
     finally:
         sys.exit(0)

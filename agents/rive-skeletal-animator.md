@@ -14,6 +14,7 @@ routing:
     - hit reaction animation
     - "@rive-app/react-canvas"
     - .riv files
+  not_for: "GPU particle and WebGL combat rendering (use pixijs-combat-renderer); CSS or Framer Motion effects (use combat-effects-upgrade); 2D sprite-sheet generation pipelines (use game-dev skill); 3D scene animation (use frontend skill). This agent integrates Rive skeletal animation, state machines, and character pipelines."
   pairs_with:
     - typescript-frontend-engineer
     - ui-design-engineer
@@ -103,6 +104,16 @@ Load `rive-animation-library.md` when building or debugging animations, state ma
 | `src/stores/combatStore.ts` | Zustand store — source of truth for combat state that drives Rive inputs |
 | `src/engine/CombatEngine.ts` | Dispatches attack/block/hit events — wire to Rive trigger inputs here |
 | `src/assets/characters/` | Target location for `.riv` character files |
+
+### Companion Agents
+
+| Agent | When to dispatch | Action |
+|-------|------------------|--------|
+| `typescript-frontend-engineer` | TypeScript frontend architecture: type-safe components, state management, build optimization | Return this handoff to the coordinator for Agent-tool dispatch. |
+| `ui-design-engineer` | UI/UX design: design systems, responsive layouts, accessibility, animations | Return this handoff to the coordinator for Agent-tool dispatch. |
+| `pixijs-combat-renderer` | PixiJS v8 2D WebGL combat rendering: @pixi/react hybrid canvas, normal maps, GPU particles, post-processing | Return this handoff to the coordinator for Agent-tool dispatch. |
+
+**Rule**: These are agents. The Skill tool cannot invoke them.
 
 ## Error Handling
 

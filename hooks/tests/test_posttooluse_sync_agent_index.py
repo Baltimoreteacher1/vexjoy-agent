@@ -19,7 +19,7 @@ REPO_ROOT = HOOK.parent.parent
 AGENTS_INDEX = REPO_ROOT / "agents" / "INDEX.json"
 
 
-def run_hook(event_obj_or_str) -> subprocess.CompletedProcess:
+def run_hook(event_obj_or_str, *, cwd: Path | None = None) -> subprocess.CompletedProcess:
     payload = event_obj_or_str if isinstance(event_obj_or_str, str) else json.dumps(event_obj_or_str)
     return subprocess.run(
         [sys.executable, str(HOOK)],
@@ -27,23 +27,73 @@ def run_hook(event_obj_or_str) -> subprocess.CompletedProcess:
         capture_output=True,
         text=True,
         timeout=30,
+        cwd=cwd,
     )
 
 
 # ---------------------------------------------------------------------------
-# Regen on agent edit
+# Agent edit: engine index-only refresh, never a repo write (spec 7.3)
 # ---------------------------------------------------------------------------
 
 
-def test_regen_on_agent_edit_writes_index_and_exits_zero() -> None:
-    if AGENTS_INDEX.exists():
-        AGENTS_INDEX.unlink()
-    proc = run_hook({"tool_input": {"file_path": "agents/hook-development-engineer.md"}})
+def test_agent_edit_without_engine_target_writes_nothing(tmp_path: Path) -> None:
+    import os
+
+    agent = tmp_path / "agents" / "isolated-agent.md"
+    agent.parent.mkdir()
+    agent.write_text("---\nname: isolated-agent\ndescription: Isolated agent fixture.\n---\n", encoding="utf-8")
+    home = tmp_path / "home"
+    home.mkdir()
+    before = AGENTS_INDEX.read_bytes() if AGENTS_INDEX.exists() else None
+    env = {**os.environ, "HOME": str(home)}
+    proc = subprocess.run(
+        [sys.executable, str(HOOK)],
+        input=json.dumps({"cwd": str(tmp_path), "tool_input": {"file_path": str(agent)}}),
+        capture_output=True,
+        text=True,
+        timeout=30,
+        cwd="/",
+        env=env,
+    )
     assert proc.returncode == 0, proc.stderr
-    assert AGENTS_INDEX.is_file()
-    data = json.loads(AGENTS_INDEX.read_text(encoding="utf-8"))
-    assert "agents" in data and len(data["agents"]) > 0
-    assert "[sync-agent-index]" in proc.stdout
+    assert proc.stdout == ""
+    assert not (tmp_path / "agents" / "INDEX.json").exists(), "hook must not write into the project"
+    after = AGENTS_INDEX.read_bytes() if AGENTS_INDEX.exists() else None
+    assert after == before
+
+
+def test_agent_edit_with_engine_target_refreshes_installed_index(tmp_path: Path, monkeypatch) -> None:
+    import os
+
+    sys.path.insert(0, str(REPO_ROOT / "scripts" / "tests"))
+    sys.path.insert(0, str(REPO_ROOT / "scripts"))
+    from vexinstall_support import assert_repo_clean, make_world
+
+    world = make_world(tmp_path, monkeypatch)
+    assert world.run("apply", "--target", "claude").code == 0
+    index = world.home / ".claude" / "vexjoy" / "index" / "agents.json"
+    index.unlink()
+    env = {
+        **os.environ,
+        "HOME": str(world.home),
+        "VEXINSTALL_SOURCE_ROOT": str(world.repo),
+    }
+    proc = subprocess.run(
+        [sys.executable, str(HOOK)],
+        input=json.dumps(
+            {"cwd": str(world.repo), "tool_input": {"file_path": str(world.repo / "agents" / "a-eng.md")}}
+        ),
+        capture_output=True,
+        text=True,
+        timeout=60,
+        cwd="/",
+        env=env,
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert "[sync-agent-index] installed index refreshed (claude)" in proc.stdout, proc.stderr
+    assert index.is_file()
+    assert not (world.repo / "agents" / "INDEX.json").exists()
+    assert_repo_clean(world.repo)
 
 
 # ---------------------------------------------------------------------------
@@ -80,12 +130,6 @@ def test_malformed_json_exits_zero() -> None:
     proc = run_hook("not json at all")
     assert proc.returncode == 0
     assert "Traceback" not in proc.stderr
-
-
-def test_missing_file_path_exits_zero() -> None:
-    proc = run_hook({"tool_input": {}})
-    assert proc.returncode == 0
-    assert proc.stdout == ""
 
 
 # ---------------------------------------------------------------------------

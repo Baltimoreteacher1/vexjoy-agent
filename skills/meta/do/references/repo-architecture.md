@@ -8,11 +8,11 @@ This repository contains agents, skills, and hooks for Claude Code.
 |-----------|----------|---------|--------|
 | **Agent** | `agents/*.md` or `agents/<name>/` | Domain expert (e.g., Go, Python, K8s) | Markdown with YAML frontmatter |
 | **Skill** | `skills/*/SKILL.md` | Workflow methodology (e.g., TDD, debugging) | Markdown with YAML frontmatter |
-| **Pipeline** | `skills/workflow/references/*.md` | Multi-phase structured workflow (same format as skills) | Markdown with YAML frontmatter |
+| **Pipeline** | `skills/process/workflow/references/*.md` | Multi-phase structured workflow (same format as skills) | Markdown with YAML frontmatter |
 | **Hook** | `hooks/*.py` | Event-driven automation | Python script |
 | **Script** | `scripts/*.py`, `scripts/*.sh` | Deterministic operations | Python or shell script |
 
-> **Note**: Pipelines are skills with explicit numbered phases and gates. They live in `skills/workflow/references/` for organizational clarity but are synced to `~/.claude/skills/` at install time, so Claude Code discovers them as regular skills.
+> **Note**: Pipelines are skills with explicit numbered phases and gates. They live in `skills/process/workflow/references/` for organizational clarity but are synced to `~/.claude/skills/` at install time, so Claude Code discovers them as regular skills.
 
 ## Key Frontmatter Fields
 
@@ -23,7 +23,7 @@ description: Brief purpose description
 user-invocable: false    # Hide from slash menu (internal skills)
 context: fork            # Run in isolated sub-agent context
 agent: golang-general-engineer  # Declare executor agent
-model: sonnet            # Model preference: sonnet | haiku (`/do` is the router exception)
+model: opus              # Optional; omit to inherit. opus | fable | inherit; haiku only with a read-only `tools:` list; never sonnet (`/do` SKILL.md, Model choice)
 allowed-tools:           # YAML list format
   - Read
   - Write
@@ -87,12 +87,12 @@ Run `scripts/validate-references.py --all` to check:
 - Every declared reference file exists on disk
 - Every file on disk is declared in the agent body
 - Structural compliance (headings, content, code examples)
-- Size limits
+
+Run `scripts/validate-references.py --check-size` to check reference size limits (500 lines) against the dated debt register and flag empty `references/` dirs.
 
 Run `python3 -m pytest scripts/tests/test_reference_loading.py` to verify:
 - Reference loading tables are complete
 - Keyword→reference mapping selects the right files
-- Joy-check compliance on headings
 
 ### When Creating a New Agent
 

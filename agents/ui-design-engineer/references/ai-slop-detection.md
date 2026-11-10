@@ -2,7 +2,7 @@
 
 <!-- Loaded by ui-design-engineer when task involves AI slop, generic UI, AI-generated look, template look, or default styling -->
 
-Detect and fix the 8 most common patterns that make AI-generated UI look generic. Each pattern below starts with the correct approach, then provides a detection command for auditing existing code.
+Detection commands and keep-if exceptions for generated-UI tells. The tells and their fixes are defined in `skills/shared-patterns/ui-design-judgment.md` section 9; this file adds how to find them in existing code. Each pattern starts with the correct approach.
 
 ## Use Purposeful Gradients
 
@@ -79,7 +79,7 @@ Cross-reference hits with `border-radius` in the same rule or component. The com
 
 ## Use Professional Illustration or Photography
 
-AI defaults to hand-drawn, sketchy SVG illustrations — wobbly lines, friendly blob shapes, stick-figure-adjacent characters. These look like placeholder art that shipped by accident. Use real photography, professional vector illustration from a licensed set (unDraw with customization, Storyset), or honest placeholders (see `honest-placeholders.md` in `skills/frontend/distinctive-frontend-design/references/`). An honest "image needed" placeholder is better than a bad illustration that looks intentional.
+AI defaults to hand-drawn, sketchy SVG illustrations — wobbly lines, friendly blob shapes, stick-figure-adjacent characters. These look like placeholder art that shipped by accident. Use real photography, professional vector illustration from a licensed set (unDraw with customization, Storyset), or honest placeholders (see `skills/frontend/frontend/references/distinctive-frontend-design-refs/honest-placeholders.md`). An honest "image needed" placeholder is better than a bad illustration that looks intentional.
 
 ```html
 <!-- Correct: real photography with proper alt text -->
@@ -95,50 +95,45 @@ AI defaults to hand-drawn, sketchy SVG illustrations — wobbly lines, friendly 
 
 ---
 
-## Select Contextual Fonts
+## Match Fonts to the Surface
 
-Inter, Roboto, Arial, Helvetica, and system font stacks are invisible from overuse. They are not bad fonts — they are absent fonts. Selecting them means no typographic decision was made. Choose fonts from a curated catalog that match the project's aesthetic direction, audience, and emotional tone. A portfolio site for a photographer and a SaaS billing dashboard should not share a typeface.
+A neutral sans (system UI font, Inter, Geist) is the right default for product tools. On a brand page, the same face picked by reflex makes the page look like a template, and so does the opposite reflex: serif display, cream background, and grain on every project. Choose from the brand and audience.
 
 ```css
-/* Correct: font selected for the project's context */
-font-family: 'Instrument Serif', Georgia, serif;
+/* Tool: one neutral family, hierarchy from size and weight */
+font-family: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
 
-/* Correct: distinctive sans for a tech product */
-font-family: 'Geist', system-ui, sans-serif;
+/* Brand page: a display face chosen for this brand, neutral text face */
+--font-display: 'Instrument Serif', Georgia, serif;
+--font-text: 'Geist', system-ui, sans-serif;
 ```
 
-**Keep if:** The brand specification explicitly names Inter, Roboto, or a system font as the brand typeface. A deliberate choice to use Inter is different from defaulting to it.
+**Keep if:** Any neutral sans on a tool. On a brand page, keep a popular face when the brand guide names it or you can state why it fits.
 
 **Detection:**
 ```bash
 rg -i 'font-family.*\b(Inter|Roboto|Arial|Helvetica|system-ui)\b' --include='*.css' --include='*.tsx' --include='*.jsx' --include='*.html' -n
 ```
+Review hits on brand pages only.
 
 ---
 
-## Use Near-Black and Near-White
+## Avoid Pure Black Under Pure White Text
 
-Pure `#000000` and `#FFFFFF` are harsh on screens and signal default choices — no one picked these colors, the tool did. Use near-black (e.g., `#1a1a2e`, `oklch(15% 0.02 260)`) and near-white (e.g., `#fafaf9`, `oklch(98% 0.005 80)`) to soften the palette without losing contrast. The difference is subtle but immediate: near-variants feel designed, pure values feel default.
+Pure `#FFFFFF` backgrounds are fine in light mode. In dark mode, pure black under pure white text is harsh; use a near-black surface (for example `#0f1115` or `oklch(18% 0.015 260)`) and slightly off-white text. Tint neutral grays toward the brand hue so they do not look dead.
 
 ```css
-/* Correct: near-black and near-white */
-:root {
-  --text-primary: #1a1a2e;
-  --bg-surface: #fafaf9;
-}
-
-/* Correct: oklch for perceptually tuned values */
-:root {
-  --text-primary: oklch(15% 0.02 260);
-  --bg-surface: oklch(98% 0.005 80);
+[data-theme="dark"] {
+  --bg: oklch(18% 0.015 260);
+  --fg: oklch(93% 0.01 260);
 }
 ```
 
-**Keep if:** The design specification explicitly uses `#000` or `#FFF` for a high-contrast brutalist aesthetic, or the context is a code editor / terminal theme where pure black backgrounds are conventional.
+**Keep if:** A terminal or code-editor theme where pure black is the convention, or a deliberate high-contrast mode.
 
 **Detection:**
 ```bash
-rg -i '#000000|#ffffff|#000\b|#fff\b' --include='*.css' --include='*.tsx' --include='*.jsx' --include='*.html' -n
+rg -i '#000000|#000\b' --include='*.css' --include='*.tsx' --include='*.jsx' --include='*.html' -n
 ```
 
 ---
@@ -158,7 +153,7 @@ Random hex values with no relationship to each other — `#4f46e5` next to `#10b
 
 **Keep if:** The colors come from an established design system (Tailwind's palette, Material Design) where the relationships are already defined.
 
-**Detection:** Check whether color values appear in the project's design specification, brand guide, or a documented palette source. Colors that cannot be traced to a source need justification. See `oklch-color-harmony.md` (in `skills/frontend/distinctive-frontend-design/references/`) for the technique to build harmonious palettes from context.
+**Detection:** Check whether color values appear in the project's design specification, brand guide, or a documented palette source. Colors that cannot be traced to a source need justification. See `skills/frontend/frontend/references/distinctive-frontend-design-refs/oklch-color-harmony.md` for the technique to build harmonious palettes from context.
 
 ---
 

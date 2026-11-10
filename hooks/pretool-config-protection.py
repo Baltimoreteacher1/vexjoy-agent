@@ -16,6 +16,25 @@ Bypass: CONFIG_PROTECTION_BYPASS=1 env var.
 Performance: <50ms (no subprocess, pure set lookup).
 """
 
+import sys  # vexjoy-pyguard
+
+if sys.version_info < (3, 10):  # vexjoy-pyguard gate
+    import os
+
+    if not os.environ.get("VEXJOY_PYGUARD_REEXEC"):
+        os.environ["VEXJOY_PYGUARD_REEXEC"] = "1"
+        for _d in [*os.environ.get("PATH", "").split(os.pathsep), "/opt/homebrew/bin", "/usr/local/bin", "/usr/bin"]:
+            for _v in ("14", "13", "12", "11", "10"):
+                _p = os.path.join(_d, "python3." + _v)
+                if _d and "/shims" not in _d and os.access(_p, os.X_OK):
+                    os.execv(_p, [_p, *sys.argv])
+    sys.stderr.write(
+        "[vexjoy] hook %s needs Python 3.10+, got %s (%s); run ./install.sh in vexjoy-agent from a terminal"
+        " outside Claude Code (gated tool calls stay blocked until then)\n"
+        % (__file__.rsplit("/", 1)[-1], sys.version.split()[0], sys.executable)
+    )
+    sys.exit(2)
+
 import json
 import os
 import sys
@@ -23,7 +42,7 @@ import traceback
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent / "lib"))
-from learning_db_v2 import record_governance_event
+from hook_utils import deny_tool_use, get_tool_input, hook_error, record_governance
 from stdin_timeout import read_stdin
 
 _BYPASS_ENV = "CONFIG_PROTECTION_BYPASS"
@@ -89,7 +108,7 @@ def _is_protected(file_path: str) -> bool:
     return Path(file_path).name in _PROTECTED_CONFIGS
 
 
-def _block(file_path: str) -> None:
+def _block(file_path: str, tool_name: str = "Write") -> None:
     """Emit JSON permissionDecision:deny and exit 0."""
     print(
         f"[config-protection] BLOCKED: Modifying linter/formatter config: {file_path}\n"
@@ -97,22 +116,20 @@ def _block(file_path: str) -> None:
         "[config-protection] To allow a legitimate config change: set CONFIG_PROTECTION_BYPASS=1",
         file=sys.stderr,
     )
-    try:
-        record_governance_event("policy_violation", tool_name="Write", hook_phase="pre", severity="high", blocked=True)
-    except Exception:
-        pass  # Never let recording prevent a block
-    deny_output = {
-        "hookSpecificOutput": {
-            "hookEventName": "PreToolUse",
-            "permissionDecision": "deny",
-            "permissionDecisionReason": (
-                f"Modifying linter/formatter config '{Path(file_path).name}' is blocked. "
-                "Fix the source code to satisfy the linter rather than weakening the config. "
-                "Set CONFIG_PROTECTION_BYPASS=1 for legitimate config changes."
-            ),
-        }
-    }
-    print(json.dumps(deny_output))
+    record_governance(
+        "policy_violation",
+        hook_name="pretool-config-protection",
+        tool_name=tool_name,
+        hook_phase="pre",
+        severity="high",
+        blocked=True,
+    )
+    deny_tool_use(
+        "PreToolUse",
+        f"Modifying linter/formatter config '{Path(file_path).name}' is blocked. "
+        "Fix the source code to satisfy the linter rather than weakening the config. "
+        "Set CONFIG_PROTECTION_BYPASS=1 for legitimate config changes.",
+    )
     sys.exit(0)
 
 
@@ -132,14 +149,7 @@ def main() -> None:
             "[config-protection] BLOCKED: stdin payload exceeds 1 MB limit -- cannot safely parse.",
             file=sys.stderr,
         )
-        deny_output = {
-            "hookSpecificOutput": {
-                "hookEventName": "PreToolUse",
-                "permissionDecision": "deny",
-                "permissionDecisionReason": "stdin payload exceeds 1 MB limit -- cannot safely parse.",
-            }
-        }
-        print(json.dumps(deny_output))
+        deny_tool_use("PreToolUse", "stdin payload exceeds 1 MB limit -- cannot safely parse.")
         sys.exit(0)
 
     try:
@@ -147,31 +157,29 @@ def main() -> None:
     except (json.JSONDecodeError, ValueError):
         sys.exit(0)
 
-    tool_name = event.get("tool_name") or event.get("tool", "")
-    tool_input = event.get("tool_input", event.get("input", {}))
+    if not isinstance(event, dict):
+        sys.exit(0)
 
+    tool_name = event.get("tool_name") or event.get("tool", "")
     if tool_name not in ("Write", "Edit", "MultiEdit"):
         sys.exit(0)
 
-    if tool_name == "MultiEdit":
-        # MultiEdit payload: tool_input has no top-level file_path.
-        # Files live in tool_input["edits"] as [{file_path, ...}, ...].
-        edits = tool_input.get("edits", [])
-        for edit in edits:
-            fp = edit.get("file_path", "")
-            if fp and _is_protected(fp):
-                if debug:
-                    print(f"[config-protection] MultiEdit hit on protected file: {fp}", file=sys.stderr)
-                _block(fp)
-    else:
-        # Write or Edit — single file_path at top level.
-        file_path = tool_input.get("file_path", "")
-        if not file_path:
-            sys.exit(0)
-        if _is_protected(file_path):
+    # A malformed tool_input (null, a list, a number) reads as {} instead of crashing.
+    tool_input = get_tool_input(event)
+
+    # Write and Edit carry one top-level file_path. MultiEdit carries a top-level
+    # file_path too, and some payloads put a file_path on each entry of "edits".
+    # Check every place a path can sit.
+    candidates = [tool_input.get("file_path")]
+    edits = tool_input.get("edits")
+    if tool_name == "MultiEdit" and isinstance(edits, list):
+        candidates.extend(edit.get("file_path") for edit in edits if isinstance(edit, dict))
+
+    for file_path in candidates:
+        if isinstance(file_path, str) and file_path and _is_protected(file_path):
             if debug:
                 print(f"[config-protection] {tool_name} hit on protected file: {file_path}", file=sys.stderr)
-            _block(file_path)
+            _block(file_path, tool_name)
 
     sys.exit(0)
 
@@ -182,9 +190,4 @@ if __name__ == "__main__":
     except SystemExit:
         raise  # Let sys.exit(0) propagate normally
     except Exception as e:
-        if os.environ.get("CLAUDE_HOOKS_DEBUG"):
-            traceback.print_exc(file=sys.stderr)
-        else:
-            print(f"[config-protection] Error: {type(e).__name__}: {e}", file=sys.stderr)
-        # A crashed hook must fail OPEN -- never block tools on unexpected errors.
-        sys.exit(0)
+        hook_error("pretool-config-protection", e)

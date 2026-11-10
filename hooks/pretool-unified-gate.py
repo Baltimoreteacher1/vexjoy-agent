@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# hook-version: 1.1.0
+# hook-version: 1.2.1
 """
 PreToolUse Hook: Unified Gate (ADR-068)
 
@@ -13,33 +13,106 @@ Consolidates 5 PreToolUse gate hooks into a single entry point:
                               path — the handshake worktree agents without
                               the Task tool can perform (see section 4)
 5. pretool-sensitive-file-guard — Write+Edit: blocks writes to .env, credentials, SSH keys, etc.
+                              Read: warns (does not block) on the same patterns; the
+                              warning reaches the model as additionalContext and is
+                              recorded as a governance event.
 6. public-dev-server-guard     — Bash: blocks dev servers bound to non-loopback interfaces
                                   (python http.server binds 0.0.0.0 by default; php -S, vite --host, etc.)
                                   Supersedes the narrow, dormant prevent-homedir-server.py.
 
 Attribution blocking removed: use settings.json {"attribution": {"commit": "", "pr": ""}} instead.
 Each check preserves its original stderr prefix and bypass mechanism.
-Exit 0 always. Blocks emit JSON permissionDecision:deny to stdout. Entire main() wrapped in try/except to fail OPEN.
+Exit 0 always. Blocks emit JSON permissionDecision:deny to stdout. Entire main() wrapped in try/except to fail OPEN;
+a crash is recorded with hook_error() so it shows in hook-errors.jsonl.
 
 Creation-gate allowlist: see _CREATION_PATH_ALLOWLIST. Path shapes produced
-by named non-skill-creator skills (e.g. create-voice → skills/voice-*/SKILL.md)
+by named non-skill-creator skills (e.g. writing → skills/voice-*/SKILL.md)
 pass through. Without this, those skills had to bypass via /tmp + cp.
 
-Performance: <50ms. Early-exit for non-matching tools. Only gitignore bypass uses subprocess.
+Performance: target <50ms. Early-exit for non-matching tools. Patterns compile on
+first use and subprocess/hashlib import on first use (see _rx, _LAZY_MODULES).
 """
 
-import hashlib
+import sys  # vexjoy-pyguard
+
+if sys.version_info < (3, 10):  # vexjoy-pyguard gate
+    import os
+
+    if not os.environ.get("VEXJOY_PYGUARD_REEXEC"):
+        os.environ["VEXJOY_PYGUARD_REEXEC"] = "1"
+        for _d in [*os.environ.get("PATH", "").split(os.pathsep), "/opt/homebrew/bin", "/usr/local/bin", "/usr/bin"]:
+            for _v in ("14", "13", "12", "11", "10"):
+                _p = os.path.join(_d, "python3." + _v)
+                if _d and "/shims" not in _d and os.access(_p, os.X_OK):
+                    os.execv(_p, [_p, *sys.argv])
+    sys.stderr.write(
+        "[vexjoy] hook %s needs Python 3.10+, got %s (%s); run ./install.sh in vexjoy-agent from a terminal"
+        " outside Claude Code (gated tool calls stay blocked until then)\n"
+        % (__file__.rsplit("/", 1)[-1], sys.version.split()[0], sys.executable)
+    )
+    sys.exit(2)
+
 import json
 import os
 import re
 import shlex
-import subprocess
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent / "lib"))
-from learning_db_v2 import record_governance_event
+from hook_utils import get_tool_input, hook_error, record_governance
 from stdin_timeout import read_stdin
+
+# Startup cost is paid on every tool call, so two things wait until first use:
+# the module-level patterns (_rx) and the imports only a few paths need
+# (subprocess, hashlib). No check is skipped; a pattern compiles when its
+# check first runs.
+_LAZY_MODULES = ("hashlib", "subprocess")
+
+
+def __getattr__(name: str):
+    """Serve the lazily imported modules as attributes, as when they were imported at the top."""
+    if name in _LAZY_MODULES:
+        import importlib
+
+        return importlib.import_module(name)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
+class _rx:
+    """A module-level pattern that compiles on first use.
+
+    Takes the arguments of re.compile and forwards every attribute (search,
+    match, finditer, sub, pattern, flags) to the compiled pattern. Pass
+    `.compiled`, not the wrapper, to a function that needs a real re.Pattern.
+    """
+
+    __slots__ = ("_args", "_compiled")
+
+    def __init__(self, pattern: str, flags: int = 0) -> None:
+        self._args = (pattern, flags)
+        self._compiled: re.Pattern[str] | None = None
+
+    @property
+    def compiled(self) -> "re.Pattern[str]":
+        compiled = self._compiled
+        if compiled is None:
+            compiled = self._compiled = re.compile(*self._args)
+        return compiled
+
+    def __getattr__(self, name: str):
+        return getattr(self.compiled, name)
+
+
+# Module-level state set by main() so _block() can enrich governance events.
+_CURRENT_EVENT: dict | None = None
+_CURRENT_COMMAND: str = ""
+
+# Allow-path advisories for the model. PreToolUse stderr on exit 0 reaches no
+# one, so main() prints these once as additionalContext after every check has
+# passed. A deny exits inside _block() first, so stdout never carries two JSON
+# documents (Claude Code would then read both as plain text and lose the deny).
+_ADVISORIES: list[str] = []
 
 # ═══════════════════════════════════════════════════════════════
 # 1. GITIGNORE BYPASS (block-gitignore-bypass.py)
@@ -47,25 +120,30 @@ from stdin_timeout import read_stdin
 
 # (patterns are inline in check_gitignore_bypass function)
 
+# Owner-approved escape hatch: a command starting with this prefix skips the
+# gitignore guard and emits an audit line. Same shape as CLAUDE_GATE_BYPASS;
+# deliberately not named in the deny message (agents ask the owner first).
+_GITIGNORE_BYPASS = "GITIGNORE_GUARD_BYPASS=1"
+
 # ═══════════════════════════════════════════════════════════════
 # 2. GIT SUBMISSION PATTERNS (pretool-git-submission-gate.py)
 # ═══════════════════════════════════════════════════════════════
 
 _GIT_SUBMISSION_BYPASS = "CLAUDE_GATE_BYPASS=1"
 
-_GIT_PUSH_PATTERN = re.compile(r"^(?:\w+=\S+\s+)*git\s+push\b")
+_GIT_PUSH_PATTERN = _rx(r"^(?:\w+=\S+\s+)*git\s+push\b")
 
 _GIT_SUBMISSION_PATTERNS = [
-    (_GIT_PUSH_PATTERN, "pr-sync", "Use /pr-sync to push (runs review loop first)"),
+    (_GIT_PUSH_PATTERN, "pr-workflow", "Push through the PR workflow (runs review loop first)"),
     (
-        re.compile(r"^(?:\w+=\S+\s+)*gh\s+pr\s+create\b"),
-        "pr-pipeline",
-        "Use /pr-pipeline to create PR (runs review loop first)",
+        _rx(r"^(?:\w+=\S+\s+)*gh\s+pr\s+create\b"),
+        "pr-workflow",
+        "Create the PR through the PR workflow (runs review loop first)",
     ),
     (
-        re.compile(r"^(?:\w+=\S+\s+)*gh\s+pr\s+merge\b"),
-        "pr-pipeline",
-        "Use /pr-pipeline to merge (requires review to pass first)",
+        _rx(r"^(?:\w+=\S+\s+)*gh\s+pr\s+merge\b"),
+        "pr-workflow",
+        "Merge through the PR workflow (requires review to pass first)",
     ),
 ]
 
@@ -75,78 +153,633 @@ _GIT_SUBMISSION_PATTERNS = [
 
 _DANGEROUS_BYPASS_ENV = "DANGEROUS_GUARD_BYPASS"
 
+# Owner-approved escape hatch: a command starting with this prefix skips the
+# dangerous-command guard and emits an audit line. Same shape as
+# GITIGNORE_GUARD_BYPASS / CLAUDE_GATE_BYPASS; deliberately not named in the
+# deny message (agents ask the owner first). The env var above only works when
+# set in the hook's own environment, which an agent's command cannot reach.
+_DANGEROUS_BYPASS_PREFIX = "DANGEROUS_GUARD_BYPASS=1"
+
 _DANGEROUS_PATTERNS: list[tuple[re.Pattern[str], str, str]] = [
-    # Filesystem destruction — match -r and -f flags in ANY order, including:
-    #   combined short flags: -rf, -fr, -rfi, etc.
-    #   separate short flags: -r -f, -f -r
-    #   long flags: --recursive --force, --recursive -f, -r --force
-    #   mixed: -rf, -r -f, --recursive --force, --recursive -f, -r --force
-    # The pattern uses a lookahead to require both recursive AND force flags
-    # before the dangerous target path.
-    (
-        re.compile(
-            r"\brm\s+"
-            r"(?=.*(?:-[a-zA-Z]*r[a-zA-Z]*\b|--recursive\b))"
-            r"(?=.*(?:-[a-zA-Z]*f[a-zA-Z]*\b|--force\b))"
-            r"(?:(?:-[a-zA-Z]+|--(?:recursive|force|no-preserve-root))\s+)*"
-            r"/\s*$"
-        ),
-        "filesystem",
-        "rm -rf /",
-    ),
-    (
-        re.compile(
-            r"\brm\s+"
-            r"(?=.*(?:-[a-zA-Z]*r[a-zA-Z]*\b|--recursive\b))"
-            r"(?=.*(?:-[a-zA-Z]*f[a-zA-Z]*\b|--force\b))"
-            r"(?:(?:-[a-zA-Z]+|--(?:recursive|force|no-preserve-root))\s+)*"
-            r"/\*"
-        ),
-        "filesystem",
-        "rm -rf /*",
-    ),
-    (
-        re.compile(
-            r"\brm\s+"
-            r"(?=.*(?:-[a-zA-Z]*r[a-zA-Z]*\b|--recursive\b))"
-            r"(?=.*(?:-[a-zA-Z]*f[a-zA-Z]*\b|--force\b))"
-            r"(?:(?:-[a-zA-Z]+|--(?:recursive|force|no-preserve-root))\s+)*"
-            r"~/?(\s|$)"
-        ),
-        "filesystem",
-        "rm -rf ~",
-    ),
-    (
-        re.compile(
-            r"\brm\s+"
-            r"(?=.*(?:-[a-zA-Z]*r[a-zA-Z]*\b|--recursive\b))"
-            r"(?=.*(?:-[a-zA-Z]*f[a-zA-Z]*\b|--force\b))"
-            r"(?:(?:-[a-zA-Z]+|--(?:recursive|force|no-preserve-root))\s+)*"
-            r"\./?(\s|$)"
-        ),
-        "filesystem",
-        "rm -rf .",
-    ),
+    # Filesystem destruction (rm) moved to _rm_destructive_target (audit S2):
+    # the old four regexes matched four literal command shapes and were
+    # end-anchored, so `rm -rf / --no-preserve-root`, `rm -rf / # cleanup`,
+    # `rm -rf -- /`, `rm -rf //`, `rm -rf $HOME`, and `rm -rf /etc` all passed.
     # Database destruction
-    (re.compile(r"\bDROP\s+DATABASE\b", re.IGNORECASE), "database", "DROP DATABASE"),
-    (re.compile(r"\bDROP\s+SCHEMA\b", re.IGNORECASE), "database", "DROP SCHEMA"),
-    (re.compile(r"\bTRUNCATE\s+TABLE\b", re.IGNORECASE), "database", "TRUNCATE TABLE"),
+    (_rx(r"\bDROP\s+DATABASE\b", re.IGNORECASE), "database", "DROP DATABASE"),
+    (_rx(r"\bDROP\s+SCHEMA\b", re.IGNORECASE), "database", "DROP SCHEMA"),
+    (_rx(r"\bTRUNCATE\s+TABLE\b", re.IGNORECASE), "database", "TRUNCATE TABLE"),
     # Permission escalation
-    (re.compile(r"\bchmod\s+(-R\s+)?777\b"), "permissions", "chmod 777"),
-    # Force-push to protected branches
-    (re.compile(r"\bgit\s+push\s+.*--force\s+.*\b(main|master)\b"), "git", "git push --force main/master"),
-    (re.compile(r"\bgit\s+push\s+-f\s+.*\b(main|master)\b"), "git", "git push -f main/master"),
+    (_rx(r"\bchmod\s+(-R\s+)?777\b"), "permissions", "chmod 777"),
+    # Force-push to protected branches moved to _force_push_protected (audit
+    # S2): the old regexes hardcoded flag-before-branch order, so `git push
+    # origin main --force` and the `+main` force refspec both passed.
     # Container mass-kill
-    (re.compile(r"\bdocker\s+system\s+prune\s+-af\b"), "container", "docker system prune -af"),
-    (re.compile(r"\bkubectl\s+delete\s+namespace\b"), "container", "kubectl delete namespace"),
-    (re.compile(r"\bkubectl\s+delete\s+ns\b"), "container", "kubectl delete ns"),
+    (_rx(r"\bdocker\s+system\s+prune\s+-af\b"), "container", "docker system prune -af"),
+    (_rx(r"\bkubectl\s+delete\s+namespace\b"), "container", "kubectl delete namespace"),
+    (_rx(r"\bkubectl\s+delete\s+ns\b"), "container", "kubectl delete ns"),
     # System-level danger
-    (re.compile(r"\bmkfs\b"), "system", "mkfs (format disk)"),
-    (re.compile(r"\bdd\s+if="), "system", "dd (raw disk write)"),
+    (_rx(r"\bmkfs\b"), "system", "mkfs (format disk)"),
+    (_rx(r"\bdd\s+if="), "system", "dd (raw disk write)"),
     # Cloud destructive
-    (re.compile(r"\bterraform\s+destroy\b(?!.*-target)"), "cloud", "terraform destroy (no -target)"),
-    (re.compile(r"\baws\s+s3\s+rb\s+.*--force\b"), "cloud", "aws s3 rb --force"),
+    (_rx(r"\bterraform\s+destroy\b(?!.*-target)"), "cloud", "terraform destroy (no -target)"),
+    (_rx(r"\baws\s+s3\s+rb\s+.*--force\b"), "cloud", "aws s3 rb --force"),
 ]
+
+# ── rm destructive-target walk (audit S2) ────────────────────────
+#
+# Free-text `rm` locator + per-occurrence token walk over the arguments.
+# Matches protected TARGETS instead of literal command shapes, so trailing
+# arguments (`--no-preserve-root`, `# cleanup`), `--` end-of-options, repeated
+# slashes, variable homes (`$HOME`), and bare system dirs (`/etc`) cannot dodge
+# an end anchor. Deliberately free-text (same posture as the old regexes): it
+# fires inside quoted payloads (`sh -c "rm -rf /"`) and heredoc bodies —
+# over-blocking preferred for destructive commands.
+
+# `rm` as a word anywhere in the text: covers `xargs rm`, `env rm`, `\rm`,
+# `/bin/rm` (the preceding char is a non-word char in all of them).
+_RM_WORD_RE = _rx(r"\brm(?=\s)")
+
+# Cut an occurrence's argument slice at the first command separator so a later
+# command's arguments never attach to this `rm` (`rm -rf build; ls /` must not
+# see `/`). `#` cuts at a comment; quotes are NOT tracked — a separator inside
+# a quoted filename truncates the slice early, which can only under-collect
+# targets for exotic quoting while keeping every plain form exact.
+_RM_ARGS_STOP_RE = _rx(r"[;&|\n`)#]")
+
+# Top-level directories whose recursive removal is unrecoverable system damage.
+_TOP_LEVEL_SYSTEM_DIRS = frozenset(
+    {
+        "/bin",
+        "/boot",
+        "/dev",
+        "/etc",
+        "/home",
+        "/lib",
+        "/lib64",
+        "/opt",
+        "/proc",
+        "/root",
+        "/sbin",
+        "/srv",
+        "/sys",
+        "/usr",
+        "/var",
+    }
+)
+
+_HOME_VAR_RE = _rx(r"^\$(?:HOME|\{HOME\})/?$")
+_PROJECT_VAR_RE = _rx(r"^\$(?:CLAUDE_PROJECT_DIR|\{CLAUDE_PROJECT_DIR\})/?$")
+
+
+def _protected_rm_target(tok: str) -> str | None:
+    """Description of the protected path `tok` names, or None if unprotected.
+
+    Protected: filesystem root (any slash run, `/*`), bare home (`~`, `$HOME`),
+    the project root variable, current directory (`.`), top-level system dirs
+    (with or without trailing `/` or `/*`), and whole user homes
+    (`/home/NAME`). Deeper paths (`./build`, `~/proj`, `/home/u/proj`) are
+    NOT protected — same allow posture as the old rules.
+    """
+    t = tok.strip("'\"")
+    if not t:
+        return None
+    if set(t) == {"/"}:
+        return "rm -rf / (filesystem root)"
+    if t.startswith("/") and set(t.rstrip("*")) == {"/"} and t.endswith("*"):
+        return "rm -rf /* (filesystem root glob)"
+    if t in {"~", "~/"}:
+        return "rm -rf ~ (home directory)"
+    if t in {".", "./"}:
+        return "rm -rf . (current directory)"
+    if _HOME_VAR_RE.match(t):
+        return "rm -rf $HOME (home directory)"
+    if _PROJECT_VAR_RE.match(t):
+        return "rm -rf $CLAUDE_PROJECT_DIR (project root)"
+    if t.startswith("/"):
+        norm = t.rstrip("/") or "/"
+        if norm.endswith("/*"):  # `/etc/*` empties the dir — same damage
+            norm = norm[:-2] or "/"
+        if norm in _TOP_LEVEL_SYSTEM_DIRS:
+            return f"rm -rf {norm} (top-level system dir)"
+        parts = norm.split("/")
+        if len(parts) == 3 and parts[1] == "home" and parts[2]:
+            return f"rm -rf {norm} (user home directory)"
+    return None
+
+
+def _rm_destructive_target(command: str) -> str | None:
+    """Description if any `rm` occurrence recursively force-removes a
+    protected target, else None.
+
+    Requires a recursive flag (`-r`/`-R`/`--recursive`) plus force
+    (`-f`/`--force`) or `--no-preserve-root` — the flag posture of the old
+    rules (`rm -r /` alone still refuses via coreutils preserve-root and stays
+    allowed). Flags may appear before or after targets; `--` ends flag parsing
+    so `rm -rf -- /` cannot hide the target behind end-of-options.
+    """
+    for m in _RM_WORD_RE.finditer(command):
+        args = command[m.end() :]
+        stop = _RM_ARGS_STOP_RE.search(args)
+        if stop:
+            args = args[: stop.start()]
+        recursive = force = no_preserve = False
+        targets: list[str] = []
+        end_of_flags = False
+        for raw in args.split():
+            tok = raw.strip("'\"")
+            if not tok:
+                continue
+            if not end_of_flags and tok.startswith("-") and len(tok) > 1:
+                if tok == "--":
+                    end_of_flags = True
+                elif tok == "--no-preserve-root":
+                    no_preserve = True
+                elif tok == "--recursive":
+                    recursive = True
+                elif tok == "--force":
+                    force = True
+                elif not tok.startswith("--"):
+                    body = tok[1:]
+                    if "r" in body or "R" in body:
+                        recursive = True
+                    if "f" in body:
+                        force = True
+                continue
+            targets.append(tok)
+        if not (recursive and (force or no_preserve)):
+            continue
+        for tok in targets:
+            desc = _protected_rm_target(tok)
+            if desc:
+                return desc
+    return None
+
+
+# ── force-push walk (audit S2) ───────────────────────────────────
+
+_GIT_PUSH_WORD_RE = _rx(r"\bgit\s+push\b")
+_PROTECTED_REF_RE = _rx(r"\b(?:main|master)\b")
+
+
+def _force_push_protected(command: str) -> str | None:
+    """Description if any `git push` occurrence force-pushes main/master,
+    else None.
+
+    Order-independent token walk: `--force`/`-f` anywhere in the push plus a
+    main/master ref anywhere blocks (`git push origin main --force` dodged the
+    old flag-before-branch regexes). A `+ref` refspec IS a force push, so
+    `+main`/`+refs/heads/main` blocks without any flag. `--force-with-lease`
+    stays allowed (safer primitive; old rules never matched it either).
+    """
+    for m in _GIT_PUSH_WORD_RE.finditer(command):
+        args = command[m.end() :]
+        stop = _RM_ARGS_STOP_RE.search(args)
+        if stop:
+            args = args[: stop.start()]
+        toks = [t.strip("'\"") for t in args.split()]
+        force = any(t in {"-f", "--force"} for t in toks)
+        protected_ref = any(_PROTECTED_REF_RE.search(t) for t in toks if not t.startswith("-"))
+        plus_refspec = any(t.startswith("+") and _PROTECTED_REF_RE.search(t) for t in toks)
+        if plus_refspec:
+            return "git push +ref (force refspec) to main/master"
+        if force and protected_ref:
+            return "git push --force main/master"
+    return None
+
+
+# ── destructive Git operation walk ──────────────────────────────
+
+_GIT_GLOBAL_VALUE_OPTIONS = frozenset(
+    {"-C", "-c", "--git-dir", "--work-tree", "--namespace", "--super-prefix", "--config-env"}
+)
+_WHOLE_TREE_PATHSPECS = frozenset(
+    {
+        ".",
+        "./",
+        ":/",
+        ":/*",
+        "*",
+        ":(top)",
+        ":(top)**",
+        ":(glob)**",
+        ":(glob)**/*",
+        ":(top,glob)**/*",
+        ":(glob,top)**/*",
+    }
+)
+_GIT_BUILTIN_SUBCOMMANDS = frozenset(
+    {
+        "add",
+        "am",
+        "apply",
+        "archive",
+        "bisect",
+        "blame",
+        "branch",
+        "bundle",
+        "checkout",
+        "cherry",
+        "cherry-pick",
+        "clean",
+        "clone",
+        "commit",
+        "config",
+        "describe",
+        "diff",
+        "difftool",
+        "fetch",
+        "format-patch",
+        "fsck",
+        "gc",
+        "grep",
+        "help",
+        "init",
+        "log",
+        "maintenance",
+        "merge",
+        "mergetool",
+        "mv",
+        "notes",
+        "pull",
+        "push",
+        "range-diff",
+        "rebase",
+        "reflog",
+        "remote",
+        "repack",
+        "replace",
+        "reset",
+        "restore",
+        "revert",
+        "rm",
+        "shortlog",
+        "show",
+        "show-branch",
+        "sparse-checkout",
+        "stash",
+        "status",
+        "submodule",
+        "switch",
+        "tag",
+        "worktree",
+    }
+)
+
+
+def _git_command_parts(segment: str) -> tuple[str, list[str]] | None:
+    """Return a real Git segment's subcommand and args.
+
+    Leading env assignments and transparent wrappers are removed by the shared
+    command parser. Git global options are skipped before selecting the
+    subcommand, including value-taking `-C` and `-c` forms.
+    """
+    stripped = _strip_leading_prefixes(segment)
+    try:
+        toks = shlex.split(stripped, posix=True)
+    except ValueError:
+        toks = stripped.split()
+    if not toks or toks[0].rsplit("/", 1)[-1].lower() != "git":
+        return None
+
+    i = 1
+    while i < len(toks):
+        tok = toks[i]
+        if tok == "--":
+            i += 1
+            break
+        if not tok.startswith("-") or tok == "-":
+            break
+        if tok in _GIT_GLOBAL_VALUE_OPTIONS:
+            i += 2
+        else:
+            # `-Cdir`, `-cname=value`, and long `--key=value` forms hold their
+            # value in this token; flag-only global options need no special case.
+            i += 1
+    if i >= len(toks):
+        return None
+    return toks[i].lower(), toks[i + 1 :]
+
+
+def _inline_git_alias_payload(segment: str) -> str:
+    """Return an invoked inline `git -c alias.NAME=...` expansion.
+
+    Only aliases defined and invoked in the same command are expanded. Other
+    config entries and unused alias definitions remain inert for this check.
+    """
+    stripped = _strip_leading_prefixes(segment)
+    try:
+        stripped_toks = shlex.split(stripped, posix=True)
+    except ValueError:
+        stripped_toks = stripped.split()
+    if not stripped_toks or stripped_toks[0].rsplit("/", 1)[-1].lower() != "git":
+        return ""
+
+    try:
+        toks = shlex.split(segment, posix=True)
+    except ValueError:
+        toks = segment.split()
+    git_indices = [i for i, tok in enumerate(toks) if tok.rsplit("/", 1)[-1].lower() == "git"]
+    for git_index in git_indices:
+        aliases: dict[str, str] = {}
+        i = git_index + 1
+        while i < len(toks):
+            tok = toks[i]
+            config = ""
+            if tok == "-c" and i + 1 < len(toks):
+                config = toks[i + 1]
+                i += 2
+            elif tok.startswith("-c") and len(tok) > 2:
+                config = tok[2:].lstrip("=")
+                i += 1
+            elif tok in _GIT_GLOBAL_VALUE_OPTIONS:
+                i += 2
+                continue
+            elif tok.startswith("-") and tok != "-":
+                i += 1
+                continue
+            else:
+                break
+
+            key, sep, value = config.partition("=")
+            if sep and key.lower().startswith("alias."):
+                aliases[key[6:].lower()] = value
+
+        if i >= len(toks):
+            continue
+        expansion = aliases.get(toks[i].lower())
+        if expansion is None:
+            continue
+        trailing = shlex.join(toks[i + 1 :]) if i + 1 < len(toks) else ""
+        if expansion.startswith("!"):
+            return f"{expansion[1:]} {trailing}".strip()
+        return f"git {expansion} {trailing}".strip()
+    return ""
+
+
+def _split_executed_shell_segments(command: str) -> list[str]:
+    """Split on shell operators outside quotes.
+
+    Unlike `_SEGMENT_SPLIT_RE`, this preserves quoted `-c` and `eval` payloads
+    as one token. Command substitutions are scanned separately before this
+    helper runs.
+    """
+    segments: list[str] = []
+    buf: list[str] = []
+    in_single = in_double = False
+    i = 0
+    while i < len(command):
+        c = command[i]
+        if c == "\\" and not in_single and i + 1 < len(command):
+            buf.extend((c, command[i + 1]))
+            i += 2
+            continue
+        if c == "'" and not in_double:
+            in_single = not in_single
+            buf.append(c)
+        elif c == '"' and not in_single:
+            in_double = not in_double
+            buf.append(c)
+        elif not in_single and not in_double and c in ";|&\n":
+            segment = "".join(buf).strip()
+            if segment:
+                segments.append(segment)
+            buf = []
+            # Treat `&&` and `||` as one separator.
+            if i + 1 < len(command) and command[i + 1] == c and c in "|&":
+                i += 1
+        else:
+            buf.append(c)
+        i += 1
+    segment = "".join(buf).strip()
+    if segment:
+        segments.append(segment)
+    return segments
+
+
+def _eval_payload(segment: str) -> str:
+    """Return the shell text executed by `eval`, or an empty string."""
+
+    def _decode_ansi(match: re.Match[str]) -> str:
+        body = match.group(1)
+        for escaped, value in (("\\n", "\n"), ("\\t", "\t"), ("\\'", "'"), ("\\\\", "\\")):
+            body = body.replace(escaped, value)
+        return shlex.quote(body)
+
+    # Convert every Bash ANSI-C argument, then join all eval arguments as Bash
+    # does. Reading only the first `$'...'` let a later argument carry the
+    # destructive command.
+    normalized = re.sub(r"\$'((?:\\.|[^'])*)'", _decode_ansi, segment)
+    try:
+        toks = shlex.split(normalized, posix=True)
+    except ValueError:
+        toks = normalized.split()
+    eval_indices = [i for i, tok in enumerate(toks) if tok.rsplit("/", 1)[-1].lower() == "eval"]
+    if eval_indices:
+        return " ".join(toks[eval_indices[-1] + 1 :])
+    return ""
+
+
+def _xargs_payload(segment: str) -> str:
+    """Return the command that `xargs` executes, or an empty string."""
+    stripped = _strip_leading_prefixes(segment)
+    try:
+        toks = shlex.split(stripped, posix=True)
+    except ValueError:
+        toks = stripped.split()
+    if not toks or toks[0].rsplit("/", 1)[-1].lower() != "xargs":
+        return ""
+    value_options = frozenset(
+        {
+            "-a",
+            "--arg-file",
+            "-E",
+            "--eof",
+            "-I",
+            "--replace",
+            "-L",
+            "--max-lines",
+            "-n",
+            "--max-args",
+            "-P",
+            "--max-procs",
+            "-s",
+            "--max-chars",
+        }
+    )
+    i = 1
+    while i < len(toks):
+        tok = toks[i]
+        if tok == "--":
+            i += 1
+            break
+        if not tok.startswith("-") or tok == "-":
+            break
+        i += 2 if tok in value_options else 1
+    return shlex.join(toks[i:]) if i < len(toks) else ""
+
+
+def _persistent_git_alias_payload(
+    name: str,
+    cwd: str | None,
+    cache: dict[tuple[str, str], str | None],
+) -> str:
+    """Look up a repository/worktree/global Git alias with a bounded call."""
+    lookup_cwd = cwd or os.getcwd()
+    key = (lookup_cwd, name.lower())
+    if key in cache:
+        return cache[key] or ""
+    import subprocess  # lazy: see _LAZY_MODULES
+
+    try:
+        result = subprocess.run(
+            ["git", "config", "--get", f"alias.{name}"],
+            cwd=lookup_cwd,
+            capture_output=True,
+            text=True,
+            timeout=0.5,
+            check=False,
+        )
+        expansion = result.stdout.strip() if result.returncode == 0 else ""
+    except (subprocess.TimeoutExpired, OSError):
+        # Fail open, but do not cache: a slow git must not pin "no alias".
+        return ""
+    payload = (expansion[1:] if expansion.startswith("!") else f"git {expansion}") if expansion else ""
+    cache[key] = payload or None
+    return payload
+
+
+def _destructive_git_operation(
+    command: str,
+    _depth: int = 0,
+    cwd: str | None = None,
+    _alias_cache: dict[tuple[str, str], str | None] | None = None,
+) -> str | None:
+    """Describe a destructive Git operation, else return None.
+
+    Blocks irreversible reset/clean/branch deletion and whole-tree checkout or
+    restore. Targeted file restore and normal branch switching stay available.
+    Shell `-c` payloads are checked recursively; quoted Git text passed to a
+    display command is not treated as execution.
+    """
+    if _depth > 4:
+        return None
+    if _alias_cache is None:
+        _alias_cache = {}
+    if cwd is None and _CURRENT_EVENT:
+        cwd = _CURRENT_EVENT.get("cwd") or os.environ.get("CLAUDE_PROJECT_DIR") or None
+
+    # Substitutions execute even when the outer command only displays output.
+    # Ignore substitutions inside single quotes, where POSIX shells treat them
+    # as literal text. Blank scanned spans before the outer segment walk so
+    # operators inside a substitution cannot be mistaken for outer operators.
+    sq_spans = _single_quoted_spans(command)
+    substitution_spans: list[tuple[int, int]] = []
+    for sub in _SUBSTITUTION_RE.finditer(command):
+        if any(start <= sub.start() < end for start, end in sq_spans):
+            continue
+        body = sub.group("dollar") or sub.group("back") or sub.group("proc") or ""
+        substitution_spans.append(sub.span())
+        description = _destructive_git_operation(body, _depth + 1, cwd, _alias_cache)
+        if description:
+            return description
+    scan_command = "".join(
+        " " if any(start <= i < end for start, end in substitution_spans) else c for i, c in enumerate(command)
+    )
+
+    for segment in _split_executed_shell_segments(scan_command):
+        cmd = _command_token(segment)
+        segment_cwd = _extract_effective_cwd(segment, cwd)
+        if cmd in _SHELL_LAUNCHERS:
+            payload = _shell_c_payload(segment)
+            description = (
+                _destructive_git_operation(payload, _depth + 1, segment_cwd, _alias_cache) if payload else None
+            )
+            if description:
+                return description
+            continue
+        if cmd == "eval":
+            payload = _eval_payload(segment)
+            description = (
+                _destructive_git_operation(payload, _depth + 1, segment_cwd, _alias_cache) if payload else None
+            )
+            if description:
+                return description
+            continue
+        if cmd == "xargs":
+            payload = _xargs_payload(segment)
+            description = (
+                _destructive_git_operation(payload, _depth + 1, segment_cwd, _alias_cache) if payload else None
+            )
+            if description:
+                return description
+            continue
+        if cmd != "git":
+            continue
+
+        alias_payload = _inline_git_alias_payload(segment)
+        if alias_payload:
+            description = _destructive_git_operation(alias_payload, _depth + 1, segment_cwd, _alias_cache)
+            if description:
+                return description
+
+        parsed = _git_command_parts(segment)
+        if not parsed:
+            continue
+        subcommand, args = parsed
+        option_args = args[: args.index("--")] if "--" in args else args
+
+        if subcommand == "reset" and "--hard" in option_args:
+            return "git reset --hard (discards tracked work)"
+
+        if subcommand == "clean":
+            force = "--force" in option_args or any(
+                tok.startswith("-") and not tok.startswith("--") and "f" in tok[1:] for tok in option_args
+            )
+            dry_run = "--dry-run" in option_args or any(
+                tok.startswith("-") and not tok.startswith("--") and "n" in tok[1:] for tok in option_args
+            )
+            if force and not dry_run:
+                return "git clean --force (deletes untracked work)"
+
+        if subcommand == "branch":
+            force_delete = any(
+                tok.startswith("-") and not tok.startswith("--") and "D" in tok[1:] for tok in option_args
+            )
+            force_delete = force_delete or ("--delete" in option_args and "--force" in option_args)
+            force_delete = force_delete or ("-d" in option_args and "-f" in option_args)
+            if force_delete:
+                return "git branch -D (force-deletes a branch)"
+
+        if subcommand == "config":
+            alias_at = next((i for i, arg in enumerate(args) if arg.lower().startswith("alias.")), None)
+            if alias_at is not None and alias_at + 1 < len(args):
+                expansion = " ".join(args[alias_at + 1 :])
+                alias_command = expansion[1:] if expansion.startswith("!") else f"git {expansion}"
+                description = _destructive_git_operation(alias_command, _depth + 1, segment_cwd, _alias_cache)
+                if description:
+                    return "git config destructive alias (persists a tracked-work deletion command)"
+
+        if subcommand in {"checkout", "restore"}:
+            broad = next((arg for arg in args if arg in _WHOLE_TREE_PATHSPECS), None)
+            staged_only = subcommand == "restore" and ("--staged" in option_args or "-S" in option_args)
+            worktree_too = "--worktree" in option_args or "-W" in option_args
+            if broad and (not staged_only or worktree_too):
+                return f"git {subcommand} {broad} (overwrites the whole worktree)"
+            if subcommand == "checkout" and ("-f" in option_args or "--force" in option_args):
+                return "git checkout --force (discards tracked work while switching)"
+
+        if subcommand == "switch" and "--discard-changes" in option_args:
+            return "git switch --discard-changes (discards tracked work while switching)"
+
+        if subcommand not in _GIT_BUILTIN_SUBCOMMANDS:
+            payload = _persistent_git_alias_payload(subcommand, segment_cwd, _alias_cache)
+            if payload:
+                description = _destructive_git_operation(payload, _depth + 1, segment_cwd, _alias_cache)
+                if description:
+                    return f"git alias {subcommand} expands to a destructive command"
+    return None
+
 
 # ═══════════════════════════════════════════════════════════════
 # 4. CREATION GATE PATTERNS (pretool-creation-gate.py)
@@ -156,14 +789,14 @@ _DANGEROUS_PATTERNS: list[tuple[re.Pattern[str], str, str]] = [
 # Still functional for unforeseen cases; every use is audit-logged to stderr.
 _CREATION_BYPASS_ENV = "CREATION_GATE_BYPASS"
 
-_AGENT_PATTERN = re.compile(r"/agents/[^/]+\.md$")
-_SKILL_PATTERN = re.compile(r"/(skills|pipelines)/(?:[^/]+/)?[^/]+/SKILL\.md$")
-_WORKFLOW_REF_PATTERN = re.compile(r"/skills/workflow/references/[^/]+\.md$")
+_AGENT_PATTERN = _rx(r"/agents/[^/]+\.md$")
+_SKILL_PATTERN = _rx(r"/(skills|pipelines)/(?:[^/]+/)?[^/]+/SKILL\.md$")
+_WORKFLOW_REF_PATTERN = _rx(r"/skills/workflow/references/[^/]+\.md$")
 
 # Component-name capture variants of the patterns above (kebab-case name).
-_AGENT_NAME_RE = re.compile(r"/agents/([^/]+)\.md$")
-_SKILL_NAME_RE = re.compile(r"/(?:skills|pipelines)/(?:[^/]+/)?([^/]+)/SKILL\.md$")
-_WORKFLOW_REF_NAME_RE = re.compile(r"/skills/workflow/references/([^/]+)\.md$")
+_AGENT_NAME_RE = _rx(r"/agents/([^/]+)\.md$")
+_SKILL_NAME_RE = _rx(r"/(?:skills|pipelines)/(?:[^/]+/)?([^/]+)/SKILL\.md$")
+_WORKFLOW_REF_NAME_RE = _rx(r"/skills/workflow/references/([^/]+)\.md$")
 
 # ADR-registration handshake (the worktree-observable creation path).
 #
@@ -205,12 +838,12 @@ _ADR_SESSION_WALK_LIMIT = 20
 # correct test for a new entry is: "Is there a single, named skill whose
 # documented output is this path shape?" If not, route through skill-creator.
 _CREATION_PATH_ALLOWLIST: list[tuple[re.Pattern[str], str]] = [
-    # voice-* skills are produced by the `create-voice` skill (Step 5: GENERATE
-    # in skills/content/create-voice/SKILL.md and skills/content/create-voice/references/
-    # skill-generation.md). create-voice is the canonical SOP for voice
+    # voice-* skills are produced by the `writing` skill's Voice Creation mode
+    # (skills/content/writing/SKILL.md and skills/content/writing/references/
+    # cv-skill-generation.md). That mode is the canonical SOP for voice
     # profiles; it scaffolds skills/voice-{name}/SKILL.md, config.json, and
     # profile.json directly via Write.
-    (re.compile(r"/skills/(?:content/)?voice-[^/]+/SKILL\.md$"), "create-voice"),
+    (_rx(r"/skills/(?:content/)?voice-[^/]+/SKILL\.md$"), "writing"),
 ]
 
 # ═══════════════════════════════════════════════════════════════
@@ -221,35 +854,55 @@ _SENSITIVE_BYPASS_ENV = "SENSITIVE_FILE_GUARD_BYPASS"
 
 _SENSITIVE_PATTERNS: list[tuple[re.Pattern[str], str, str]] = [
     # Environment files (except .env.example)
-    (re.compile(r"/\.env$"), "env", ".env"),
-    (re.compile(r"/\.env\.(local|production|staging|development|dev|prod)$"), "env", ".env.*"),
+    (_rx(r"/\.env$"), "env", ".env"),
+    (_rx(r"/\.env\.(local|production|staging|development|dev|prod)$"), "env", ".env.*"),
     # Credential files
-    (re.compile(r"/credentials\.(json|yml|yaml)$"), "credentials", "credentials file"),
-    (re.compile(r"/service-account[^/]*\.json$"), "credentials", "service account JSON"),
+    (_rx(r"/credentials\.(json|yml|yaml)$"), "credentials", "credentials file"),
+    (_rx(r"/service-account[^/]*\.json$"), "credentials", "service account JSON"),
     # SSH keys
-    (re.compile(r"/\.ssh/"), "ssh", "SSH directory"),
-    (re.compile(r"/id_(rsa|ed25519|ecdsa|dsa)$"), "ssh", "SSH private key"),
+    (_rx(r"/\.ssh/"), "ssh", "SSH directory"),
+    (_rx(r"/id_(rsa|ed25519|ecdsa|dsa)$"), "ssh", "SSH private key"),
     # Private key / certificate files
-    (re.compile(r"\.p12$"), "certificate", ".p12 certificate"),
-    (re.compile(r"\.pfx$"), "certificate", ".pfx certificate"),
-    (re.compile(r"\.key$"), "certificate", ".key private key"),
+    (_rx(r"\.p12$"), "certificate", ".p12 certificate"),
+    (_rx(r"\.pfx$"), "certificate", ".pfx certificate"),
+    (_rx(r"\.key$"), "certificate", ".key private key"),
+    (_rx(r"\.pem$"), "certificate", ".pem private key"),
     # Cloud configs
-    (re.compile(r"\.aws/credentials$"), "cloud", "AWS credentials"),
-    (re.compile(r"\.kube/config$"), "cloud", "kubeconfig"),
-    (re.compile(r"\.gcloud/"), "cloud", "gcloud config directory"),
+    (_rx(r"\.aws/credentials$"), "cloud", "AWS credentials"),
+    (_rx(r"\.kube/config$"), "cloud", "kubeconfig"),
+    (_rx(r"\.gcloud/"), "cloud", "gcloud config directory"),
     # Token files
-    (re.compile(r"/token\.json$"), "token", "token.json"),
-    (re.compile(r"/\.tokens$"), "token", ".tokens file"),
+    (_rx(r"/token\.json$"), "token", "token.json"),
+    (_rx(r"/\.tokens$"), "token", ".tokens file"),
+    # Guard control plane (audit S1): .guard-whitelist/.guard-patterns configure
+    # THIS gate's dangerous/sensitive checks — writing one IS the disarm act, and
+    # no agent flow legitimately writes them (owner-authored config only).
+    (_rx(r"/\.guard-(?:whitelist|patterns)$"), "guard-config", ".guard-* guard config"),
+    # Credential stores the home CLAUDE.md names but the list above missed
+    # (audit S4). Each holds a live credential in plaintext.
+    (_rx(r"/\.git-credentials$"), "credentials", ".git-credentials"),
+    (_rx(r"/\.netrc$"), "credentials", ".netrc"),
+    (_rx(r"/\.config/gh/hosts\.yml$"), "token", "gh CLI hosts.yml (auth token)"),
+    (_rx(r"/\.envrc$"), "env", ".envrc (direnv)"),
 ]
 
+# Suffix exceptions: safe ANYWHERE. These name a file that by convention holds
+# placeholders, not secrets, so their location does not change the risk.
 _SENSITIVE_EXCEPTIONS: list[re.Pattern[str]] = [
-    re.compile(r"\.env\.example$"),
-    re.compile(r"\.env\.sample$"),
-    re.compile(r"\.env\.template$"),
-    re.compile(r"/testdata/"),
-    re.compile(r"/fixtures/"),
-    re.compile(r"/__fixtures__/"),
-    re.compile(r"/test_?data/"),
+    _rx(r"\.env\.example$"),
+    _rx(r"\.env\.sample$"),
+    _rx(r"\.env\.template$"),
+]
+
+# Directory exceptions: safe ONLY inside the repo worktree (audit S4). These say
+# "this is test data", which is a claim about a project's own tree. Matched
+# anywhere, `/fixtures/` excused `/home/feedgen/fixtures/.env` — a real
+# credential file in the home directory — from every sensitive-file check.
+_SENSITIVE_DIR_EXCEPTIONS: list[re.Pattern[str]] = [
+    _rx(r"/testdata/"),
+    _rx(r"/fixtures/"),
+    _rx(r"/__fixtures__/"),
+    _rx(r"/test_?data/"),
 ]
 
 # ═══════════════════════════════════════════════════════════════
@@ -293,7 +946,7 @@ _PY_HTTP_SERVER_MODULES = frozenset({"http.server", "simplehttpserver"})
 # `FOO=bar` env-assignment prefix (transparent: the real executable follows).
 # Tokenized via shlex, so the value (quotes already removed) may contain spaces;
 # match the assignment prefix and accept any value content.
-_ENV_ASSIGN_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
+_ENV_ASSIGN_RE = _rx(r"^[A-Za-z_][A-Za-z0-9_]*=")
 
 # Transparent command wrappers — the real executable is the next NON-OPTION token.
 # Their own option flags (e.g. `sudo -u nobody`, `env -i`) are stripped so they do
@@ -419,6 +1072,67 @@ def _is_executable_token(tok: str) -> bool:
     )
 
 
+# How much of a segment `_command_token` tokenizes to find the executable.
+_COMMAND_TOKEN_HEAD_BYTES = 4096
+
+# Above this command size the per-segment walks are skipped (audit S5).
+#
+# The hook fails OPEN by design: a crash or a harness timeout means the tool
+# runs unguarded. So scan cost is a security property, not just latency — a
+# command large enough to blow the 3000ms budget gets NO deny emitted at all,
+# and every check is silently disabled. This cap bounds the expensive phase so
+# an oversized command degrades to the cheap whole-line patterns instead of
+# degrading to nothing.
+#
+# 64 KB is far above any legitimate command (the largest in this repo's own
+# corpus is under 4 KB) and far below the size where cost approaches the
+# budget. Cheap linear patterns still run at any size; only the per-segment
+# tokenizing walks are skipped, and the skip is announced on stderr so it is
+# visible rather than silent.
+_MAX_SEGMENT_SCAN_BYTES = 64 * 1024
+
+
+def _oversized_for_segment_scan(command: str, check: str) -> bool:
+    """True if `command` is too large for per-segment scanning; warns once."""
+    if len(command) <= _MAX_SEGMENT_SCAN_BYTES:
+        return False
+    print(
+        f"[{check}] ADVISORY: command is {len(command)} bytes (cap {_MAX_SEGMENT_SCAN_BYTES}); "
+        f"per-segment scanning skipped to stay inside the hook timeout. "
+        f"Cheap whole-command patterns still applied.",
+        file=sys.stderr,
+    )
+    return True
+
+
+# Shell keywords that precede a real command inside a compound statement.
+# Stripped so the command-token walk sees the executable, not the keyword.
+_COMPOUND_KEYWORDS = frozenset({"then", "do", "else", "elif"})
+
+
+def _strip_compound_syntax(seg: str) -> str:
+    """Strip compound-statement syntax wrapping a single command.
+
+    Removes leading subshell/group openers and the keywords that introduce a
+    command inside a conditional or loop body, plus the matching trailing
+    closers. Both ends matter: `(python3 -m http.server)` needs the `(` gone so
+    the command token resolves to `python3`, AND the `)` gone so the `-m` value
+    resolves to `http.server` rather than `http.server)`.
+
+    Loops because openers stack (`( { python3 …`, `then (python3 …`). Only the
+    outer syntax is removed; the command body is left intact for the tokenizer.
+    """
+    for _ in range(8):  # bounded: stacked openers past this depth are not real usage
+        stripped = seg.strip(" \t").lstrip("(){").rstrip(")};")
+        head = stripped.split(None, 1)
+        if head and head[0].lower() in _COMPOUND_KEYWORDS:
+            stripped = head[1] if len(head) > 1 else ""
+        if stripped == seg:
+            return seg
+        seg = stripped
+    return seg
+
+
 def _strip_leading_prefixes(segment: str) -> str:
     """Strip leading env-assignments, transparent wrappers, and exec-runner
     prefixes so the real executable is at the front.
@@ -430,8 +1144,16 @@ def _strip_leading_prefixes(segment: str) -> str:
     0.0.0.0`) or an exec-launched server (`npx vite --host 0.0.0.0`) would slip
     past command-token detection. A flag's value is not consumed when it is itself
     an executable name (guards `env -i vite …` against eating `vite`).
+
+    Also strips leading compound-command syntax (audit S2): subshell/group
+    openers `(` `{` and the shell keywords that introduce a command inside a
+    conditional or loop body (`then`, `do`, `else`, `elif`). Without this,
+    `(python3 -m http.server)`, `{ python3 -m http.server; }`, `if true; then
+    … fi`, and `while :; do … done` all resolved to a non-executable token and
+    slipped past every command-anchored guard.
     """
     seg = segment.strip().lstrip("'\"")
+    seg = _strip_compound_syntax(seg)
     # shlex respects quotes so a quoted env value with spaces (`A='x y' vite …`)
     # stays one token; fall back to naive split on a parse error (unbalanced quote).
     try:
@@ -513,7 +1235,12 @@ def _command_token(segment: str) -> str:
     Returns the basename so `/usr/bin/vite` and `./node_modules/.bin/vite` match,
     and strips a trailing `@version` so `npx vite@latest` still resolves to `vite`.
     """
-    seg = _strip_leading_prefixes(segment)
+    # Only the LEADING prefix chain matters here, so tokenize just the head of
+    # the segment (audit S5). `_strip_leading_prefixes` shlex-splits whatever it
+    # is given, and shlex is super-linear: on a 600 KB command this single call
+    # cost 5.7s of the hook's ~6s total. No real wrapper chain
+    # (`sudo -u x env -i npx --yes …`) approaches this many characters.
+    seg = _strip_leading_prefixes(segment[:_COMMAND_TOKEN_HEAD_BYTES])
     m = re.match(r"['\"]?([^\s'\"]+)", seg)
     if not m:
         return ""
@@ -581,12 +1308,12 @@ _NODE_RUNNERS = frozenset({"npm", "pnpm", "yarn", "bun"})
 
 # Explicit bind flag value on a python http.server invocation (http.server uses
 # --bind/-b). Captures bracketed IPv6 too: --bind [::1].
-_PY_BIND_RE = re.compile(r"(?:--bind(?:\s+|=)|(?<![\w-])-b\s+)['\"]?(\[[^\]]+\]|[^\s'\"]+)")
+_PY_BIND_RE = _rx(r"(?:--bind(?:\s+|=)|(?<![\w-])-b\s+)['\"]?(\[[^\]]+\]|[^\s'\"]+)")
 
 # Long-form public-bind/host flags used by node/JS/go/python dev servers:
 #   --bind/--host/--listen/--address <value>. Supports `=` form. Always scanned —
 #   long flags do not collide with common non-server short flags.
-_HOST_FLAG_RE = re.compile(r"(?:--(?:bind|host|listen|address)(?:\s+|=))['\"]?(\[[^\]]+\]|[^\s'\"]+)")
+_HOST_FLAG_RE = _rx(r"(?:--(?:bind|host|listen|address)(?:\s+|=))['\"]?(\[[^\]]+\]|[^\s'\"]+)")
 
 # Value-less `--host` / `-H` on a JS dev server (#720). In Vite/Nuxt/Next a bare
 # `--host` (or `-H`) with no value — i.e. end of segment, or the next token is
@@ -594,7 +1321,7 @@ _HOST_FLAG_RE = re.compile(r"(?:--(?:bind|host|listen|address)(?:\s+|=))['\"]?(\
 # (equivalent to 0.0.0.0). The host-flag scans above require a value token, so
 # this slips through unless detected explicitly. Captures: `--host` / `-H` /
 # `--host=` with nothing after, OR followed by a flag, OR end of string.
-_VALUELESS_HOST_FLAG_RE = re.compile(r"(?:--host|(?<![\w-])-H)(?:=\s*)?(?=\s*$|\s+-)")
+_VALUELESS_HOST_FLAG_RE = _rx(r"(?:--host|(?<![\w-])-H)(?:=\s*)?(?=\s*$|\s+-)")
 
 
 # Per-server SHORT bind/host flags. Each server uses a DIFFERENT short letter, and
@@ -612,14 +1339,18 @@ _SERVER_SHORT_FLAGS: dict[str, re.Pattern[str]] = {
     "http-server": _short_flag_re("a"),
     "gunicorn": _short_flag_re("b"),
     "flask": _short_flag_re("h"),  # `flask run -h <host>` is short for --host
+    # `serve -l <listen>` takes `tcp://HOST:PORT`, a bare port, or a unix socket
+    # (audit S3). Scoped to the `serve` command token, never scanned globally:
+    # `-l` is far too common an unrelated flag (`ls -l`) to put in _HOST_FLAG_RE.
+    "serve": _short_flag_re("l"),
 }
 
 # php -S <host>:<port>  (built-in PHP dev server; binds exactly the given host).
-_PHP_SERVER_RE = re.compile(r"\bphp\b[^|;&]*?\s-S\s+['\"]?(\[[^\]]+\]|[^\s'\":]+)")
+_PHP_SERVER_RE = _rx(r"\bphp\b[^|;&]*?\s-S\s+['\"]?(\[[^\]]+\]|[^\s'\":]+)")
 
 # `php artisan serve` (Laravel dev server). Only THIS php subcommand exposes a
 # server via --host; a plain `php script.php --host …` is an ordinary CLI script.
-_PHP_ARTISAN_SERVE_RE = re.compile(r"\bartisan\s+serve\b")
+_PHP_ARTISAN_SERVE_RE = _rx(r"\bartisan\s+serve\b")
 
 # Client-side JS/static dev servers whose --host flag exposes the server publicly,
 # matched as the COMMAND token (not a free-floating word).
@@ -637,6 +1368,10 @@ _JS_DEV_SERVERS = frozenset(
         "remix",
         "svelte-kit",
         "vue-cli-service",
+        # `serve` (the npm static-file server). The home CLAUDE.md names
+        # `npx serve -l tcp://0.0.0.0` as forbidden by default, but the command
+        # was not recognized as a server at all, so it was ALLOWED (audit S3).
+        "serve",
     }
 )
 
@@ -645,6 +1380,31 @@ _JS_DEV_SERVERS = frozenset(
 # -b short flag). Recognized either as their own console-script command token or
 # via `python -m <module>`, resolved by the token-anchored _python_m_module.
 _PY_WEB_SERVERS = frozenset({"flask", "uvicorn", "gunicorn"})
+
+
+# A `scheme://` prefix on a bind value (`serve -l tcp://0.0.0.0:3000`).
+_HOST_SCHEME_RE = _rx(r"^[a-z][a-z0-9+.-]*://")
+# A trailing `:port` on an unbracketed host (`0.0.0.0:3000`). Not applied to a
+# bare IPv6 address (`::`, `fe80::1`), which is why bracketing is required for
+# IPv6-with-port and why a multi-colon value is left alone.
+_HOST_PORT_RE = _rx(r"^([^:]+):\d+$")
+
+
+def _normalize_host_value(low: str) -> str:
+    """Reduce a bind value to its bare host: drop `scheme://` and `:port`.
+
+    Without this, `serve -l tcp://127.0.0.1:3000` reads as a non-loopback host
+    and over-blocks, while the loopback checks below only ever saw bare
+    addresses. `[::]:8080` keeps its brackets so the IPv6 wildcard still matches.
+    """
+    low = _HOST_SCHEME_RE.sub("", low)
+    if low.startswith("["):  # `[::1]:8080` → `[::1]`
+        end = low.find("]")
+        if end != -1:
+            return low[: end + 1]
+        return low
+    m = _HOST_PORT_RE.match(low)
+    return m.group(1) if m else low
 
 
 def _host_is_public(host: str) -> bool:
@@ -660,7 +1420,7 @@ def _host_is_public(host: str) -> bool:
         return True  # flag present with no usable value — fail safe (block)
     if h.startswith("-"):
         return False  # captured token is a flag, not a host address
-    low = h.lower()
+    low = _normalize_host_value(h.lower())
     if low in _LOCAL_HOSTS:
         return False
     if low.startswith("127."):  # IPv4 loopback range (127.x)
@@ -704,11 +1464,15 @@ def _load_guard_whitelist() -> list[str]:
 
 
 def _is_whitelisted(command: str, whitelist: list[str]) -> bool:
-    """Check if the command matches any whitelist entry."""
-    for entry in whitelist:
-        if entry in command:
-            return True
-    return False
+    """True if the FULL command exactly matches a whitelist entry.
+
+    Full-command anchoring, not substring containment: substring matching let
+    any command smuggle a whitelisted string past the guard (a `node_modules`
+    entry allowed `echo node_modules && rm -rf /` — audit S1). One entry
+    whitelists exactly one command, nothing more.
+    """
+    cmd = command.strip()
+    return any(entry == cmd for entry in whitelist)
 
 
 def _load_guard_patterns() -> list[tuple[re.Pattern[str], str, str]]:
@@ -745,9 +1509,43 @@ def _load_guard_patterns() -> list[tuple[re.Pattern[str], str, str]]:
     return extra
 
 
+def _repo_worktree_root() -> Path | None:
+    """Nearest ancestor of cwd containing `.git`, or None outside a repo.
+
+    Walks the filesystem instead of shelling out to git: this runs on every
+    sensitive-file check and the hook has a hard latency budget.
+    """
+    try:
+        here = Path.cwd().resolve()
+    except OSError:
+        return None
+    for candidate in (here, *here.parents):
+        if (candidate / ".git").exists():
+            return candidate
+    return None
+
+
 def _is_sensitive_exception(file_path: str) -> bool:
-    """Check if file matches a sensitive-file exception pattern."""
-    return any(p.search(file_path) for p in _SENSITIVE_EXCEPTIONS)
+    """Check if `file_path` matches a sensitive-file exception.
+
+    Suffix exceptions (`.env.example` and friends) apply anywhere. Directory
+    exceptions (`/fixtures/`, `/testdata/`, …) apply ONLY inside the repo
+    worktree — a "this is test data" claim is only meaningful about a
+    project's own tree, and honoring it anywhere excused real credential
+    files elsewhere on the box (audit S4).
+    """
+    if any(p.search(file_path) for p in _SENSITIVE_EXCEPTIONS):
+        return True
+    if not any(p.search(file_path) for p in _SENSITIVE_DIR_EXCEPTIONS):
+        return False
+    root = _repo_worktree_root()
+    if root is None:
+        return False
+    try:
+        resolved = Path(file_path).expanduser().resolve()
+    except (OSError, RuntimeError):
+        return False
+    return resolved == root or root in resolved.parents
 
 
 def _block(message: str, tool_name: str = "", reason: str = "") -> None:
@@ -759,7 +1557,16 @@ def _block(message: str, tool_name: str = "", reason: str = "") -> None:
     """
     print(message, file=sys.stderr)
     try:
-        record_governance_event("hook_blocked", tool_name=tool_name, hook_phase="pre", severity="high", blocked=True)
+        record_governance(
+            "hook_blocked",
+            hook_name="pretool-unified-gate",
+            tool_name=tool_name,
+            hook_phase="pre",
+            severity="high",
+            blocked=True,
+            event=_CURRENT_EVENT,
+            command=_CURRENT_COMMAND,
+        )
     except Exception:
         pass  # Never let recording prevent a block
     deny_reason = reason if reason else message
@@ -774,13 +1581,63 @@ def _block(message: str, tool_name: str = "", reason: str = "") -> None:
     sys.exit(0)
 
 
+def _emit_advisories() -> None:
+    """Print queued allow-path advisories as one PreToolUse additionalContext.
+
+    No permissionDecision: the tool call proceeds exactly as before, and the
+    model now sees the advisory.
+    """
+    if _ADVISORIES:
+        context = "\n\n".join(_ADVISORIES)
+        print(json.dumps({"hookSpecificOutput": {"hookEventName": "PreToolUse", "additionalContext": context}}))
+
+
 # ═══════════════════════════════════════════════════════════════
 # CHECK FUNCTIONS — each returns normally (allow) or calls _block (JSON deny + exit 0)
 # ═══════════════════════════════════════════════════════════════
 
 
+# A shell redirection token (`>`, `>>`, `2>`, `2>&1`, `&>`, `<`, `>file`).
+_REDIRECT_TOKEN_RE = _rx(r"^\d*(?:>|<|&>)")
+
+
+def _git_force_add_paths(command: str) -> list[str]:
+    """Return the path arguments of every `git add` that forces (`-f`/`--force`).
+
+    Reads only each `git add` command's own arguments: parsing stops at shell
+    separators (`&&`, `||`, `;`, `|`, `&`, newline) and at the first
+    redirection, so `git add -A && run > $S/ci.log 2>&1` yields no paths.
+    """
+    paths: list[str] = []
+    for line in command.split("\n"):
+        for segment in _SEGMENT_SPLIT_RE.split(line):
+            parsed = _git_command_parts(segment)
+            if not parsed or parsed[0] != "add":
+                continue
+            force = False
+            seg_paths: list[str] = []
+            past_separator = False
+            for tok in parsed[1]:
+                if _REDIRECT_TOKEN_RE.match(tok):
+                    break
+                if tok == "--" and not past_separator:
+                    past_separator = True
+                    continue
+                if tok.startswith("-") and not past_separator:
+                    if tok == "--force" or (not tok.startswith("--") and "f" in tok[1:]):
+                        force = True
+                    continue
+                seg_paths.append(tok)
+            if force:
+                paths.extend(seg_paths)
+    return paths
+
+
 def check_gitignore_bypass(command: str) -> None:
     """Block git add -f on gitignored paths and .gitignore edits."""
+    if command.lstrip().startswith(_GITIGNORE_BYPASS + " "):
+        print(f"[gitignore-bypass] AUDIT: owner-approved bypass used: {command[:200]}", file=sys.stderr)
+        return
     # Block 1: .gitignore modification attempts
     cmd_part = command.split("<<")[0] if "<<" in command else command
     if (
@@ -790,39 +1647,22 @@ def check_gitignore_bypass(command: str) -> None:
     ):
         _block(
             "[gitignore-bypass] BLOCKED: Agents must not modify .gitignore.\n"
-            "[gitignore-bypass] This file controls repository safety boundaries.",
-            reason="Agents must not modify .gitignore. This file controls repository safety boundaries.",
+            "[gitignore-bypass] This file controls repository safety boundaries. Ask the owner.",
+            reason="Agents must not modify .gitignore. This file controls repository safety boundaries. Ask the owner before changing it.",
         )
 
     # Fast path: no git add in command
-    if "git add" not in command:
+    if "git" not in command or "add" not in command:
         return
 
-    # Block 2: git add with force flags
-    if not re.search(r"git\s+add\s+.*(-f|--force)", command):
-        return
-
-    # Extract paths being force-added
-    parts = command.split()
-    try:
-        add_idx = parts.index("add")
-    except ValueError:
-        return
-
-    paths = []
-    past_separator = False
-    for part in parts[add_idx + 1 :]:
-        if part == "--":
-            past_separator = True
-            continue
-        if part.startswith("-") and not past_separator:
-            continue
-        paths.append(part)
+    paths = _git_force_add_paths(command)
 
     if not paths:
         return
 
     # Check which paths are gitignored
+    import subprocess  # lazy: see _LAZY_MODULES
+
     try:
         result = subprocess.run(
             ["git", "check-ignore"] + paths,
@@ -864,6 +1704,8 @@ def _extract_effective_cwd(command: str, default_cwd: str | None = None) -> str 
 
 def _is_worktree_on_feature_branch(cwd: str) -> bool:
     """Return True if cwd is a worktree directory on a non-protected branch."""
+    import subprocess  # lazy: see _LAZY_MODULES
+
     try:
         result = subprocess.run(
             ["git", "branch", "--show-current"],
@@ -902,24 +1744,59 @@ def check_git_submission(command: str) -> None:
                     return
             _block(
                 f"[git-submission-gate] BLOCKED: {message}\n[fix-with-skill] {skill_name}",
-                reason=f"{message} Use the {skill_name} skill instead.",
+                reason=(f"{message}. [fix-with-skill] {skill_name}\nCall the Skill tool with `{skill_name}`."),
             )
+
+
+# Safe-path advice appended to a block message, keyed by the check description.
+_DANGEROUS_SAFE_PATH_HINTS = {
+    "git branch -D (force-deletes a branch)": (
+        "Safe path: use `git branch -d <name>` for a merged branch. For a squash-merged "
+        "branch (which -d refuses), confirm it with `gh pr list --state merged --head <name>`, "
+        "then ask the owner before force-deleting."
+    ),
+}
 
 
 def check_dangerous_command(command: str) -> None:
     """Block destructive commands unless bypassed or whitelisted."""
     if os.environ.get(_DANGEROUS_BYPASS_ENV) == "1":
         return
+    if command.lstrip().startswith(_DANGEROUS_BYPASS_PREFIX + " "):
+        print(f"[dangerous-command] AUDIT: owner-approved bypass used: {command[:200]}", file=sys.stderr)
+        return
 
     # Load whitelist once before scanning rather than on each match.
     whitelist = _load_guard_whitelist()
+
+    # Functional walks (audit S2) share the regex rules' whitelist contract:
+    # a full-command whitelist entry skips the rule, nothing else does.
+    for check, category in (
+        (_rm_destructive_target, "filesystem"),
+        (_force_push_protected, "git"),
+        (_destructive_git_operation, "git"),
+    ):
+        description = check(command)
+        if description and not _is_whitelisted(command, whitelist):
+            hint = _DANGEROUS_SAFE_PATH_HINTS.get(description, "")
+            _block(
+                f"[dangerous-command] BLOCKED: {description} ({category})\n"
+                f"[dangerous-command] Command: {command}\n"
+                + (f"[dangerous-command] {hint}\n" if hint else "")
+                + "[dangerous-command] To allow: add pattern to .guard-whitelist",
+                reason=f"Dangerous command blocked: {description} (category: {category}). "
+                + (f"{hint} " if hint else "")
+                + "To allow, add a pattern to .guard-whitelist.",
+            )
 
     # Intentionally scans full command including heredoc bodies.
     # Over-blocking preferred for destructive commands.
     for pattern, category, description in _DANGEROUS_PATTERNS:
         if pattern.search(command):
             if _is_whitelisted(command, whitelist):
-                return
+                # Skip THIS rule only — a whitelist hit must never end the whole
+                # scan (`return` here let one hit disarm every later rule, audit S1).
+                continue
             _block(
                 f"[dangerous-command] BLOCKED: {description} ({category})\n"
                 f"[dangerous-command] Command: {command}\n"
@@ -998,6 +1875,8 @@ def _adr_registration_allows(component: str, file_path: str, cwd: str) -> str | 
         derived = stem[len("pipeline-") :] if stem.startswith("pipeline-") else stem
         if derived != component:
             continue
+        import hashlib  # lazy: see _LAZY_MODULES
+
         try:
             digest = "sha256:" + hashlib.sha256(adr_path.read_bytes()).hexdigest()
         except OSError:
@@ -1053,23 +1932,38 @@ def check_creation_gate(file_path: str, cwd: str = "") -> None:
 
     component_label = component or "<name>"
     _block(
-        f"[creation-gate] BLOCKED: New {component_type} must be created via skill-creator or skill-creation-pipeline.\n"
+        f"[creation-gate] BLOCKED: New {component_type} must follow the skill creation workflow.\n"
         f"[creation-gate] Path: {file_path}\n"
-        f"[creation-gate] No Task tool (worktree agent)? Invoke the skill-creator skill, write the ADR, register it:\n"
+        f"[creation-gate] No Task tool (worktree agent)? Use the skill path, write the ADR, and register it:\n"
+        f"[creation-gate] Call the Skill tool with `toolkit`.\n"
         f"[creation-gate]   python3 scripts/adr-query.py register --adr adr/{component_label}.md\n"
         f"[creation-gate] A registered ADR named '{component_label}' unlocks this path; retry the Write after registering.\n"
         f"[fix-with-agent] skill-creator",
         reason=(
             f"New {component_type} files must be created via the skill-creator agent "
-            f"([fix-with-agent] skill-creator). Worktree agents without the Task tool: invoke "
-            f"skill-creator as a skill, write adr/{component_label}.md, run "
+            f"([fix-with-agent] skill-creator). Worktree agents without the Task tool must use the skill path. "
+            f"Call the Skill tool with `toolkit`. Write "
+            f"adr/{component_label}.md, run "
             f"`python3 scripts/adr-query.py register --adr adr/{component_label}.md`, then retry this Write."
         ),
     )
 
 
-def check_sensitive_file(file_path: str) -> None:
-    """Block writes to sensitive files unless bypassed or excepted."""
+def check_sensitive_file(file_path: str, *, deny: bool = True) -> None:
+    """Flag access to sensitive files unless bypassed or excepted.
+
+    Write/Edit (deny=True, default): hard block. Creating or changing a
+    credential file is the act CLAUDE.md's secret rules exist to stop, and
+    this file already denies equivalent-risk write-adjacent acts (chmod
+    loosening a key, git-add staging one). Deny keeps Write/Edit consistent.
+
+    Read (deny=False): warn/log only, no block. A Read does not mutate, and
+    agents here routinely read a project's own .env during ordinary
+    debugging — blocking that breaks common legitimate work for less
+    benefit than Write's block gives. Warn matches this file's existing
+    posture for other context-dependent, non-mutating risks (see the
+    sysadmin-guard WARN-only patterns, _check_sysadmin_segment).
+    """
     if os.environ.get(_SENSITIVE_BYPASS_ENV) == "1":
         return
 
@@ -1079,13 +1973,243 @@ def check_sensitive_file(file_path: str) -> None:
     all_patterns = _SENSITIVE_PATTERNS + _load_guard_patterns()
     for pattern, category, description in all_patterns:
         if pattern.search(file_path):
+            if not deny:
+                advisory = (
+                    f"[sensitive-file-guard] ADVISORY: Read of sensitive file ({category})\n"
+                    f"[sensitive-file-guard] Path: {file_path}\n"
+                    f"[sensitive-file-guard] Pattern: {description}\n"
+                    f"[sensitive-file-guard] Reading credential files needs owner approval "
+                    f"(OWNER-APPROVED-SECRET-READ) per CLAUDE.md. Not blocked — flagged for review."
+                )
+                print(advisory, file=sys.stderr)
+                try:
+                    record_governance(
+                        "security_finding",
+                        hook_name="pretool-unified-gate",
+                        tool_name="Read",
+                        hook_phase="pre",
+                        severity="warning",
+                        blocked=False,
+                        event=_CURRENT_EVENT,
+                    )
+                except Exception:
+                    pass  # Never let recording change the outcome
+                _ADVISORIES.append(advisory)
+                return
             _block(
                 f"[sensitive-file-guard] BLOCKED: Write to sensitive file ({category})\n"
                 f"[sensitive-file-guard] Path: {file_path}\n"
                 f"[sensitive-file-guard] Pattern: {description}\n"
-                f"[sensitive-file-guard] To allow: set SENSITIVE_FILE_GUARD_BYPASS=1 or add exception to .guard-patterns",
-                reason=f"Write to sensitive file blocked ({category}: {description}). Path: {file_path}. Set SENSITIVE_FILE_GUARD_BYPASS=1 or add an exception to .guard-patterns to allow.",
+                # The bypass env is honored but deliberately NOT advertised
+                # here (audit S5). Printing it taught the operator to disarm
+                # the guard as the first response to a block — and this file
+                # already made the opposite choice for the guard-integrity and
+                # sysadmin denies, whose messages withhold the same hint.
+                f"[sensitive-file-guard] Writing a credential file needs explicit owner approval per CLAUDE.md.",
+                reason=(
+                    f"Write to sensitive file blocked ({category}: {description}). Path: {file_path}. "
+                    f"Creating or changing a credential file needs explicit owner approval per CLAUDE.md."
+                ),
             )
+
+
+# ── sensitive files reached via Bash (audit S4) ──────────────────
+#
+# `check_sensitive_file` ran only in the Write/Edit/Read tool branches, so the
+# identical acts spelled as a shell command were never examined at all:
+# `cat ~/.ssh/id_ed25519`, `cp ~/.env /var/www/html/`, and `cat > ~/.env` all
+# passed while the Write-tool equivalents were denied.
+#
+# Posture deliberately mirrors the tool branches rather than inventing a
+# stricter one for Bash:
+#   * COPY/WRITE verbs and redirect targets DENY — they duplicate a secret to a
+#     new location or mutate a credential file, which is what Write/Edit deny.
+#   * READ verbs WARN only — same as the Read tool, and for the same reason
+#     documented there: agents routinely read a project's own .env while
+#     debugging, and blocking that breaks common legitimate work.
+
+# Verbs that duplicate or mutate a file → deny on a sensitive path in any
+# argument position (source OR destination: copying a secret out is the
+# exfiltration shape the home CLAUDE.md forbids).
+_SENSITIVE_COPY_VERBS = frozenset({"cp", "mv", "scp", "rsync", "install", "tee", "dd", "rclone"})
+
+# Verbs that only display a file → warn.
+_SENSITIVE_READ_VERBS = frozenset(
+    {
+        "cat",
+        "bat",
+        "less",
+        "more",
+        "head",
+        "tail",
+        "od",
+        "xxd",
+        "hexdump",
+        "strings",
+        "base64",
+        "nl",
+        "cut",
+        "sort",
+        "uniq",
+        "wc",
+    }
+)
+
+# An output redirect target (`> path`, `>> path`, `2> path`). Writing here
+# creates or truncates the named file, so it is a write regardless of verb.
+_REDIRECT_TARGET_RE = _rx(r"(?<!<)>>?\s*['\"]?([^\s'\"|;&<>]+)")
+
+
+def _sensitive_bash_paths(segment: str) -> tuple[list[str], list[str]]:
+    """Return (deny_paths, warn_paths) for one shell segment.
+
+    Redirect targets are always write paths. Otherwise the segment's command
+    token picks the posture; a segment led by neither kind of verb yields
+    nothing (an unrecognized command's arguments are not assumed to be files).
+    """
+    deny_paths = [m.group(1) for m in _REDIRECT_TARGET_RE.finditer(segment)]
+
+    verb = _command_token(segment)
+    if verb not in _SENSITIVE_COPY_VERBS and verb not in _SENSITIVE_READ_VERBS:
+        return deny_paths, []
+
+    try:
+        toks = shlex.split(_strip_leading_prefixes(segment), posix=True)
+    except ValueError:
+        toks = _strip_leading_prefixes(segment).split()
+    args = [t for t in toks[1:] if not t.startswith("-")]
+    if verb in _SENSITIVE_COPY_VERBS:
+        return deny_paths + args, []
+    return deny_paths, args
+
+
+def _matches_sensitive(path: str) -> tuple[str, str] | None:
+    """Return (category, description) if `path` is sensitive, else None.
+
+    Normalizes `~` so `~/.env` matches the same anchored patterns an absolute
+    path does — the patterns are rooted at `/`, so an un-expanded `~` never
+    matched anything.
+    """
+    expanded = os.path.expanduser(path)
+    if not expanded.startswith("/"):
+        expanded = str(Path.cwd() / expanded)
+    if _is_sensitive_exception(expanded):
+        return None
+    for pattern, category, description in _SENSITIVE_PATTERNS + _load_guard_patterns():
+        if pattern.search(expanded):
+            return category, description
+    return None
+
+
+def check_sensitive_bash(command: str) -> None:
+    """Deny/warn when a Bash command reads, copies, or overwrites a secret."""
+    if os.environ.get(_SENSITIVE_BYPASS_ENV) == "1":
+        return
+
+    if _oversized_for_segment_scan(command, "sensitive-file-guard"):
+        return
+
+    for line in _non_heredoc_lines(command):
+        for segment in _SEGMENT_SPLIT_RE.split(line):
+            if not segment.strip():
+                continue
+            deny_paths, warn_paths = _sensitive_bash_paths(segment)
+            for path in deny_paths:
+                hit = _matches_sensitive(path)
+                if hit:
+                    category, description = hit
+                    _block(
+                        f"[sensitive-file-guard] BLOCKED: shell command writes or copies a sensitive file ({category})\n"
+                        f"[sensitive-file-guard] Path: {path}\n"
+                        f"[sensitive-file-guard] Pattern: {description}\n"
+                        f"[sensitive-file-guard] Command: {command}",
+                        reason=(
+                            f"Shell command writes or copies a sensitive file ({category}: {description}). "
+                            f"Path: {path}. Duplicating or overwriting a credential file needs explicit owner "
+                            f"approval per CLAUDE.md."
+                        ),
+                    )
+            for path in warn_paths:
+                hit = _matches_sensitive(path)
+                if hit:
+                    category, description = hit
+                    print(
+                        f"[sensitive-file-guard] ADVISORY: shell command reads a sensitive file ({category})\n"
+                        f"[sensitive-file-guard] Path: {path}\n"
+                        f"[sensitive-file-guard] Pattern: {description}\n"
+                        f"[sensitive-file-guard] Reading credential files needs owner approval "
+                        f"(OWNER-APPROVED-SECRET-READ) per CLAUDE.md. Not blocked — flagged for review.",
+                        file=sys.stderr,
+                    )
+
+
+# ═══════════════════════════════════════════════════════════════
+# 5b. GUARD SELF-PROTECTION (audit S1)
+# ═══════════════════════════════════════════════════════════════
+#
+# ~/.claude/hooks symlinks into this repo, so a Write/Edit to hooks/<hook>.py —
+# via EITHER path — changes LIVE enforcement code mid-session, and an edit to
+# settings.json can plant *_BYPASS=1 in the env block and disarm every guard.
+# Deny Write/Edit to those files unless the edit happens on a feature branch:
+# the repo's documented development flow (branch → PR → review → merge). Direct
+# edits on main/master, or outside any git repo (the deployed
+# ~/.claude/settings.json), are the disarm shape and are denied.
+#
+# Residual (accepted): a feature-branch edit is still live immediately (same
+# file). This check is a speed bump against casual self-disarm, not a sandbox —
+# the gate fails open by design, so a determined actor is stopped by review and
+# telemetry, not by this check. Every allowed guard edit emits an audit line.
+# The bypass env is honored but deliberately NOT advertised in the deny message
+# (same posture as the sysadmin/public-server guards).
+_GUARD_INTEGRITY_BYPASS_ENV = "GUARD_INTEGRITY_BYPASS"
+_SETTINGS_BASENAMES = frozenset({"settings.json", "settings.local.json"})
+
+
+def _live_hooks_dir() -> Path | None:
+    """Resolved deployed-hooks directory (~/.claude/hooks), or None.
+
+    resolve() follows the deployment symlink into the repo, so a write addressed
+    via either the deployed path or the repo working copy maps to the same
+    protected directory.
+    """
+    try:
+        live = Path.home() / ".claude" / "hooks"
+        return live.resolve() if live.is_dir() else None
+    except OSError:
+        return None
+
+
+def check_guard_integrity(file_path: str) -> None:
+    """Deny Write/Edit to live enforcement files except on a feature branch."""
+    if os.environ.get(_GUARD_INTEGRITY_BYPASS_ENV) == "1":
+        return
+    try:
+        resolved = Path(file_path).resolve()
+    except OSError:
+        resolved = Path(file_path)
+    live = _live_hooks_dir()
+    in_live_hooks = live is not None and (resolved == live or live in resolved.parents)
+    is_settings = resolved.name in _SETTINGS_BASENAMES and resolved.parent.name == ".claude"
+    if not in_live_hooks and not is_settings:
+        return
+    if _is_worktree_on_feature_branch(str(resolved.parent)):
+        # Audit line: every guard-file edit is visible in verbose mode/telemetry.
+        print(
+            f"[guard-integrity] AUDIT: feature-branch edit of enforcement file allowed: {file_path}",
+            file=sys.stderr,
+        )
+        return
+    target_kind = "live hook code" if in_live_hooks else "Claude settings"
+    _block(
+        f"[guard-integrity] BLOCKED: direct edit of {target_kind}: {file_path}\n"
+        f"[guard-integrity] Deployed hooks and settings.json are live enforcement controls.\n"
+        f"[guard-integrity] Edit them on a feature branch (git checkout -b) and land via a reviewed PR.",
+        reason=(
+            f"Editing {target_kind} ({file_path}) outside a feature branch is blocked — "
+            f"deployed hooks and settings.json are live enforcement controls. "
+            f"Create a feature branch (git checkout -b fix/<slug>) and land the change via a reviewed PR."
+        ),
+    )
 
 
 _PUBLIC_SERVER_DENY_MSG = (
@@ -1110,9 +2234,7 @@ _PUBLIC_SERVER_DENY_MSG = (
 # Commands that merely DISPLAY or SEARCH text — a server string in their args is
 # data, not an executed invocation. Used to suppress false positives like
 # `echo 'python3 -m http.server'` and `grep -r 'vite --host 0.0.0.0' .`.
-_DISPLAY_CMD_RE = re.compile(
-    r"^(?:#|:|echo\b|printf\b|grep\b|egrep\b|fgrep\b|rg\b|cat\b|less\b|more\b|head\b|tail\b|comm\b)"
-)
+_DISPLAY_CMD_RE = _rx(r"^(?:#|:|echo\b|printf\b|grep\b|egrep\b|fgrep\b|rg\b|cat\b|less\b|more\b|head\b|tail\b|comm\b)")
 
 # Shell separators that start a new command segment. Splitting on these lets us
 # evaluate each segment independently: `echo foo && python3 -m http.server`
@@ -1121,14 +2243,14 @@ _DISPLAY_CMD_RE = re.compile(
 # args contain literal newlines that must stay attached to their leading command
 # (e.g. `printf '%s\n' '...'`, `cat <<'EOF' ... EOF`) — splitting them produced
 # false positives (codex-found). Chaining is still caught via ; && || | &.
-_SEGMENT_SPLIT_RE = re.compile(r"(?:&&|\|\||[;|&])")
+_SEGMENT_SPLIT_RE = _rx(r"(?:&&|\|\||[;|&])")
 
 # Command-substitution bodies: $(...), `...`, and <(...) / >(...) process subs.
 # A server launched inside a substitution is a real invocation even when the
 # outer command is a display command (`echo $(python3 -m http.server)`), so the
 # body is evaluated independently before display-command suppression. Single
 # level (no recursive $( $( ) ) nesting) — an accepted regex-on-text residual.
-_SUBSTITUTION_RE = re.compile(r"\$\((?P<dollar>[^()]*)\)|`(?P<back>[^`]*)`|[<>]\((?P<proc>[^()]*)\)")
+_SUBSTITUTION_RE = _rx(r"\$\((?P<dollar>[^()]*)\)|`(?P<back>[^`]*)`|[<>]\((?P<proc>[^()]*)\)")
 
 
 def _single_quoted_spans(text: str) -> list[tuple[int, int]]:
@@ -1282,15 +2404,22 @@ def _scan_host_flags(seg: str, short_re: re.Pattern[str] | None = None) -> bool:
 
     Always scans long flags (--bind/--host/--listen/--address). Additionally
     scans `short_re` (the specific short bind flag this server uses) when given.
+
+    LAST flag wins (audit S3). Every one of these servers takes the final
+    occurrence when a bind flag is repeated, so `--bind 127.0.0.1 --bind
+    0.0.0.0` binds ALL interfaces. Scanning for any public match would be
+    right there but wrong in reverse; short-circuiting on the first match was
+    wrong in exactly the dangerous direction (that command was ALLOWED). Both
+    flag families are collected and ordered by position so the decision
+    reflects what the server will actually do.
     """
-    for m in _HOST_FLAG_RE.finditer(seg):
-        if _host_is_public(m.group(1)):
-            return True
+    matches = list(_HOST_FLAG_RE.finditer(seg))
     if short_re is not None:
-        for m in short_re.finditer(seg):
-            if _host_is_public(m.group(1)):
-                return True
-    return False
+        matches += list(short_re.finditer(seg))
+    if not matches:
+        return False
+    last = max(matches, key=lambda m: m.start())
+    return _host_is_public(last.group(1))
 
 
 def _check_public_dev_server_segment(segment: str, _depth: int = 0) -> None:
@@ -1300,6 +2429,24 @@ def _check_public_dev_server_segment(segment: str, _depth: int = 0) -> None:
         return
     if _depth > 4:  # death-loop guard for pathological nesting (fail open: stop)
         return
+
+    # Multiline input (audit S3): a newline separates shell commands, but
+    # `_SEGMENT_SPLIT_RE` deliberately does NOT split on it (heredoc/quoted-
+    # multiline safety, #719). So the display-command suppression below saw a
+    # leading `echo`/`cat`/`#` on line 1 and silently discarded every later
+    # line — one newline disabled this entire guard (`echo hi\npython3 -m
+    # http.server` was ALLOWED). Scan each NON-heredoc line independently.
+    # This mirrors the identical fix already applied in
+    # `_check_sysadmin_segment` for the codex round-9 bypass.
+    if "\n" in seg:
+        lines = [ln for ln in _non_heredoc_lines(seg) if ln.strip()]
+        # Only recurse when the split actually produced something different.
+        # A newline that lives entirely inside a quoted argument yields the
+        # segment back unchanged, and recursing on it would never terminate.
+        if lines != [seg]:
+            for line in lines:
+                _check_public_dev_server_segment(line, _depth + 1)
+            return
 
     # MEDIUM-1: evaluate command-substitution bodies ($(...), `...`, <(...))
     # independently FIRST. A display command (echo/grep/…) suppresses its OWN
@@ -1343,7 +2490,11 @@ def _check_public_dev_server_segment(segment: str, _depth: int = 0) -> None:
     # python http.server: block by default unless an explicit loopback --bind.
     # Only fires when the COMMAND is a python interpreter running `-m http.server`.
     if py_module in _PY_HTTP_SERVER_MODULES:
-        m = _PY_BIND_RE.search(seg)
+        # LAST `--bind` wins (audit S3): `--bind 127.0.0.1 --bind 0.0.0.0`
+        # binds all interfaces, but a first-match `.search()` saw the loopback
+        # and allowed it.
+        found = list(_PY_BIND_RE.finditer(seg))
+        m = found[-1] if found else None
         if m is None or _host_is_public(m.group(1)):
             _block_public_server()
         return  # explicit loopback bind → allow
@@ -1384,7 +2535,11 @@ def _check_public_dev_server_segment(segment: str, _depth: int = 0) -> None:
     # `-a` is caught by the short-flag scan below; a bare `http-server` (no `-a`)
     # would otherwise slip through, so it must block here.
     if server == "http-server":
-        m = _SERVER_SHORT_FLAGS["http-server"].search(seg)
+        # LAST `-a` wins (audit S3): `http-server -a 127.0.0.1 -a 0.0.0.0`
+        # binds all interfaces, but a first-match `.search()` saw the loopback
+        # and allowed it.
+        found = list(_SERVER_SHORT_FLAGS["http-server"].finditer(seg))
+        m = found[-1] if found else None
         if m is None or _host_is_public(m.group(1)):
             _block_public_server()
         return  # explicit loopback `-a` → allow
@@ -1432,6 +2587,9 @@ def check_public_dev_server(command: str) -> None:
     if os.environ.get(_PUBLIC_SERVER_BYPASS_ENV) == "1":
         return
 
+    if _oversized_for_segment_scan(command, "public-server-guard"):
+        return
+
     for segment in _SEGMENT_SPLIT_RE.split(command):
         _check_public_dev_server_segment(segment)
 
@@ -1457,6 +2615,210 @@ def check_public_dev_server(command: str) -> None:
 # #719 LOW-1 fix for the public-dev-server guard. Documented here in code only.
 _SYSADMIN_GUARD_BYPASS_ENV = "SYSADMIN_GUARD_BYPASS"
 
+# --- remote-download piped into an executing sink (audit S5) -------------------
+#
+# The pipe-to-shell pattern below deny-lists shell names, so `curl http://x |
+# python3` — and `| node`, `| perl`, `| ruby` — all passed. A deny-list of
+# interpreters can never be complete; the safe set is the small one.
+#
+# So: any `curl`/`wget` piped into a command that is NOT a known-safe sink is
+# treated as executing remote code. Safe sinks are read-only text/archive tools
+# that do not execute their input.
+_SAFE_PIPE_SINKS = frozenset(
+    {
+        # pagers / display
+        "cat",
+        "bat",
+        "less",
+        "more",
+        "head",
+        "tail",
+        "nl",
+        "tee",
+        # text processing
+        "grep",
+        "egrep",
+        "fgrep",
+        "rg",
+        "ag",
+        "sed",
+        "awk",
+        "cut",
+        "tr",
+        "sort",
+        "uniq",
+        "wc",
+        "column",
+        "fold",
+        "rev",
+        "strings",
+        "diff",
+        "comm",
+        "join",
+        "paste",
+        "expand",
+        "unexpand",
+        "tac",
+        # structured data
+        "jq",
+        "yq",
+        "xmllint",
+        "csvlook",
+        "json_pp",
+        # hashing / encoding — the "verify a checksum" flow the deny message teaches
+        "sha256sum",
+        "sha512sum",
+        "sha1sum",
+        "md5sum",
+        "shasum",
+        "cksum",
+        "base64",
+        "xxd",
+        "od",
+        "hexdump",
+        # compression / archives (decompress to stdout or extract; do not exec)
+        "gunzip",
+        "zcat",
+        "gzip",
+        "bunzip2",
+        "bzcat",
+        "unzip",
+        "xz",
+        "unxz",
+        "zstd",
+        "tar",
+        "cpio",
+        "funzip",
+        # misc non-executing sinks
+        "file",
+        "dd",
+        "split",
+        "pv",
+        "sponge",
+        "true",
+        "cmp",
+    }
+)
+
+# `curl`/`wget` followed by a pipe. The sink is resolved from the text after the
+# pipe by the normal command-token walk, so wrappers (`sudo`, `env -i`, `xargs`)
+# and path-qualified names (`/usr/bin/python3`) resolve correctly.
+_REMOTE_FETCH_PIPE_RE = _rx(r"\b(?:curl|wget)\b[^|;&\n]*\|")
+
+
+# Data-only python sinks. `curl … | python3 -c '<code>'` passes only when the
+# code provably just parses stdin as JSON: imports limited to json/sys, no
+# exec/eval/compile/__import__/open/getattr, no dunder or private attributes,
+# no sys attribute beyond stdio/argv/exit, and at least one json.load(s) call.
+# `python3 -m json.tool` passes. `python3`, `python3 -`, and any code that
+# fails these checks stay blocked.
+_PY_SINK_FLAGS = frozenset({"-I", "-S", "-E", "-B", "-u", "-s", "-q"})
+_PY_DATA_IMPORTS = frozenset({"json", "sys"})
+_PY_BANNED_NAMES = frozenset(
+    {
+        "exec",
+        "eval",
+        "compile",
+        "__import__",
+        "open",
+        "getattr",
+        "setattr",
+        "delattr",
+        "globals",
+        "locals",
+        "vars",
+        "breakpoint",
+        "input",
+        "type",
+        "object",
+        "__builtins__",
+    }
+)
+_PY_SYS_ATTRS = frozenset({"stdin", "stdout", "stderr", "argv", "exit"})
+_PY_JSON_ATTRS = frozenset({"load", "loads", "dump", "dumps", "JSONDecodeError"})
+_PY_CODE_MAX = 4000
+
+
+def _py_code_only_parses_stdin(code: str) -> bool:
+    """True when `-c` code only parses stdin as JSON and cannot run it."""
+    if len(code) > _PY_CODE_MAX:
+        return False
+    import ast
+
+    try:
+        tree = ast.parse(code)
+    except (SyntaxError, ValueError, RecursionError):
+        return False
+    attr_bases = set()
+    parses = False
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom):
+            return False
+        if isinstance(node, ast.Import):
+            if any(a.name not in _PY_DATA_IMPORTS or a.asname for a in node.names):
+                return False
+        elif isinstance(node, ast.Name) and node.id in _PY_BANNED_NAMES:
+            return False
+        elif isinstance(node, ast.Attribute):
+            if node.attr.startswith("_"):
+                return False
+            if isinstance(node.value, ast.Name) and node.value.id in _PY_DATA_IMPORTS:
+                attr_bases.add(id(node.value))
+                allowed = _PY_SYS_ATTRS if node.value.id == "sys" else _PY_JSON_ATTRS
+                if node.attr not in allowed:
+                    return False
+                if node.value.id == "json" and node.attr in ("load", "loads"):
+                    parses = True
+    # A bare `sys`/`json` name (aliasing: `s = sys; s.modules`) is not allowed.
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Name) and node.id in _PY_DATA_IMPORTS and id(node) not in attr_bases:
+            return False
+    return parses
+
+
+def _is_data_only_python_sink(sink_text: str) -> bool:
+    """True if a pipe sink is `python3 -m json.tool` or `python3 -c '<json-only code>'`."""
+    try:
+        toks = shlex.split(sink_text, posix=True)
+    except ValueError:
+        return False
+    if not toks or not _is_python_interpreter(toks[0]):
+        return False
+    i = 1
+    while i < len(toks) and toks[i] in _PY_SINK_FLAGS:
+        i += 1
+    if i + 1 >= len(toks):
+        return False  # bare `python3` or `python3 -` reads a script from stdin
+    if toks[i] == "-m":
+        return toks[i + 1] == "json.tool"
+    if toks[i] == "-c":
+        return _py_code_only_parses_stdin(toks[i + 1])
+    return False
+
+
+def _remote_fetch_pipes_to_executor(line: str, orig: str | None = None) -> bool:
+    """True if a `curl`/`wget` on `line` pipes into a non-safe sink.
+
+    Allow-list, not deny-list: an unrecognized sink is treated as executing.
+    Only the FIRST stage after each fetch is checked — a safe sink's own output
+    piped onward (`curl … | jq . | less`) is local data by then.
+
+    `line` has quoted spans blanked; `orig` is the same text unblanked (same
+    offsets). A python sink is read from `orig` so its `-c` code can be checked.
+    """
+    for m in _REMOTE_FETCH_PIPE_RE.finditer(line):
+        rest = line[m.end() :]
+        sink_text = _SEGMENT_SPLIT_RE.split(rest)[0]
+        if not sink_text.strip():
+            return True  # pipe into nothing parseable — fail safe
+        sink = _command_token(sink_text)
+        if sink and sink not in _SAFE_PIPE_SINKS:
+            if orig is not None and _is_data_only_python_sink(orig[m.end() : m.end() + len(sink_text)]):
+                continue
+            return True
+    return False
+
+
 # --- WHOLE-LINE BLOCK patterns (pipe-spanning / multi-segment shapes) ----------
 # Each tuple: (compiled pattern, category, educational deny message naming the fix).
 _SYSADMIN_WHOLELINE_BLOCK_PATTERNS: list[tuple[re.Pattern[str], str, str]] = [
@@ -1466,7 +2828,7 @@ _SYSADMIN_WHOLELINE_BLOCK_PATTERNS: list[tuple[re.Pattern[str], str, str]] = [
         #   sh <(curl …)           process substitution (and `sh < <(curl …)`)
         #   source <(curl …)       source/`.` of a downloaded script
         #   sh -c "$(curl …)"      the Homebrew-installer shape (codex round-11)
-        re.compile(
+        _rx(
             r"(?:\b(?:curl|wget)\b[^|]*\|\s*(?:(?:/\S*/)?(?:sudo|env|command|exec|nohup|setsid|time|nice|stdbuf|ionice|doas|timeout)\s+(?:-\S+\s+|\w+=\S+\s+|\d\S*\s+|[a-z][\w.-]*\s+(?=-|\w|/))*)*(?:/\S*/)?(?:ba|z|d|a|k)?sh\b)"
             r"|(?:(?:sudo|env|command|exec)\s+)*(?:(?:/\S*/)?(?:ba|z|d|a|k)?sh\b|source\b|\.(?=\s))\s+(?:<\s*)?<\(\s*(?:curl|wget)\b"
             r"|(?:(?:/\S*/)?(?:ba|z|d|a|k)?sh\b[^|;&]*-c\b|\beval\b)[^|;&]*\$\(\s*(?:curl|wget)\b",
@@ -1482,7 +2844,7 @@ _SYSADMIN_WHOLELINE_BLOCK_PATTERNS: list[tuple[re.Pattern[str], str, str]] = [
         # `nc`/`ncat`/`netcat` on the line (both the `… | sh | nc …` and the
         # `sh </fifo | nc … >/fifo` one-pipe forms, codex round-19), since the named
         # FIFO is the shared signal — benign `mkfifo` use rarely pairs with nc+sh.
-        re.compile(
+        _rx(
             r"(?:>\s*&?\s*/dev/(?:tcp|udp)/)"
             r"|(?:\b(?:nc|ncat|netcat)\b[^|;&]*\s-e\b)"
             r"|(?:\bsocat\b[^|;&]*\bEXEC:)"
@@ -1503,7 +2865,7 @@ _SYSADMIN_WHOLELINE_BLOCK_PATTERNS: list[tuple[re.Pattern[str], str, str]] = [
 # OWNER-ONLY tier — private keys, secrets, .env, .aws/credentials. Correct mode is
 # owner-only (600/400/700); ANY group OR other access is a leak (SSH rejects a
 # group-readable key, secrets must not be group-readable).
-_SYSADMIN_OWNER_ONLY_TARGET_RE = re.compile(
+_SYSADMIN_OWNER_ONLY_TARGET_RE = _rx(
     r"(?:\.ssh/id_[a-z0-9]+(?!\.pub)\b"  # private keys; exclude `.pub`. authorized_keys
     # is intentionally NOT here — it is public-key material and 0644 is a common valid
     # mode; SSH only rejects it when group/world-WRITABLE (codex round-16 FP).
@@ -1517,14 +2879,14 @@ _SYSADMIN_OWNER_ONLY_TARGET_RE = re.compile(
 # WORLD access (other bit set) or world-writable is a footgun here. The system paths
 # are root-anchored `(?<![\w/.])` so a fixture path like `./fixtures/etc/sudoers`
 # does not match the live system file (codex round-19 FP).
-_SYSADMIN_GROUP_OK_TARGET_RE = re.compile(
+_SYSADMIN_GROUP_OK_TARGET_RE = _rx(
     r"(?<![\w/.])(?:/etc/(?:shadow|gshadow|sudoers)\b|/etc/sudoers\.d/"
     r"|/var/run/docker\.sock\b|/run/docker\.sock\b)",
 )
 
 # Loosen test for OWNER-ONLY targets: symbolic g/o/a grant, bare +r/+w, OR an octal
 # with a non-zero GROUP or OTHER digit. (600/400/700 → no match → allowed.)
-_SYSADMIN_CHMOD_LOOSEN_OWNER_RE = re.compile(
+_SYSADMIN_CHMOD_LOOSEN_OWNER_RE = _rx(
     r"(?:[ugoa]*[goa][ugoa]*[+=][rwxstugo]"  # g+r, o=r, go=rw, a+r
     r"|(?<![\w-])\+[rw]"  # bare +r/+w
     r"|(?<![\w-])[0-7]?[0-7][1-7][0-7]\b"  # non-zero GROUP digit (640, 660, 750)
@@ -1532,7 +2894,7 @@ _SYSADMIN_CHMOD_LOOSEN_OWNER_RE = re.compile(
 )
 # Loosen test for GROUP-OK targets: only WORLD access — symbolic `o+`/`o=`/`a+`,
 # bare +r/+w, OR an octal with a non-zero OTHER (last) digit. (640/440 → allowed.)
-_SYSADMIN_CHMOD_LOOSEN_WORLD_RE = re.compile(
+_SYSADMIN_CHMOD_LOOSEN_WORLD_RE = _rx(
     r"(?:[ugoa]*[oa][ugoa]*[+=][rwxstugo]"  # o+r, o=rw, a+r (world grant)
     r"|(?<![\w-])\+[rw]"  # bare +r/+w (applies to all incl. other)
     r"|(?<![\w-])[0-7]?[0-7][0-7][1-7]\b)"  # non-zero OTHER digit (646, 666, 777)
@@ -1540,7 +2902,7 @@ _SYSADMIN_CHMOD_LOOSEN_WORLD_RE = re.compile(
 # A real `chmod` command verb (word-boundaried). Required to fire OUTSIDE quotes
 # alongside the target+mode so the secret-chmod rule only triggers on an actual
 # chmod invocation, not chmod TEXT inside a quoted argument of another command.
-_CHMOD_VERB_RE = re.compile(r"\bchmod\b")
+_CHMOD_VERB_RE = _rx(r"\bchmod\b")
 
 # redis is handled by a dedicated helper (_redis_is_unsafe) rather than a single
 # regex: `--protected-mode no` is only a footgun WITHOUT a `--requirepass` and
@@ -1555,7 +2917,7 @@ _CHMOD_VERB_RE = re.compile(r"\bchmod\b")
 # a launcher (`systemd-run redis-server …`, `sudo redis-server …`) is still caught
 # (a pure `_command_token=="redis-server"` test would miss those launchers). Command
 # position = start of segment OR right after a shell op / launcher boundary (space).
-_REDIS_SERVER_CMD_RE = re.compile(r"(?:^|[\s;&|])(?:[^\s'\"]*/)?redis-server\b")
+_REDIS_SERVER_CMD_RE = _rx(r"(?:^|[\s;&|])(?:[^\s'\"]*/)?redis-server\b")
 # Each flag tolerates an OPTIONAL quote on its VALUE (`--bind "0.0.0.0"`,
 # `--protected-mode 'no'`): bash strips those quotes before redis sees argv, so a
 # quoted value is a REAL footgun. The FLAG-position guard in `_redis_is_unsafe`
@@ -1563,12 +2925,10 @@ _REDIS_SERVER_CMD_RE = re.compile(r"(?:^|[\s;&|])(?:[^\s'\"]*/)?redis-server\b")
 # keyword buried INSIDE a quoted value (`--logfile "--bind 0.0.0.0"` → flag start is
 # inside the quote → ignored). `\s+` after the flag also matches across the opening
 # quote position since the value may be `["']`-prefixed.
-_REDIS_PUBLIC_BIND_RE = re.compile(
-    r"--bind(?:\s+|=)['\"]?(?:0\.0\.0\.0\b|::(?![0-9a-fA-F])|\[::\]|\*|0(?=['\"]?(?:\s|$)))"
-)
-_REDIS_LOOPBACK_BIND_RE = re.compile(r"--bind(?:\s+|=)['\"]?(?:127\.|localhost|::1|\[::1\])")
-_REDIS_PROTECTED_OFF_RE = re.compile(r"--protected-mode(?:\s+|=)['\"]?no\b")
-_REDIS_REQUIREPASS_RE = re.compile(r"--requirepass(?:\s+|=)['\"]?\S")
+_REDIS_PUBLIC_BIND_RE = _rx(r"--bind(?:\s+|=)['\"]?(?:0\.0\.0\.0\b|::(?![0-9a-fA-F])|\[::\]|\*|0(?=['\"]?(?:\s|$)))")
+_REDIS_LOOPBACK_BIND_RE = _rx(r"--bind(?:\s+|=)['\"]?(?:127\.|localhost|::1|\[::1\])")
+_REDIS_PROTECTED_OFF_RE = _rx(r"--protected-mode(?:\s+|=)['\"]?no\b")
+_REDIS_REQUIREPASS_RE = _rx(r"--requirepass(?:\s+|=)['\"]?\S")
 _SYSADMIN_REDIS_MSG = (
     "Binding redis to 0.0.0.0 (or protected-mode off with no password) publishes "
     "your data unauthenticated — these get ransomware-scanned within minutes. Bind "
@@ -1616,7 +2976,7 @@ def _redis_is_unsafe(seg: str) -> bool:
 _SYSADMIN_SEGMENT_BLOCK_PATTERNS: list[tuple[re.Pattern[str], str, str]] = [
     (
         # mongod with auth disabled.
-        re.compile(r"\bmongod\b(?=[^|;&]*--noauth\b)"),
+        _rx(r"\bmongod\b(?=[^|;&]*--noauth\b)"),
         "mongod-noauth",
         "`mongod --noauth` disables all authentication. Run with auth enabled and "
         "bind loopback:\n  mongod --bind_ip 127.0.0.1 --auth\n"
@@ -1624,7 +2984,7 @@ _SYSADMIN_SEGMENT_BLOCK_PATTERNS: list[tuple[re.Pattern[str], str, str]] = [
     ),
     (
         # mysqld / mariadbd / mysqld_safe with the grant-tables auth check bypassed.
-        re.compile(r"\b(?:mysqld_safe|mysqld|mariadbd)\b(?=[^|;&]*--skip-grant-tables\b)"),
+        _rx(r"\b(?:mysqld_safe|mysqld|mariadbd)\b(?=[^|;&]*--skip-grant-tables\b)"),
         "mysql-skip-grant",
         "`--skip-grant-tables` disables MySQL/MariaDB privilege checks — anyone who "
         "connects is root. Use it only offline for password recovery, never on a "
@@ -1633,7 +2993,7 @@ _SYSADMIN_SEGMENT_BLOCK_PATTERNS: list[tuple[re.Pattern[str], str, str]] = [
     ),
     (
         # docker/podman run with isolation removed.
-        re.compile(
+        _rx(
             r"\b(?:docker|podman)\b[^|;&]*\brun\b"
             r"(?=[^|;&]*(?:--privileged\b|--cap-add[= ]ALL\b|--security-opt[= ]\S*(?:seccomp|apparmor)=unconfined))",
         ),
@@ -1645,7 +3005,7 @@ _SYSADMIN_SEGMENT_BLOCK_PATTERNS: list[tuple[re.Pattern[str], str, str]] = [
     (
         # docker/podman run mounting the docker socket or host root, via the
         # `-v/--volume host:container` form OR the `--mount type=bind,src=…` form.
-        re.compile(
+        _rx(
             r"\b(?:docker|podman)\b[^|;&]*\brun\b"
             r"(?=[^|;&]*(?:"
             r"(?:-v|--volume)(?:[= ]\s*|)(?:/var/run/docker\.sock|/run/docker\.sock|/):"  # -v host:ctr (incl. attached -v/:/…)
@@ -1660,7 +3020,7 @@ _SYSADMIN_SEGMENT_BLOCK_PATTERNS: list[tuple[re.Pattern[str], str, str]] = [
     ),
     (
         # iptables flush / default-ACCEPT (`-P` or `--policy`), or nft flush ruleset.
-        re.compile(
+        _rx(
             # `-F`/`--flush` blocks when it flushes everything or a built-in chain:
             # bare (`-F` then end/another flag like `-t nat` = whole-table flush) or
             # `-F INPUT|FORWARD|OUTPUT`. Flushing ONE custom chain (`-F DOCKER-USER`,
@@ -1678,7 +3038,7 @@ _SYSADMIN_SEGMENT_BLOCK_PATTERNS: list[tuple[re.Pattern[str], str, str]] = [
     ),
     (
         # ufw disable (allow intervening flags like `ufw --force disable`).
-        re.compile(r"\bufw\b(?:\s+--?\S+)*\s+disable\b"),
+        _rx(r"\bufw\b(?:\s+--?\S+)*\s+disable\b"),
         "ufw-disable",
         "`ufw disable` turns the whole host firewall off. Keep it on and open only "
         "the port you need:\n  sudo ufw allow 443/tcp",
@@ -1686,7 +3046,7 @@ _SYSADMIN_SEGMENT_BLOCK_PATTERNS: list[tuple[re.Pattern[str], str, str]] = [
     (
         # stop/disable/mask firewalld — both `systemctl stop firewalld` (action-first)
         # and the SysV `service firewalld stop` (unit-first) forms.
-        re.compile(
+        _rx(
             r"\bsystemctl\b[^|;&]*\b(?:stop|disable|mask)\b[^|;&]*\bfirewalld\b"
             r"|\bservice\b[^|;&]*\bfirewalld\b[^|;&]*\b(?:stop|disable)\b"
             r"|\bsystemctl\b[^|;&]*\bfirewalld\b[^|;&]*\b(?:stop|disable|mask)\b"
@@ -1698,7 +3058,7 @@ _SYSADMIN_SEGMENT_BLOCK_PATTERNS: list[tuple[re.Pattern[str], str, str]] = [
     ),
     (
         # backdoor uid-0 account, or password removal.
-        re.compile(
+        _rx(
             r"\buseradd\b[^|;&]*-o\b[^|;&]*-u\s*0\b|\buseradd\b[^|;&]*-u\s*0\b[^|;&]*-o\b"
             r"|\busermod\b[^|;&]*-u\s*0\b"
             r"|\bpasswd\b\s+-d\b|\busermod\b[^|;&]*-p\s*(?:''|\"\")",
@@ -1713,7 +3073,7 @@ _SYSADMIN_SEGMENT_BLOCK_PATTERNS: list[tuple[re.Pattern[str], str, str]] = [
 # Recursive chown/chmod targeting bare `/` — extends (does not duplicate) the
 # existing bare `chmod -R 777` rule by catching `chown -R user /`. Anchored so
 # `chown -R me:me ./build` and `chmod -R 755 /srv/app` do NOT match.
-_SYSADMIN_RECURSIVE_ROOT_RE = re.compile(
+_SYSADMIN_RECURSIVE_ROOT_RE = _rx(
     r"\b(?:chown|chmod)\b[^|;&]*\s(?:-[a-zA-Z]*R[a-zA-Z]*|--recursive)\b[^|;&]*?\s/(?=\s|$)"
 )
 _SYSADMIN_RECURSIVE_ROOT_MSG = (
@@ -1739,7 +3099,7 @@ _SYSADMIN_RECURSIVE_ROOT_MSG = (
 # secrets (`*.env`, `.env.*`, `config/.env.*`, `*.pem`, `id_rsa*` — codex round-22).
 # A trailing `*`/`.*` glob or a leading `*` is permitted. Template suffixes
 # (.example/.sample/.template/.dist) are still exempt.
-_SYSADMIN_GIT_SECRET_TOKEN_RE = re.compile(
+_SYSADMIN_GIT_SECRET_TOKEN_RE = _rx(
     r"(?:^|/)\*?"  # optional path prefix and a leading glob (`*.env`)
     r"(?!.*\.(?:example|sample|template|dist)$)"  # exempt ANY *.example/.sample/.template/.dist
     r"(?:"
@@ -1834,7 +3194,7 @@ _SYSADMIN_GIT_SECRET_MSG = (
 # display-suppressed: here `echo`/`printf`/`tee` is the WRITE vector (the string is
 # redirected/piped INTO /etc/sudoers), so it is action, not mere display. Requires
 # both the literal `NOPASSWD:ALL` and a sudoers target on the line.
-_SYSADMIN_NOPASSWD_SUDOERS_RE = re.compile(
+_SYSADMIN_NOPASSWD_SUDOERS_RE = _rx(
     r"NOPASSWD\s*:\s*ALL\b.*?(?:/etc/sudoers|sudoers\.d)|(?:/etc/sudoers|sudoers\.d)\S*.*?\bNOPASSWD\s*:\s*ALL\b",
     re.DOTALL,
 )
@@ -1852,7 +3212,7 @@ _SYSADMIN_NOPASSWD_SUDOERS_RE = re.compile(
 # Only the ABSOLUTE system path counts — a bare relative `sudoers.d/me` in a repo or
 # fixtures dir is NOT the live system file (codex round-23 FP).
 _SUDOERS_PATH = r"(?<![\w/])/etc/sudoers(?:\.d/\S*)?\b"
-_SYSADMIN_SUDOERS_WRITE_RE = re.compile(
+_SYSADMIN_SUDOERS_WRITE_RE = _rx(
     rf">>?\s*(?:{_SUDOERS_PATH})"  # redirect into a sudoers path
     rf"|\b(?:tee|dd|install)\b[^|;&]*(?:{_SUDOERS_PATH})"  # tee/dd/install writing a sudoers path
     rf"|\bsed\b[^|;&]*-i[^|;&]*(?:{_SUDOERS_PATH})"  # in-place sed on sudoers
@@ -1877,7 +3237,7 @@ _SYSADMIN_CHMOD_SECRET_MSG = (
 # common legitimate uses — too noisy to block, so teach without obstructing.
 _SYSADMIN_WARN_PATTERNS: list[tuple[re.Pattern[str], str]] = [
     (
-        re.compile(
+        _rx(
             r"\blisten_addresses\s*=\s*['\"]?\*|--bind-address\s*=\s*0\.0\.0\.0"
             r"|\bnetwork\.host\s*=\s*0\.0\.0\.0|\bmongod\b[^|;&]*(?:--bind_ip_all|--bind_ip\s+0\.0\.0\.0)",
         ),
@@ -1886,13 +3246,13 @@ _SYSADMIN_WARN_PATTERNS: list[tuple[re.Pattern[str], str]] = [
         "and restrict with firewall rules.",
     ),
     (
-        re.compile(r"\bPermitRootLogin\s+yes\b|\bPasswordAuthentication\s+yes\b|\bPubkeyAuthentication\s+no\b"),
+        _rx(r"\bPermitRootLogin\s+yes\b|\bPasswordAuthentication\s+yes\b|\bPubkeyAuthentication\s+no\b"),
         "Root login / password auth are the first brute-force targets. Prefer a "
         "named sudo user with PermitRootLogin no, PasswordAuthentication no, and "
         "key-only auth.",
     ),
     (
-        re.compile(r"\bStrictHostKeyChecking[= ]no\b|\bUserKnownHostsFile[= ]/dev/null\b"),
+        _rx(r"\bStrictHostKeyChecking[= ]no\b|\bUserKnownHostsFile[= ]/dev/null\b"),
         "Disabling host-key checks removes server-identity verification (MITM risk). "
         "Enroll the key once: `ssh-keyscan host >> ~/.ssh/known_hosts`, then connect "
         "normally.",
@@ -1902,7 +3262,7 @@ _SYSADMIN_WARN_PATTERNS: list[tuple[re.Pattern[str], str]] = [
         # mariadb, redis-cli, mongosh) — NOT for `ssh -p2222` / `tar -pxf` where `-p`
         # is a port/preserve flag (codex round-20 warn-noise). Plus explicit
         # `--password=`, a `user:pass@` creds URL, and inline secret env exports.
-        re.compile(
+        _rx(
             r"\b(?:mysql|mariadb|redis-cli|mongosh)\b[^|;&]*(?<![\w-])-p\S"
             r"|--password[= ]\S"
             r"|://\w+:[^@\s/]+@"
@@ -1914,13 +3274,13 @@ _SYSADMIN_WARN_PATTERNS: list[tuple[re.Pattern[str], str]] = [
         "store.",
     ),
     (
-        re.compile(r"\b(?:usermod|gpasswd)\b[^|;&]*(?:-aG\s+docker\b|-a\s+docker\b)"),
+        _rx(r"\b(?:usermod|gpasswd)\b[^|;&]*(?:-aG\s+docker\b|-a\s+docker\b)"),
         "The `docker` group is root-equivalent on the host. Add a user only if they "
         "should have root-equivalent control; otherwise use rootless Docker or "
         "scoped sudo.",
     ),
     (
-        re.compile(
+        _rx(
             r"\bsysctl\b[^|;&]*(?:kernel\.randomize_va_space\s*=\s*0|kernel\.kptr_restrict\s*=\s*0|fs\.protected_(?:hardlinks|symlinks)\s*=\s*0)"
         ),
         "These sysctls turn off kernel hardening (ASLR, kptr restriction, symlink "
@@ -1928,12 +3288,12 @@ _SYSADMIN_WARN_PATTERNS: list[tuple[re.Pattern[str], str]] = [
         "restore immediately.",
     ),
     (
-        re.compile(r"\bsshpass\s+-p\S"),
+        _rx(r"\bsshpass\s+-p\S"),
         "`sshpass -p <pw>` leaks the password to history and `ps`. Use key auth, or "
         "at minimum `sshpass -f <file>` / the SSHPASS env var.",
     ),
     (
-        re.compile(
+        _rx(
             r"\bsetenforce\s+0\b|\baa-disable\b|\b(?:systemctl|service)\b[^|;&]*\b(?:stop|disable|mask)\b[^|;&]*\bapparmor\b|\bapparmor_parser\s+-R\b|SELINUX\s*=\s*disabled"
         ),
         "Disabling SELinux/AppArmor removes a system-wide containment layer. Put the "
@@ -1943,7 +3303,7 @@ _SYSADMIN_WARN_PATTERNS: list[tuple[re.Pattern[str], str]] = [
 ]
 
 
-_HEREDOC_START_RE = re.compile(r"<<-?\s*['\"]?([A-Za-z_][A-Za-z0-9_]*)['\"]?")
+_HEREDOC_START_RE = _rx(r"<<-?\s*['\"]?([A-Za-z_][A-Za-z0-9_]*)['\"]?")
 
 
 def _strip_unquoted_comment(line: str) -> str:
@@ -1997,6 +3357,41 @@ def _strip_unquoted_comment(line: str) -> str:
     return line
 
 
+def _unquoted_line_split(text: str) -> list[str]:
+    """Split `text` on newlines that are NOT inside a quoted string.
+
+    A newline inside a quoted argument is DATA, not a command separator
+    (`printf '%s\\n' 'python3 -m http.server'` is one command). Splitting on it
+    naively manufactures a fake second command out of the quoted tail — a false
+    positive. Only an unquoted newline actually starts a new command.
+    """
+    lines: list[str] = []
+    buf: list[str] = []
+    in_single = in_double = False
+    i = 0
+    n = len(text)
+    while i < n:
+        c = text[i]
+        if c == "\\" and not in_single and i + 1 < n:
+            buf.append(c)
+            buf.append(text[i + 1])  # escaped char is literal, never a delimiter
+            i += 2
+            continue
+        if c == "'" and not in_double:
+            in_single = not in_single
+        elif c == '"' and not in_single:
+            in_double = not in_double
+        elif c == "\n" and not in_single and not in_double:
+            lines.append("".join(buf))
+            buf = []
+            i += 1
+            continue
+        buf.append(c)
+        i += 1
+    lines.append("".join(buf))
+    return lines
+
+
 def _non_heredoc_lines(text: str) -> list[str]:
     """Split `text` into command lines, dropping heredoc BODY lines.
 
@@ -2004,10 +3399,13 @@ def _non_heredoc_lines(text: str) -> list[str]:
     stdin, not a sequence of commands, so its lines must not be scanned as footguns.
     The line that OPENS the heredoc is kept (it is a real command); body lines up to
     and including the terminator are skipped.
+
+    Lines are split quote-aware (`_unquoted_line_split`) so a newline inside a
+    quoted argument does not manufacture a fake command line.
     """
     out: list[str] = []
     pending_terms: list[str] = []
-    for line in text.split("\n"):
+    for line in _unquoted_line_split(text):
         if pending_terms:
             if line.strip() == pending_terms[-1]:
                 pending_terms.pop()  # heredoc terminator — body ends here
@@ -2057,10 +3455,14 @@ def _check_sysadmin_segment(segment: str) -> None:
     # independently. Heredoc bodies (`cmd <<EOF … EOF`) are skipped so their text is
     # not misread as commands. Only recurse when there is a real extra command line.
     if "\n" in seg:
-        for line in _non_heredoc_lines(seg):
-            if line.strip():
+        lines = [ln for ln in _non_heredoc_lines(seg) if ln.strip()]
+        # `_non_heredoc_lines` is quote-aware, so a newline inside a quoted
+        # argument leaves the segment intact — recursing on that identical
+        # segment would never terminate (this function has no depth guard).
+        if lines != [seg]:
+            for line in lines:
                 _check_sysadmin_segment(line)
-        return
+            return
 
     # Drop a trailing unquoted shell comment: `true # ufw disable` ignores the
     # footgun text, so scanning it produced a false positive (codex #724 round-1).
@@ -2241,6 +3643,33 @@ def check_sysadmin_security(command: str) -> None:
                 if not any(start <= m.start() < end for start, end in quoted):
                     _block_sysadmin(category, message)
 
+        # Allow-listed sinks (audit S5): the pattern above deny-lists shell
+        # names, so `curl … | python3` (and node/perl/ruby) executed remote
+        # code and passed. Checked per line, and only outside quoted spans so
+        # displayed footgun text stays data.
+        # Blank quoted spans over the WHOLE scan text before splitting into
+        # lines: a quoted region can span newlines (a heredoc body inside a
+        # `-c` payload), and recomputing spans per line would read its second
+        # line as unquoted code (round-13 FP).
+        blanked = "".join(" " if any(s <= i < e for s, e in quoted) else c for i, c in enumerate(scan_line))
+        offset = 0
+        for raw_line in blanked.split("\n"):
+            orig_line = scan_line[offset : offset + len(raw_line)]
+            offset += len(raw_line) + 1
+            if not raw_line.strip() or _DISPLAY_CMD_RE.match(raw_line.strip().lstrip("'\"")):
+                continue
+            if _remote_fetch_pipes_to_executor(raw_line, orig_line):
+                _block_sysadmin(
+                    "pipe-to-shell",
+                    "Piping a remote download into an interpreter runs unreviewed, "
+                    "possibly-MITM'd code as you. Download it, read it, verify a checksum, "
+                    "then run it:\n"
+                    "  curl -fsSLo install.sh https://… && less install.sh && bash install.sh",
+                )
+
+    if _oversized_for_segment_scan(command, "sysadmin-guard"):
+        return
+
     for segment in _SEGMENT_SPLIT_RE.split(command):
         _check_sysadmin_segment(segment)
 
@@ -2250,19 +3679,39 @@ def check_sysadmin_security(command: str) -> None:
 # ═══════════════════════════════════════════════════════════════
 
 
+def _str_field(tool_input: dict, key: str) -> str:
+    """The string at ``tool_input[key]``, or "" when it is missing or not a string.
+
+    Every check takes a string. A non-string value (null, a list, a number) is a malformed
+    call with nothing to match, so it reads as empty instead of crashing the gate.
+    """
+    value = tool_input.get(key, "")
+    return value if isinstance(value, str) else ""
+
+
 def main() -> None:
+    global _CURRENT_EVENT, _CURRENT_COMMAND
+    _ADVISORIES.clear()
     raw = read_stdin(timeout=2)
     try:
         event = json.loads(raw)
     except (json.JSONDecodeError, ValueError):
         return
+    if not isinstance(event, dict):
+        # Valid JSON that is not an event object (null, a list, a number) names no tool to check.
+        return
+
+    _CURRENT_EVENT = event
 
     # Field name compatibility: try new names first, fall back to old
     tool = event.get("tool_name") or event.get("tool", "")
-    tool_input = event.get("tool_input", event.get("input", {}))
+    # A malformed tool_input (null, a list, a number) becomes {} instead of a crash that skips
+    # every check. A string is still checked: JSON text is parsed, and bare text is the command.
+    tool_input = get_tool_input(event)
 
     if tool == "Bash":
-        command = tool_input.get("command", "")
+        command = _str_field(tool_input, "command")
+        _CURRENT_COMMAND = command
         if not command:
             return
         check_gitignore_bypass(command)
@@ -2270,20 +3719,31 @@ def main() -> None:
         check_dangerous_command(command)
         check_public_dev_server(command)
         check_sysadmin_security(command)
+        check_sensitive_bash(command)
 
     elif tool == "Write":
-        file_path = tool_input.get("file_path", "")
+        file_path = _str_field(tool_input, "file_path")
         if not file_path:
             return
-        cwd = event.get("cwd") or os.environ.get("CLAUDE_PROJECT_DIR", "")
+        cwd = _str_field(event, "cwd") or os.environ.get("CLAUDE_PROJECT_DIR", "")
         check_creation_gate(file_path, cwd=cwd)
+        check_guard_integrity(file_path)
         check_sensitive_file(file_path)
 
     elif tool == "Edit":
-        file_path = tool_input.get("file_path", "")
+        file_path = _str_field(tool_input, "file_path")
         if not file_path:
             return
+        check_guard_integrity(file_path)
         check_sensitive_file(file_path)
+
+    elif tool == "Read":
+        file_path = _str_field(tool_input, "file_path")
+        if not file_path:
+            return
+        check_sensitive_file(file_path, deny=False)
+
+    _emit_advisories()
 
 
 if __name__ == "__main__":
@@ -2292,7 +3752,9 @@ if __name__ == "__main__":
     except SystemExit:
         raise  # Let sys.exit(0) propagate normally
     except Exception as e:
-        # Fail OPEN — a crashed hook must never block tools.
+        # Fail OPEN — a crashed hook must never block tools. Record the crash so
+        # it shows in hook-errors.jsonl instead of only in unseen stderr.
         print(f"[unified-gate] HOOK-CRASH: {type(e).__name__}: {e}", file=sys.stderr)
+        hook_error("pretool-unified-gate", e)
     finally:
         sys.exit(0)

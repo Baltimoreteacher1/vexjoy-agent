@@ -1,0 +1,34 @@
+/* === Birchline Theme === */
+:root {
+  --color-primary: #D97757; --color-slate: #141413; --color-ivory: #FAF9F5;
+  --color-oat: #E3DACC; --color-white: #FFFFFF;
+  --color-gray-100: #F0EEE6; --color-gray-150: #F0EEE6; --color-gray-300: #D1CFC5;
+  --color-gray-500: #605F59; --color-gray-700: #3D3D3A;
+  /* Status colors are text too (badges, deltas, table cells): each clears 4.5:1 on every surface,
+     oat included, and on its own 12-15% tint. --color-gray-500 (muted text) is 4.62:1 on oat. */
+  --color-success: #45572A; --color-warning: #794500; --color-danger: #912D30; --color-info: #5C7CA3;
+  --font-sans: system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --font-mono: 'SF Mono', 'Cascadia Code', 'Fira Code', monospace;
+  --type-display: 400 48px/1.1 var(--font-heading); --type-h1: 400 32px/1.2 var(--font-heading);
+  --type-h2: 400 24px/1.3 var(--font-heading); --type-body: 430 16px/1.55 var(--font-sans);
+  --type-small: 430 14px/1.5 var(--font-sans); --type-caption: 500 12px/1.4 var(--font-sans);
+  --sp-1: 4px; --sp-2: 8px; --sp-3: 12px; --sp-4: 16px;
+  --sp-5: 24px; --sp-6: 32px; --sp-7: 48px; --sp-8: 64px;
+  --radius-xs: 4px; --radius-sm: 8px; --radius-md: 12px; --radius-lg: 20px;
+  --shadow-sm: 0 1px 2px rgba(0,0,0,0.06); --shadow-md: 0 4px 10px rgba(0,0,0,0.08);
+  --shadow-lg: 0 12px 28px rgba(0,0,0,0.12);
+  --bg-page: var(--color-ivory); --bg-surface: var(--color-white); --bg-muted: var(--color-gray-100);
+  --bg-card: var(--color-oat); --text-primary: var(--color-slate);
+  --text-secondary: var(--color-gray-700); --text-muted: var(--color-gray-500);
+  --border-default: var(--color-gray-300); --border-subtle: var(--color-gray-150);
+  --accent: var(--color-primary);
+  /* Clay #D97757 is 2.96:1 on ivory: keep it for fills, borders, and large text.
+     --accent-text #963F22 is 6.58:1 on ivory, 5.00:1 on oat, 4.62:1 on the 10% clay tag tint over oat. */
+  --color-primary-text: #963F22; --accent-text: var(--color-primary-text);
+  /* White on clay is 3.12:1, so buttons, active chips, and selected states use the fill below:
+     clay darkened in OKLCH at the same hue and chroma, white 4.86:1. Hover reuses #963F22, white 6.93:1. */
+  --color-primary-fill: #B45636;
+  --accent-fill: var(--color-primary-fill); --accent-fill-hover: var(--color-primary-text);
+  --on-accent-fill: var(--color-white);
+}
+body { font: var(--type-body); color: var(--text-primary); background: var(--bg-page); }

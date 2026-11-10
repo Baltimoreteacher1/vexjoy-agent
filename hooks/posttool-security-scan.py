@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# hook-version: 2.0.0
+# hook-version: 2.0.2
 """
 PostToolUse:Write,Edit Hook: Unified Security Pattern Scanner
 
@@ -30,6 +30,25 @@ Design:
 ADR: adr/018-post-edit-security-scan.md
 """
 
+import sys  # vexjoy-pyguard
+
+if sys.version_info < (3, 10):  # vexjoy-pyguard advisory
+    import os
+
+    if not os.environ.get("VEXJOY_PYGUARD_REEXEC"):
+        os.environ["VEXJOY_PYGUARD_REEXEC"] = "1"
+        for _d in [*os.environ.get("PATH", "").split(os.pathsep), "/opt/homebrew/bin", "/usr/local/bin", "/usr/bin"]:
+            for _v in ("14", "13", "12", "11", "10"):
+                _p = os.path.join(_d, "python3." + _v)
+                if _d and "/shims" not in _d and os.access(_p, os.X_OK):
+                    os.execv(_p, [_p, *sys.argv])
+    sys.stderr.write(
+        "[vexjoy] hook %s needs Python 3.10+, got %s (%s); run ./install.sh in vexjoy-agent from a terminal"
+        " outside Claude Code (gated tool calls stay blocked until then)\n"
+        % (__file__.rsplit("/", 1)[-1], sys.version.split()[0], sys.executable)
+    )
+    sys.exit(0)
+
 import importlib.util
 import json
 import os
@@ -37,6 +56,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent / "lib"))
+from hook_utils import hook_error
 from stdin_timeout import read_stdin
 
 # Max findings to print before collapsing to a count (avoid noise).
@@ -78,7 +98,15 @@ def _load_scanner_module():
         return None
 
 
+_BYPASS_ENV = "POSTTOOL_SECURITY_SCAN_BYPASS"
+
+
 def main() -> None:
+    if os.environ.get(_BYPASS_ENV) == "1":
+        if os.environ.get("CLAUDE_HOOKS_DEBUG"):
+            print("[posttool-security-scan] Bypassed via POSTTOOL_SECURITY_SCAN_BYPASS=1", file=sys.stderr)
+        sys.exit(0)
+
     try:
         raw = read_stdin(timeout=2)
         event = json.loads(raw)
@@ -123,11 +151,7 @@ def main() -> None:
             print(f"  ... and {len(findings) - _MAX_FINDINGS} more security hints")
 
     except Exception as e:
-        if os.environ.get("CLAUDE_HOOKS_DEBUG"):
-            import traceback
-
-            print(f"[security-scan] HOOK-ERROR: {type(e).__name__}: {e}", file=sys.stderr)
-            traceback.print_exc(file=sys.stderr)
+        hook_error("posttool-security-scan", e)
     finally:
         # CRITICAL: Always exit 0 to prevent blocking Claude Code.
         sys.exit(0)

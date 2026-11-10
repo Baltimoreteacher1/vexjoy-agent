@@ -3,9 +3,9 @@
 # To regenerate lockfile: pip freeze --all > requirements.lock
 #
 # Optional dependencies (not needed for core toolkit):
-#   pip install -e ".[evals]"    — for scripts/skill_eval/
 #   pip install -e ".[reddit]"   — for scripts/reddit_mod.py
 #   pip install -e ".[gemini]"   — for scripts/gemini-text-generate.py
+#   pip install -e ".[motion]"   — numpy, scipy, pygltflib for scripts/motion-pipeline.py and bake-bvh-to-glb.py
 #
 # AI Overkill - Python Dependencies
 #
@@ -41,3 +41,6 @@ google-auth>=2.22
 
 # Required for the review-output validation gate (parallel/systematic code review)
 jsonschema>=4.0
+
+# Required for sending images to Jev (scripts/jev_images.py)
+Pillow>=10.0

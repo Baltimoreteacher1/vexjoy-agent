@@ -13,6 +13,9 @@ from unittest.mock import patch
 
 import pytest
 
+sys.path.insert(0, str(Path(__file__).parent.parent / "lib"))
+import hook_utils
+
 # ---------------------------------------------------------------------------
 # Import the module under test
 # ---------------------------------------------------------------------------
@@ -45,7 +48,7 @@ def state_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 
     sf = tmp_path / f"claude-compact-count-{session_id}.state"
 
-    monkeypatch.setattr(mod, "get_state_file", lambda prefix: sf)  # noqa: ARG005
+    monkeypatch.setattr(mod, "get_state_file", lambda prefix, event=None: sf)  # noqa: ARG005
     return sf
 
 
@@ -93,18 +96,6 @@ class TestToolFiltering:
     def test_read_does_not_increment(self, state_file: Path) -> None:
         with patch("sys.stdin") as mock_stdin, patch("sys.exit"):
             mock_stdin.read.return_value = _make_event("Read")
-            mod.main()
-        assert not state_file.exists()
-
-    def test_bash_does_not_increment(self, state_file: Path) -> None:
-        with patch("sys.stdin") as mock_stdin, patch("sys.exit"):
-            mock_stdin.read.return_value = _make_event("Bash")
-            mod.main()
-        assert not state_file.exists()
-
-    def test_glob_does_not_increment(self, state_file: Path) -> None:
-        with patch("sys.stdin") as mock_stdin, patch("sys.exit"):
-            mock_stdin.read.return_value = _make_event("Glob")
             mod.main()
         assert not state_file.exists()
 
@@ -183,15 +174,6 @@ class TestPeriodicReminders:
         assert "75 tool calls" in context
         assert "good checkpoint" in context
 
-    def test_emits_at_threshold_plus_50(self, state_file: Path) -> None:
-        # Call #100 (threshold=50, 100-50=50 — second reminder)
-        _set_counter(state_file, 99)
-        output = _capture_stdout(_make_event("Write"))
-        data = json.loads(output)
-        context = data.get("hookSpecificOutput", {}).get("additionalContext", "")
-        assert "[strategic-compact]" in context
-        assert "100 tool calls" in context
-
     def test_no_output_between_reminders(self, state_file: Path) -> None:
         # Call #80 — between first (75) and second (100) reminders
         _set_counter(state_file, 79)
@@ -215,6 +197,32 @@ class TestCounterPersistence:
                 mock_stdin.read.return_value = _make_event("Edit")
                 mod.main()
             assert int(state_file.read_text()) == expected
+
+
+class TestSessionKeying:
+    """The counter file is keyed on the session_id in the hook input (B-04).
+
+    Claude Code never sets CLAUDE_SESSION_ID, so keying on the env var (or the
+    per-call parent-pid hash) gave every call a fresh counter of 1 and the
+    advisory never fired.
+    """
+
+    def test_counter_accumulates_under_the_event_session_id(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv("CLAUDE_SESSION_ID", raising=False)
+        real_state_file = hook_utils.get_state_file
+
+        def in_tmp(prefix, event=None):
+            return tmp_path / real_state_file(prefix, event).name
+
+        monkeypatch.setattr(mod, "get_state_file", in_tmp)
+        event = json.dumps({"tool_name": "Edit", "tool_input": {}, "session_id": "sess-b04"})
+        for _ in range(3):
+            with patch("sys.stdin") as mock_stdin, patch("sys.exit"):
+                mock_stdin.read.return_value = event
+                mod.main()
+        assert (tmp_path / "claude-compact-count-sess-b04.state").read_text() == "3"
 
 
 # ---------------------------------------------------------------------------

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# hook-version: 1.0.0
+# hook-version: 1.1.1
 """
 Stop-event drift guard (ADR: adr/stop-event-drift-guards.md)
 
@@ -8,6 +8,12 @@ regression the moment they're introduced — at Stop, not at CI. It computes the
 session's working-tree diff, decides which component classes changed, runs ONLY
 the relevant existing check script, and re-wakes the session ADVISORY- only (it
 never blocks) when a check actually REPORTS drift.
+
+Toolkit-repo identity gate:
+  - The whole hook no-ops unless the session cwd IS the toolkit repo itself,
+    identified intrinsically by cwd/pyproject.toml declaring [project] name ==
+    "vexjoy-agent" (clone-portable: not a path, remote, or env var). In any
+    other repo the hook silently exits 0 before any check runs.
 
 Relevance gate (diff file paths -> which check to run):
   - hooks/** changed                          -> smoke-test-hooks.py --ci
@@ -51,8 +57,28 @@ Module seams (patched by hooks/tests/test_stop_drift_guard.py):
   - main()                          (stdin -> dispatch on hook_event_name == "Stop")
 """
 
+import sys  # vexjoy-pyguard
+
+if sys.version_info < (3, 10):  # vexjoy-pyguard advisory
+    import os
+
+    if not os.environ.get("VEXJOY_PYGUARD_REEXEC"):
+        os.environ["VEXJOY_PYGUARD_REEXEC"] = "1"
+        for _d in [*os.environ.get("PATH", "").split(os.pathsep), "/opt/homebrew/bin", "/usr/local/bin", "/usr/bin"]:
+            for _v in ("14", "13", "12", "11", "10"):
+                _p = os.path.join(_d, "python3." + _v)
+                if _d and "/shims" not in _d and os.access(_p, os.X_OK):
+                    os.execv(_p, [_p, *sys.argv])
+    sys.stderr.write(
+        "[vexjoy] hook %s needs Python 3.10+, got %s (%s); run ./install.sh in vexjoy-agent from a terminal"
+        " outside Claude Code (gated tool calls stay blocked until then)\n"
+        % (__file__.rsplit("/", 1)[-1], sys.version.split()[0], sys.executable)
+    )
+    sys.exit(0)
+
 import json
 import os
+import re
 import subprocess
 import sys
 import traceback
@@ -62,11 +88,14 @@ sys.path.insert(0, str(Path(__file__).parent / "lib"))
 from hook_utils import (
     DiffDedup,
     async_rewake,
+    defer_advisory,
+    hook_error,
     working_tree_diff,
 )
 from stdin_timeout import read_stdin
 
 _DISABLE_ENV = "VEXJOY_DRIFT_GUARD_DISABLE"
+_TRUSTED_ROOT = Path(__file__).resolve().parent.parent
 
 # Stop-event dedup state. Absolute path so it works from any cwd the harness
 # fires in. Own state dir so this guard's dedup never collides with another hook.
@@ -78,6 +107,7 @@ _STATE_FILE = _STATE_DIR / "last-diff-hash.json"
 SMOKE = "smoke-test-hooks"
 DOC_COUNTS = "validate-doc-counts"
 ROUTING = "check-routing-drift"
+PLUGIN_INSTALL = "validate-plugin-install"
 
 # Component class roots. A file ADDED or REMOVED under any of these flips a
 # count claim -> doc-counts. (Modifying an existing file does not change counts.)
@@ -201,6 +231,7 @@ def _relevant_checks(diff: str) -> list[str]:
     run_smoke = False
     run_doc_counts = False
     run_routing = False
+    run_plugin = False
 
     for f in _parse_diff(diff):
         path = f["path"]
@@ -212,14 +243,18 @@ def _relevant_checks(diff: str) -> list[str]:
             run_doc_counts = True
         if _is_frontmatter_relevant(path):
             run_routing = True
+        if path.startswith("plugins/"):
+            run_plugin = True
 
-    # Stable order: smoke, doc-counts, routing.
+    # Stable order: smoke, doc-counts, routing, plugin-install.
     if run_smoke:
         checks.append(SMOKE)
     if run_doc_counts:
         checks.append(DOC_COUNTS)
     if run_routing:
         checks.append(ROUTING)
+    if run_plugin:
+        checks.append(PLUGIN_INSTALL)
     return checks
 
 
@@ -229,17 +264,42 @@ def _relevant_checks(diff: str) -> list[str]:
 
 
 def _script_path(name: str) -> Path | None:
-    """Locate scripts/<name>.py across the repo and deployed layouts."""
-    here = Path(__file__).resolve()
-    candidates = [
-        here.parent.parent / "scripts" / name,  # repo: hooks/ -> scripts/
-        here.parent / "scripts" / name,
-        Path(os.path.expanduser(f"~/.claude/scripts/{name}")),
-    ]
-    for c in candidates:
-        if c.is_file():
-            return c
-    return None
+    """Locate a validator only in the hook's canonical trusted install."""
+    scripts_dir = _TRUSTED_ROOT / "scripts"
+    candidate = scripts_dir / name
+    return candidate if candidate.is_file() else None
+
+
+def _target_is_trusted_root(cwd: str | None) -> bool:
+    """Whether a validator may safely execute project-owned hook/tool code."""
+    if not cwd:
+        return False
+    try:
+        return Path(cwd).resolve() == _TRUSTED_ROOT.resolve()
+    except OSError:
+        return False
+
+
+# Intrinsic toolkit-repo marker: pyproject.toml declaring [project] name.
+# A minimal line scan (Python 3.10 here — no tomllib, no 3rd-party toml lib).
+_TOOLKIT_NAME_RE = re.compile(r"""^\s*name\s*=\s*["']vexjoy-agent["']\s*$""", re.MULTILINE)
+
+
+def _is_toolkit_repo(cwd: str | None) -> bool:
+    """Is `cwd` the toolkit repo itself?
+
+    True IFF `cwd` is non-empty AND `cwd/pyproject.toml` exists AND that file
+    declares a project name of "vexjoy-agent". Clone-portable: keys on an
+    intrinsic committed marker, not a path/remote/env var. Fail-open: ANY
+    IOError / parse issue -> False (treated as "not the toolkit repo" -> no-op).
+    """
+    if not cwd:
+        return False
+    try:
+        text = (Path(cwd) / "pyproject.toml").read_text(encoding="utf-8")
+    except OSError:
+        return False
+    return _TOOLKIT_NAME_RE.search(text) is not None
 
 
 def _run_script(script: str, args: list[str], cwd: str | None, timeout: int = 30):
@@ -253,7 +313,7 @@ def _run_script(script: str, args: list[str], cwd: str | None, timeout: int = 30
             capture_output=True,
             text=True,
             timeout=timeout,
-            cwd=cwd or None,
+            cwd=str(_TRUSTED_ROOT),
         )
     except (subprocess.TimeoutExpired, OSError):
         return None
@@ -261,7 +321,14 @@ def _run_script(script: str, args: list[str], cwd: str | None, timeout: int = 30
 
 def _check_smoke(cwd: str | None) -> dict | None:
     """smoke-test-hooks.py --ci: exit 0 = clean, exit 1 = FAIL/MISSING."""
-    proc = _run_script("smoke-test-hooks.py", ["--ci"], cwd)
+    if not cwd:
+        return None
+    target_root = str(Path(cwd).resolve())
+    proc = _run_script(
+        "smoke-test-hooks.py",
+        ["--ci", "--repo-root", target_root, "--hooks-dir", str(_TRUSTED_ROOT / "hooks")],
+        cwd,
+    )
     if proc is None:
         return None
     if proc.returncode == 0:
@@ -277,7 +344,9 @@ def _check_smoke(cwd: str | None) -> dict | None:
 
 def _check_doc_counts(cwd: str | None) -> dict | None:
     """validate-doc-counts.py --json: drift when the `drifts` array is non-empty."""
-    proc = _run_script("validate-doc-counts.py", ["--json"], cwd)
+    if not cwd:
+        return None
+    proc = _run_script("validate-doc-counts.py", ["--json", "--repo-root", str(Path(cwd).resolve())], cwd)
     if proc is None:
         return None
     try:
@@ -304,6 +373,8 @@ def _check_doc_counts(cwd: str | None) -> dict | None:
 
 def _check_routing(cwd: str | None) -> dict | None:
     """check-routing-drift.py: exit 0 = clean, exit 1 = a skill missing from manifest."""
+    if not _target_is_trusted_root(cwd):
+        return None
     proc = _run_script("check-routing-drift.py", [], cwd)
     if proc is None:
         return None
@@ -318,9 +389,37 @@ def _check_routing(cwd: str | None) -> dict | None:
     }
 
 
+def _check_plugin_install(cwd: str | None) -> dict | None:
+    """validate-plugin-install.py --json: drift when a repo plugin is not installed
+    at its manifest version through the Claude CLI. Hand edits to
+    ~/.claude/plugins are ignored by the engine; only `claude plugin install|update`
+    counts, followed by a restart."""
+    if not cwd:
+        return None
+    proc = _run_script("validate-plugin-install.py", ["--json"], cwd)
+    if proc is None:
+        return None
+    try:
+        report = json.loads(proc.stdout)
+    except (json.JSONDecodeError, ValueError):
+        return None
+    problems = report.get("problems") or []
+    if not problems:
+        return {"drift": False}
+    lines = ["repo plugin changed but is not installed at this version via the Claude CLI:"]
+    for pr in problems[:5]:
+        lines.append(f"  {pr.get('plugin', '?')}: {pr.get('problem', '?')}")
+    return {
+        "drift": True,
+        "detail": "\n".join(lines),
+        "fix": "; ".join(pr.get("fix", "") for pr in problems[:5]) + " -- then tell the owner to restart",
+    }
+
+
 _CHECK_RUNNERS = {
     SMOKE: _check_smoke,
     DOC_COUNTS: _check_doc_counts,
+    PLUGIN_INSTALL: _check_plugin_install,
     ROUTING: _check_routing,
 }
 
@@ -369,12 +468,20 @@ def _working_tree_diff(cwd: str | None) -> str:
 
 def handle_stop(event: dict) -> None:
     """Stop: run the relevant drift checks and ADVISORY re-wake on real drift."""
+    session_id = event.get("session_id") if isinstance(event.get("session_id"), str) else None
     # asyncRewake recursion guard: CC sets stop_hook_active while a rewake is in
     # flight — don't re-fire.
     if event.get("stop_hook_active"):
         sys.exit(0)
 
     cwd = event.get("cwd") or os.environ.get("CLAUDE_PROJECT_DIR")
+
+    # Toolkit-repo identity gate: run drift checks ONLY when the session's repo
+    # IS the toolkit itself. Any other repo (or an unreadable/absent marker)
+    # short-circuits before diff parsing or any check runs. Clone-portable.
+    if not _is_toolkit_repo(cwd):
+        sys.exit(0)
+
     diff = _working_tree_diff(cwd)
 
     # Front gate: nothing reviewable -> short-circuit before any check runs.
@@ -418,8 +525,15 @@ def handle_stop(event: dict) -> None:
     )
     message = "\n".join(lines) + "\n"
 
-    # async_rewake: rewakeSummary on stdout, context on stderr, exit 2. Advisory —
-    # never a permissionDecision:deny, never blocks.
+    # Deferred, not rewoken: a rewake is a full-context generation the model
+    # spends saying "acknowledged". The advisory lands as context on the next
+    # user prompt instead (pending-advisory-injector-userprompt.py).
+    runtime_delivers_deferred = os.environ.get("VEXJOY_HOOK_RUNTIME") != "codex"
+    if runtime_delivers_deferred and defer_advisory(
+        session_id, "stop-drift-guard", message, "Toolkit drift guard found drift to review"
+    ):
+        print("[stop-drift-guard] drift queued for next prompt", file=sys.stderr)
+        sys.exit(0)
     async_rewake(message, "Toolkit drift guard found drift to review")
 
 
@@ -448,12 +562,7 @@ def main() -> None:
         except SystemExit:
             raise
         except Exception as e:
-            if os.environ.get("CLAUDE_HOOKS_DEBUG"):
-                traceback.print_exc(file=sys.stderr)
-            else:
-                print(f"[stop-drift-guard] Error: {type(e).__name__}: {e}", file=sys.stderr)
-            sys.exit(0)
-
+            hook_error("stop-drift-guard", e)
     sys.exit(0)
 
 
@@ -463,9 +572,4 @@ if __name__ == "__main__":
     except SystemExit:
         raise  # Let sys.exit(0/2) propagate normally.
     except Exception as e:
-        if os.environ.get("CLAUDE_HOOKS_DEBUG"):
-            traceback.print_exc(file=sys.stderr)
-        else:
-            print(f"[stop-drift-guard] Error: {type(e).__name__}: {e}", file=sys.stderr)
-        # A crashed hook fails OPEN — never block, never stall a session.
-        sys.exit(0)
+        hook_error("stop-drift-guard", e)

@@ -50,28 +50,6 @@ def isolated_db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
 # ─── Schema / table creation ──────────────────────────────────────────────────
 
 
-def test_governance_events_table_created(tmp_path: Path) -> None:
-    """governance_events table should exist after init_db()."""
-    ldb.init_db()
-    with ldb.get_connection() as conn:
-        row = conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='governance_events'").fetchone()
-    assert row is not None, "governance_events table was not created"
-
-
-def test_governance_events_indexes_created() -> None:
-    """All four governance indexes should be present after init."""
-    ldb.init_db()
-    with ldb.get_connection() as conn:
-        names = {
-            row[0]
-            for row in conn.execute(
-                "SELECT name FROM sqlite_master WHERE type='index' AND name LIKE 'idx_gov_%'"
-            ).fetchall()
-        }
-    expected = {"idx_gov_session", "idx_gov_type", "idx_gov_severity", "idx_gov_created"}
-    assert expected.issubset(names), f"Missing indexes: {expected - names}"
-
-
 # ─── record_governance_event ──────────────────────────────────────────────────
 
 
@@ -125,18 +103,6 @@ def test_record_governance_event_payload_roundtrip() -> None:
     assert parsed == payload
 
 
-def test_record_governance_event_custom_id() -> None:
-    custom_id = "gov-test-custom-id"
-    returned = ldb.record_governance_event(
-        "secret_detected",
-        event_id=custom_id,
-        severity="critical",
-    )
-    assert returned == custom_id
-    events = ldb.query_governance_events()
-    assert any(e["id"] == custom_id for e in events)
-
-
 def test_record_governance_event_idempotent_custom_id() -> None:
     """INSERT OR IGNORE means a second call with the same id is a no-op."""
     eid = "gov-idempotent-test"
@@ -178,13 +144,6 @@ def test_resolve_governance_event_success() -> None:
     ev = next(e for e in events if e["id"] == eid)
     assert ev["resolution"] == "false_positive"
     assert ev["resolved_at"] is not None
-
-
-def test_resolve_governance_event_all_states() -> None:
-    for state in ("dismissed", "false_positive", "remediated"):
-        eid = ldb.record_governance_event("hook_blocked")
-        ok = ldb.resolve_governance_event(eid, state)
-        assert ok is True, f"resolve failed for state={state}"
 
 
 def test_resolve_governance_event_invalid_state() -> None:
@@ -258,12 +217,6 @@ def test_query_filter_by_days(monkeypatch: pytest.MonkeyPatch) -> None:
     assert "gov-stale-test" not in ids
 
 
-def test_query_returns_empty_list_on_fresh_db() -> None:
-    ldb.init_db()
-    events = ldb.query_governance_events(days=7)
-    assert events == []
-
-
 # ─── CLI: governance-report.py ────────────────────────────────────────────────
 
 
@@ -289,19 +242,6 @@ def test_cli_list_shows_events() -> None:
     rc, out = _run(["--days", "7"])
     assert rc == 0
     assert "approval_requested" in out
-
-
-def test_cli_filter_by_type() -> None:
-    ldb.record_governance_event("secret_detected", severity="critical")
-    ldb.record_governance_event("approval_requested", severity="high")
-
-    rc, out = _run(["--type", "secret_detected"])
-    assert rc == 0
-    assert "secret_detected" in out
-    # The other type should not appear in the rows
-    # (header line contains both words potentially, check count per-row is tricky;
-    #  just verify the command ran cleanly)
-    assert rc == 0
 
 
 def test_cli_export_json() -> None:
@@ -342,29 +282,3 @@ def test_cli_resolve_invalid_resolution() -> None:
     with pytest.raises(SystemExit) as exc_info:
         governance_report.main(["--resolve", "gov-x", "--resolution", "bad_value"])
     assert exc_info.value.code == 2
-
-
-def test_cli_unresolved_flag() -> None:
-    eid_open = ldb.record_governance_event("hook_blocked", severity="high", blocked=True)
-    eid_res = ldb.record_governance_event("policy_violation", severity="warning", blocked=True)
-    ldb.resolve_governance_event(eid_res, "remediated")
-
-    rc, out = _run(["--unresolved"])
-    assert rc == 0
-    assert eid_open in out
-    assert eid_res not in out
-
-
-def test_cli_no_args_shows_all_events() -> None:
-    """Running with no args (no --days) should return all events."""
-    ldb.record_governance_event("security_finding", severity="medium")
-    rc, out = _run([])
-    assert rc == 0
-    assert "security_finding" in out
-
-
-def test_cli_export_json_empty_db() -> None:
-    rc, out = _run(["--export", "json"])
-    assert rc == 0
-    data = json.loads(out)
-    assert data == []

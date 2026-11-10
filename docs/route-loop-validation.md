@@ -10,6 +10,24 @@ read_when:
 Branch: `feat/route-sensor`. Date: 2026-06-10. Audience: a skeptical reader
 who wants proof, not prose.
 
+## Update 2026-07-24: in-context weights read retired
+
+The Step 1.5 read (`learning-db.py route-weights --json`) is removed from
+`/do`. Cost: 42,659 bytes (~10,700 tokens) injected into the coordinator on
+every routing decision. Yield across 1,037 routed dispatches: would-action
+`keep` 81/81; `route-signal-check.py` NO-SIGNAL — 0 would-demote,
+0 would-tiebreak. The actuator was already dropped (PR #755), so the read
+bought telemetry the policy never used to change a route.
+
+Still live: the route event log, three-way outcome finalization, the
+orchestrator-reported `route-failure` channel, and the `[do-route]` marker
+format — the marker now always carries `health=-`. The would-action leg of
+the re-propose condition below cannot fire (no would-action is computed);
+re-proposal now keys on the first routing-relevant failure event alone.
+Re-proposing the actuator re-introduces the weights read with it.
+
+Working notes: the `routing-loop-value-eval` ADR (local-only; the `adr/` directory is gitignored).
+
 ---
 
 ## Decision
@@ -70,10 +88,27 @@ Every `/do` dispatch is scored, never altered:
    rejection/rework/re-route (decay); **success** only on an explicit
    acceptance marker (boost); **neutral** otherwise (no-op). No complaint is
    NOT acceptance.
-5. The orchestrator reports routing failures it observes directly via
+5. **Weak-positive** (C6, local-only ADR router-improvement-program): a
+   would-be-neutral entry upgrades to **weak_success** when the same `agent:skill` pair was
+   finalized non-failure earlier in the same session — a repeat dispatch with
+   no intervening failure means the user kept re-using the route. Bounded:
+   +0.02 per event, clamped so weak boosts never lift confidence past 0.65
+   (strictly below the 0.70 high-confidence/injection threshold — crossing it
+   requires explicit acceptance); `success_count`/n still accrue at the cap,
+   so the n>=5 evidence gate becomes reachable. Guards: the entry must be
+   clean (tool errors still decay, unchanged), and any rejection on the turn
+   — even an unattributable multi-dispatch one — suppresses the upgrade. The
+   upgrade reads dispatch history (per-key, per-session, in the bridge state
+   file), never prompt text: the reaction detector is unchanged, and a first
+   dispatch followed by an unrelated prompt stays a neutral no-op. Basis label
+   `repeat_dispatch_weak`; event outcome `weak_success`, reason
+   `repeat-dispatch-no-failure`. This closes the signal starvation that held
+   every weight at 0.5/n<5 (success previously required an explicit acceptance
+   marker that almost never appears).
+6. The orchestrator reports routing failures it observes directly via
    `learning-db.py route-failure` (ADR orchestrator-reported-route-failures,
-   local working document). `--routing-relevant yes` decays the pair;
-   idempotent per (session, marker).
+   a local-only working document; `adr/` is gitignored).
+   `--routing-relevant yes` decays the pair; idempotent per (session, marker).
 
 Force-route/security pairs are hard-exempt in the policy — checked first,
 always `keep`. Exemption is by skill name and accepts bare skill names or full
@@ -151,7 +186,9 @@ All Critical/High findings were fixed on the original branch before the split.
 ## Reproduce (sensor)
 
 ```bash
-# Signal check: expect exit 0 (NO-SIGNAL) today
+# Signal check: exits 3 (SIGNAL) today — 1 routing-relevant failure,
+# 81 decisions with health_at_decision, 0 would-demote. The re-propose
+# condition above is met; the actuator has not been re-proposed yet.
 python3 scripts/route-signal-check.py
 
 # Test suite

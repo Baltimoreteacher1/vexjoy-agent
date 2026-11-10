@@ -1,7 +1,8 @@
 ---
 name: video-transcript
+promoted_to: video-editing
 description: "Extract video transcripts: yt-dlp subtitles to clean paragraphs."
-user_invocable: false  # default -- router-dispatched, not user-typed
+user-invocable: false  # default -- router-dispatched, not user-typed
 agent: python-general-engineer
 allowed-tools:
   - Bash
@@ -13,10 +14,14 @@ routing:
     - "extract transcript"
     - "download subtitles"
     - "what does this video say"
+    - "get transcript"
+    - "transcribe video"
+    - "transcribe this video"
+    - "pull subtitles"
+    - "captions from video"
   category: research
   pairs_with:
-    - research-pipeline
-    - wrestlejoy-external-research
+    - research
 ---
 
 # Video Transcript
@@ -40,7 +45,7 @@ yt-dlp --skip-download --write-auto-subs --sub-langs en --sub-format vtt \
 Then clean the VTT into paragraphs:
 
 ```bash
-python3 skills/research/video-transcript/scripts/vtt_to_paragraph.py <work-dir>/<id>.en.vtt
+python3 ~/.claude/skills/video-editing/scripts/vtt_to_paragraph.py <work-dir>/<id>.en.vtt
 ```
 
 Default output is plain paragraph text with `[Music]`-style cues stripped and the rolling duplicates of auto-captions deduplicated. Use `--timestamps` for `[mm:ss]` markers, `--keep-brackets` to keep cue tags, `-o FILE` to write to a file.

@@ -10,12 +10,34 @@ Stop hooks must NEVER fail — entire main() is wrapped in try/except.
 
 from __future__ import annotations
 
+import sys  # vexjoy-pyguard
+
+if sys.version_info < (3, 10):  # vexjoy-pyguard advisory
+    import os
+
+    if not os.environ.get("VEXJOY_PYGUARD_REEXEC"):
+        os.environ["VEXJOY_PYGUARD_REEXEC"] = "1"
+        for _d in [*os.environ.get("PATH", "").split(os.pathsep), "/opt/homebrew/bin", "/usr/local/bin", "/usr/bin"]:
+            for _v in ("14", "13", "12", "11", "10"):
+                _p = os.path.join(_d, "python3." + _v)
+                if _d and "/shims" not in _d and os.access(_p, os.X_OK):
+                    os.execv(_p, [_p, *sys.argv])
+    sys.stderr.write(
+        "[vexjoy] hook %s needs Python 3.10+, got %s (%s); run ./install.sh in vexjoy-agent from a terminal"
+        " outside Claude Code (gated tool calls stay blocked until then)\n"
+        % (__file__.rsplit("/", 1)[-1], sys.version.split()[0], sys.executable)
+    )
+    sys.exit(0)
+
 import json
 import os
 import subprocess
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).parent / "lib"))
+from hook_utils import hook_error
 
 STALENESS_DAYS = 7
 STATE_DIR = Path.home() / ".claude" / "state"
@@ -58,7 +80,15 @@ def _update_state() -> None:
     )
 
 
+_BYPASS_ENV = "RULES_DISTILL_TRIGGER_BYPASS"
+
+
 def main() -> int:
+    if os.environ.get(_BYPASS_ENV) == "1":
+        if os.environ.get("CLAUDE_HOOKS_DEBUG"):
+            print("[rules-distill-trigger] Bypassed via RULES_DISTILL_TRIGGER_BYPASS=1", file=sys.stderr)
+        sys.exit(0)
+
     # Exit silently if not stale
     if not _is_stale():
         return 0
@@ -91,6 +121,7 @@ def main() -> int:
 if __name__ == "__main__":
     try:
         sys.exit(main())
-    except Exception:
+    except Exception as e:
+        hook_error("rules-distill-trigger", e)
         # Stop hooks must NEVER fail
         sys.exit(0)

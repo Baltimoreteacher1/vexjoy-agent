@@ -1,7 +1,7 @@
 ---
 name: markdown-converter
 description: "Convert PDF, Office, HTML, data, media, ZIP to Markdown."
-user_invocable: false  # default -- router-dispatched, not user-typed
+user-invocable: false  # default -- router-dispatched, not user-typed
 agent: python-general-engineer
 allowed-tools:
   - Bash
@@ -14,10 +14,17 @@ routing:
     - "PDF to markdown"
     - "docx to markdown"
     - "ingest document"
+    - "read this PDF"
+    - "read this document"
+    - "extract text from document"
+    - "convert PDF"
+    - "convert document"
+    - "pptx to markdown"
+    - "xlsx to markdown"
   category: research
   pairs_with:
-    - research-pipeline
-    - enterprise-search
+    - research
+    - domain
 ---
 
 # Markdown Converter
@@ -32,7 +39,7 @@ cat blob | uvx 'markitdown[all]' -x .pdf       # stdin, with extension hint
 
 When `uvx` is missing, run `pipx run 'markitdown[all]' …` with the same arguments. First run downloads dependencies; later runs hit the cache. Output preserves headings, tables, lists, and links.
 
-For video transcripts, use the `video-transcript` skill.
+For video transcripts, use the `video-editing` skill.
 
 ## Formats
 

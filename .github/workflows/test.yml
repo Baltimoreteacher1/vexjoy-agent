@@ -5,6 +5,10 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  # Nightly full tier (test-full): slow, integration, and performance tests.
+  schedule:
+    - cron: "17 6 * * *"
+  workflow_dispatch:
 
 jobs:
   lint:
@@ -14,19 +18,68 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
-      - run: pip install ruff==0.15.18 pyyaml  # match uv.lock so CI and local agree
+      # ruff pinned: 0.16.0 started reformatting markdown code blocks, failing
+      # every PR on pre-existing .md files. Bump deliberately with a repo-wide
+      # reformat, not via an unpinned install.
+      - run: pip install ruff==0.15.12 pyyaml==6.0.3
       # INDEX.json is generated (untracked); build it before validators read it.
       - run: python scripts/generate-skill-index.py && python scripts/generate-agent-index.py
+      # Agent companion tables are generated from routing.pairs_with plus the indexes.
+      - run: python scripts/add-companion-skills.py --check
       - run: ruff check . --config pyproject.toml
       - run: ruff format --check . --config pyproject.toml
       - run: python scripts/validate-references.py --check-do-framing
       # Scoped flag: --all carries known pre-existing failures, so it cannot gate CI.
       - run: python scripts/validate-references.py --check-placeholders
+      # Doc-structure checks moved out of pytest (per-file parametrized tests
+      # became one looped validator run each).
+      - run: python scripts/validate-references.py --check-size
+      - run: python scripts/validate-references.py --check-skill-calls
+      - run: python scripts/validate_positive_instruction_docs.py --fleet
+      - run: python scripts/validate-doc-commands.py --check-sdir
       - run: python scripts/validate-skill-frontmatter.py
       - run: python scripts/validate-index-integrity.py
+      # promoted_to is the toolkit's delete switch: one frontmatter line drops a
+      # skill from INDEX.json and from routing. Gate it — a phantom successor
+      # retires a skill into nothing (it removed /do from the skill catalogue).
+      - run: python scripts/validate-promoted-successors.py
+      # pipeline-index.json is hand-maintained and validate-do-references.py only
+      # resolves component NAMES, so an entry pointing at a deleted doc passed CI.
+      # Two did: the perses pipelines outlived the commit that deleted their docs.
+      - run: python scripts/validate-pipeline-index.py
+      # Static routing map: stale map, empty description, zero triggers, phantom
+      # pairs_with. Enforcement date: 2026-08-15. --check is the strict command.
+      - run: python scripts/generate-routing-map.py --check
+      - run: python scripts/generate-skills-doc.py --check
+      # Installer spec 4.3: flat install names, so two public skills may not
+      # share a leaf name across categories.
+      - run: python scripts/validate-skill-names.py
+      # Installer spec 7.5: CI cannot see private names, so it enforces the
+      # public side. No private-inclusive local index is ever tracked, and the
+      # routing map regenerates byte-identically from the public indexes built
+      # above (the generator is deterministic; --check also compares).
+      - name: No tracked INDEX.local.json
+        run: |
+          if git ls-files | grep -E '(^|/)INDEX\.local\.json$'; then
+            echo "tracked INDEX.local.json found (private-inclusive index must stay local)"; exit 1
+          fi
+      - name: routing-map regenerates identically from public sources
+        run: python scripts/generate-routing-map.py && git diff --exit-code -- docs/routing-map.md
+      # Hard gate: every hard gate in this workflow carries a collected CLI-level
+      # negative control, or explicit debt in scripts/negative-control-allowlist.txt.
+      # --strict also fails on that debt; switch to it once the allowlist is empty.
+      - run: python scripts/validate-negative-controls.py
+      # Advisory (always exit 0): merged tracked+local index — phantom files, dead
+      # agent refs, missing category/description, "NOT: " doubling, category
+      # registry. Gate later with --strict (ADR router-improvement-program, C2).
+      - run: python scripts/validate-merged-index.py
+      # /do control law: every routed component name must resolve (no phantom routes).
+      - run: python scripts/validate-do-references.py
       - run: python scripts/validate-doc-links.py
       - run: python scripts/validate-doc-counts.py
       - run: python scripts/validate-doc-commands.py
+      # skills/, agents/ and commands/ script calls vs each script's argparse (static parse, nothing runs).
+      - run: python scripts/validate-doc-commands.py --scope toolkit
       - run: python scripts/validate_component_models.py
       # Conformance gate for native .js workflows: declared meta.contract vs actual
       # dispatch. node is not installed in CI, so the STATIC validator is the gate
@@ -44,10 +97,35 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: ${{ matrix.python-version }}
-      - run: pip install pytest pyyaml pillow numpy jsonschema
+      - run: pip install -r requirements.lock pytest pytest-xdist pillow numpy
       # INDEX.json is generated (untracked); tests that read the real index need it.
       - run: python scripts/generate-skill-index.py && python scripts/generate-agent-index.py
-      - run: python -m pytest --tb=short -q
+      # Fast tier: the default marker filter in pyproject.toml skips
+      # slow+integration and performance tests; test-full runs them.
+      # --dist loadfile keeps each file on one worker (module fixtures, shared
+      # tmp state inside a file).
+      - run: python -m pytest --tb=short -q -n auto --dist loadfile
+
+  test-full:
+    # Full tier: every marker (-m "" clears the default filter), so the
+    # slow+integration end-to-end tests and the timing benchmarks run here.
+    # Push to main, nightly, and manual runs only; PRs get the fast tier.
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.10", "3.12"]
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python-version }}
+      - run: pip install -r requirements.lock pytest pytest-xdist pillow numpy
+      - run: python scripts/generate-skill-index.py && python scripts/generate-agent-index.py
+      # -m on the command line replaces the pyproject default filter.
+      - run: python -m pytest --tb=short -q -m "not performance" -n auto --dist loadfile
+      # Timing budgets run serially: parallel workers skew wall-clock asserts.
+      - run: python -m pytest --tb=short -q -m performance -n 0
 
   routing-benchmark:
     runs-on: ubuntu-latest
@@ -56,7 +134,7 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
-      - run: pip install pyyaml
+      - run: pip install pyyaml==6.0.3
       # INDEX.json is generated (untracked); the benchmark reads it.
       - run: python scripts/generate-skill-index.py && python scripts/generate-agent-index.py
       - run: python scripts/routing-benchmark.py --verbose
@@ -68,10 +146,22 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
-      - run: pip install pyyaml
-      # INDEX.json is generated (untracked); the drift check reads it.
+      - run: pip install pyyaml==6.0.3
+      # INDEX.json is generated (untracked); the drift check reads both indexes.
       - run: python scripts/generate-skill-index.py && python scripts/generate-agent-index.py
       - run: python scripts/check-routing-drift.py --verbose
+
+  router-self-audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - run: pip install pyyaml==6.0.3 pytest
+      # Composite router check: manifest, merged index (--strict), replay
+      # corpus, and drift. It regenerates the untracked INDEX.json files.
+      - run: python scripts/router-self-audit.py
 
   joy-check:
     runs-on: ubuntu-latest
@@ -80,9 +170,9 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
-      - run: pip install pytest
-      - name: Joy-check golden fixtures and fleet scan (agents + SKILL.md)
-        run: python -m pytest scripts/tests/test_joy_check_instruction_mode.py -v --tb=short
+      # Golden fixtures run in the test job; this is the fleet scan only.
+      - name: Joy-check fleet scan (agents + SKILL.md)
+        run: python scripts/validate_positive_instruction_docs.py --fleet
 
   hook-health:
     runs-on: ubuntu-latest
@@ -91,22 +181,53 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
-      - run: pip install pyyaml
+      - run: pip install pyyaml==6.0.3
       # Static checks (dormancy, schema, mirror, allowlist) read the repo
-      # directly. Liveness (smoke-test) + register-hook validate read
-      # ~/.claude, so deploy hooks + settings.json there first.
-      - name: Deploy hooks and settings to ~/.claude
+      # directly, and matcher-liveness seeds its own throwaway HOME. The smoke
+      # test + register-hook validate read ~/.claude, so deploy hooks, scripts and
+      # settings.json there first. scripts/ goes in as a real install puts it:
+      # hooks import from scripts/lib and run scripts from it.
+      - name: Deploy hooks, scripts and settings to ~/.claude
         run: |
-          mkdir -p "$HOME/.claude/hooks/lib"
+          mkdir -p "$HOME/.claude/hooks/lib" "$HOME/.claude/scripts"
           cp hooks/*.py "$HOME/.claude/hooks/"
           cp hooks/lib/*.py "$HOME/.claude/hooks/lib/" 2>/dev/null || true
+          cp -r scripts/. "$HOME/.claude/scripts/"
           cp .claude/settings.json "$HOME/.claude/settings.json"
+      - name: Every registered hook carries the python version guard
+        run: python scripts/hook-pyguard.py --check
       - name: Registered hooks resolve to backing files
         run: python scripts/register-hook.py validate
       - name: Hook-health gate (no-dormant, schema, mirror, liveness)
         run: python scripts/validate-hook-health.py --ci
       - name: Smoke-test all registered hooks
         run: python scripts/smoke-test-hooks.py --ci
+
+  mutation-check:
+    # Report-only: mutates the hooks a PR changes and lists the mutants their tests miss.
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements.lock pytest
+      - name: Mutate changed hooks
+        run: |
+          targets=$(python scripts/mutation-check.py --list | awk '$1 == "hook" {print $2}')
+          args=""
+          for f in $(git diff --name-only "origin/${{ github.base_ref }}...HEAD" | grep -E '^hooks/[^/]+\.py$' || true); do
+            if echo "$targets" | grep -qx "$(basename "$f")"; then args="$args --hook $f"; fi
+          done
+          if [ -z "$args" ]; then
+            echo "No changed hook with tests; nothing to mutate." | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          python scripts/mutation-check.py $args --workers 4 | tee mutation.txt
+          { echo '```'; cat mutation.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
 
   trigger-ambiguity:
     # Advisory: audit-trigger-ambiguity.py always exits 0; this job is always green.
@@ -117,7 +238,7 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
-      - run: pip install pyyaml
+      - run: pip install pyyaml==6.0.3
       # INDEX.json is generated (untracked); the audit reads it.
       - run: python scripts/generate-skill-index.py && python scripts/generate-agent-index.py
       - run: python scripts/audit-trigger-ambiguity.py
@@ -134,65 +255,5 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
-      - run: pip install pyyaml
+      - run: pip install pyyaml==6.0.3
       - run: python scripts/check-index-colocation.py --base origin/main --head HEAD --json || true
-
-  skill-eval-coverage:
-    # Report-only (ADR skill-eval-pr-ablation, Decision 2). Maps skills changed
-    # in this PR to their evals and posts a sticky coverage comment. It does NOT
-    # run evals -- the runner shells to the `claude` CLI, absent on GitHub
-    # runners (ADR hard constraint). continue-on-error + always-exit-0 detector
-    # mean it can never become a failing required check. PR-only, skills/** only.
-    if: github.event_name == 'pull_request'
-    runs-on: ubuntu-latest
-    continue-on-error: true
-    permissions:
-      contents: read
-      pull-requests: write
-    steps:
-      - uses: actions/checkout@v6
-        with:
-          fetch-depth: 0
-      - uses: actions/setup-python@v6
-        with:
-          python-version: "3.12"
-      - run: pip install pyyaml
-      - name: Skip when no skills changed
-        id: filter
-        env:
-          # Context bound to env, referenced as "$BASE"/"$HEAD" in the shell —
-          # the recommended injection-safe pattern. Values are 40-hex SHAs.
-          BASE: ${{ github.event.pull_request.base.sha }}  # security-review: ignore
-          HEAD: ${{ github.sha }}
-        run: |
-          if git diff --name-only "$BASE" "$HEAD" | grep -qE '^skills/.+/SKILL\.md$'; then
-            echo "changed=1" >> "$GITHUB_OUTPUT"
-          else
-            echo "changed=0" >> "$GITHUB_OUTPUT"
-          fi
-      - name: Build coverage comment
-        if: steps.filter.outputs.changed == '1'
-        env:
-          BASE: ${{ github.event.pull_request.base.sha }}  # security-review: ignore
-          HEAD: ${{ github.sha }}
-        run: |
-          python scripts/detect-skill-changes.py --base "$BASE" --head "$HEAD" --format json > coverage.json || echo '{}' > coverage.json
-          python scripts/render-skill-eval-comment.py coverage.json > comment.md
-      - name: Post sticky PR comment
-        if: steps.filter.outputs.changed == '1'
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # Bound to env, used as "$PR"/"$REPO" in the shell (injection-safe).
-          # PR number is an integer; repo is owner/repo.
-          PR: ${{ github.event.pull_request.number }}  # security-review: ignore
-          REPO: ${{ github.repository }}
-        run: |
-          MARKER='<!-- skill-eval-coverage -->'
-          # Edit the prior bot comment if present (sticky), else create one.
-          CID=$(gh api "repos/$REPO/issues/$PR/comments" \
-            --jq ".[] | select(.body | contains(\"$MARKER\")) | .id" | head -n1) || true
-          if [ -n "$CID" ]; then
-            gh api -X PATCH "repos/$REPO/issues/comments/$CID" -f body="$(cat comment.md)" || true
-          else
-            gh pr comment "$PR" --body-file comment.md || true
-          fi

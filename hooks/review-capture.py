@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# hook-version: 1.0.0
+# hook-version: 1.0.2
 """
 PostToolUse Hook: Review Findings Capture
 
@@ -17,6 +17,25 @@ Design Principles:
 - Only processes Agent tool results
 """
 
+import sys  # vexjoy-pyguard
+
+if sys.version_info < (3, 10):  # vexjoy-pyguard advisory
+    import os
+
+    if not os.environ.get("VEXJOY_PYGUARD_REEXEC"):
+        os.environ["VEXJOY_PYGUARD_REEXEC"] = "1"
+        for _d in [*os.environ.get("PATH", "").split(os.pathsep), "/opt/homebrew/bin", "/usr/local/bin", "/usr/bin"]:
+            for _v in ("14", "13", "12", "11", "10"):
+                _p = os.path.join(_d, "python3." + _v)
+                if _d and "/shims" not in _d and os.access(_p, os.X_OK):
+                    os.execv(_p, [_p, *sys.argv])
+    sys.stderr.write(
+        "[vexjoy] hook %s needs Python 3.10+, got %s (%s); run ./install.sh in vexjoy-agent from a terminal"
+        " outside Claude Code (gated tool calls stay blocked until then)\n"
+        % (__file__.rsplit("/", 1)[-1], sys.version.split()[0], sys.executable)
+    )
+    sys.exit(0)
+
 import hashlib
 import json
 import os
@@ -27,7 +46,7 @@ from pathlib import Path
 # Add lib directory to path for imports
 sys.path.insert(0, str(Path(__file__).parent / "lib"))
 
-from hook_utils import empty_output, get_tool_output, get_tool_result
+from hook_utils import empty_output, get_tool_output, get_tool_result, hook_error
 from learning_db_v2 import record_learning
 from stdin_timeout import read_stdin
 
@@ -100,6 +119,9 @@ def extract_findings(text: str) -> dict[str, int | list[str]]:
     }
 
 
+_BYPASS_ENV = "REVIEW_CAPTURE_BYPASS"
+
+
 def main() -> None:
     """Process PostToolUse events for Agent tool review findings.
 
@@ -110,6 +132,11 @@ def main() -> None:
     4. Record to learning.db
     5. Exit silently (no context injection)
     """
+    if os.environ.get(_BYPASS_ENV) == "1":
+        if os.environ.get("CLAUDE_HOOKS_DEBUG"):
+            print("[review-capture] Bypassed via REVIEW_CAPTURE_BYPASS=1", file=sys.stderr)
+        sys.exit(0)
+
     try:
         event_data = read_stdin(timeout=2)
         if not event_data:
@@ -177,11 +204,7 @@ def main() -> None:
         empty_output(EVENT_NAME).print_and_exit()
 
     except Exception as e:
-        if os.environ.get("CLAUDE_HOOKS_DEBUG"):
-            import traceback
-
-            print(f"[review-capture] HOOK-ERROR: {type(e).__name__}: {e}", file=sys.stderr)
-            traceback.print_exc(file=sys.stderr)
+        hook_error("review-capture", e)
     finally:
         sys.exit(0)  # Never block
 

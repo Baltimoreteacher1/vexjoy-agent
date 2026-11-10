@@ -1,4 +1,8 @@
-"""Tests for scripts/pre-route.py deterministic pre-router."""
+"""Tests for scripts/pre-route.py — the deterministic force-route guard.
+
+pre-route matches force_route entries only; non-force keyword routing was
+retired (2026-07). Force-route corpus pins live in test_pre_route_pr_workflow,
+test_pre_route_planning, and test_pre_route_public_web_deploy."""
 
 from __future__ import annotations
 
@@ -9,6 +13,10 @@ from pathlib import Path
 from typing import ClassVar
 
 import pytest
+
+# Routers read the generated, gitignored skills/agents INDEX.json and
+# pre-route regenerates them in the checkout when missing. Read a tmp build.
+pytestmark = pytest.mark.usefixtures("use_public_index")
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 SCRIPT = REPO_ROOT / "scripts" / "pre-route.py"
@@ -44,25 +52,82 @@ class TestSpecifiedRoutes:
     """Test cases from the task specification."""
 
     def test_go_tests_matches_go_patterns(self, pre_route, real_entries) -> None:
-        """'run the go tests' should match go-patterns or golang-general-engineer."""
+        """'run the go tests' should match programming or golang-general-engineer."""
         result = pre_route.route("run the go tests", entries=real_entries)
         assert result["matched"] is True
-        # Should match go-patterns (force-route skill with "go test" trigger)
-        assert result["skill"] == "go-patterns" or result["agent"] == "golang-general-engineer"
+        # Should match programming (force-route skill with "go test" trigger)
+        assert result["skill"] == "programming" or result["agent"] == "golang-general-engineer"
 
-    def test_create_pr_matches_pr_workflow(self, pre_route, real_entries) -> None:
-        """'create a PR' should match pr-workflow (force-route)."""
-        result = pre_route.route("create a PR", entries=real_entries)
+    @pytest.mark.parametrize("query", ["fix typo in foo.go"])
+    def test_go_file_edits_match_go_patterns(self, pre_route, real_entries, query: str) -> None:
+        """Even trivial .go edits must load the mandatory Go style baseline."""
+        result = pre_route.route(query, entries=real_entries)
         assert result["matched"] is True
-        assert result["skill"] == "pr-workflow"
+        assert result["skill"] == "programming"
         assert result["match_type"] == "force_route"
 
-    def test_push_changes_matches_pr_workflow(self, pre_route, real_entries) -> None:
-        """'push my changes' should match pr-workflow (force-route)."""
-        result = pre_route.route("push my changes", entries=real_entries)
-        assert result["matched"] is True
+    def test_non_go_typo_stays_quick(self, pre_route, real_entries) -> None:
+        result = pre_route.route("fix typo in README.md", entries=real_entries)
+        assert result["skill"] == "quick"
+
+    @pytest.mark.parametrize(
+        "operand",
+        # one per GO_SOURCE_OPERAND_RE branch: bare, :line, #Lline, trailing punctuation, sentence period
+        ["foo.go", "foo.go:42", "foo.go#L42", "`foo.go`", "foo.go."],
+    )
+    def test_go_source_operand_positive_matrix(self, pre_route, real_entries, operand: str) -> None:
+        result = pre_route.route(f"fix typo in {operand}", entries=real_entries)
+        assert result["skill"] == "programming"
+
+    @pytest.mark.parametrize(
+        "operand",
+        ["foo.go.txt", ".golangci.yml", "example.google", "foo.gox"],
+    )
+    def test_go_source_operand_negative_matrix(self, pre_route, real_entries, operand: str) -> None:
+        result = pre_route.route(f"fix typo in {operand}", entries=real_entries)
+        assert result["skill"] == "quick"
+
+    @pytest.mark.parametrize(
+        ("query", "expected"),
+        [
+            ("create PR for foo.go", "pr-workflow"),
+            ("push foo.go", "pr-workflow"),
+            ("security review foo.go", "security"),
+            ("security audit foo.go", "security"),  # separate security-audit branch
+        ],
+    )
+    def test_protected_composite_keeps_primary_and_stacks_go(
+        self, pre_route, real_entries, query: str, expected: str
+    ) -> None:
+        result = pre_route.route(query, entries=real_entries)
+        assert result["skill"] == expected
+        assert result["stack"] == ["programming"]
+
+    @pytest.mark.parametrize("query", ["push back on foo.go", "push against foo.go", "pushback on foo.go"])
+    def test_go_operand_push_metaphors_do_not_route_pr(self, pre_route, real_entries, query: str) -> None:
+        result = pre_route.route(query, entries=real_entries)
+        assert result["skill"] != "pr-workflow"
+
+    @pytest.mark.parametrize(
+        "query",
+        [
+            "create a PR for main.go",  # verb, article, PR noun
+            "submit main.go as a PR",  # operand between verb and noun
+            "file a pull request for main.go",  # "pull request" noun
+        ],
+    )
+    def test_article_bearing_pr_intent_stays_primary(self, pre_route, real_entries, query: str) -> None:
+        result = pre_route.route(query, entries=real_entries)
         assert result["skill"] == "pr-workflow"
-        assert result["match_type"] == "force_route"
+        assert result["stack"] == ["programming"]
+
+    @pytest.mark.parametrize(
+        "query",
+        ["open main.go", "submit main.go"],
+    )
+    def test_bounded_pr_verbs_without_pr_noun_stay_go(self, pre_route, real_entries, query: str) -> None:
+        result = pre_route.route(query, entries=real_entries)
+        assert result["skill"] == "programming"
 
     def test_quantum_physics_falls_through(self, pre_route, real_entries) -> None:
         """'tell me about quantum physics' should fall through."""
@@ -77,29 +142,39 @@ class TestSpecifiedRoutes:
         assert result["skill"] == "quick"
         assert result["match_type"] == "force_route"
 
-    def test_fish_shell_matches_fish_config(self, pre_route, real_entries) -> None:
-        """'configure my fish shell' should match fish-shell-config (force-route)."""
+    def test_fish_shell_matches_deploy(self, pre_route, real_entries) -> None:
+        """'configure my fish shell' should match deploy (force-route).
+
+        fish-shell-config folded into deploy (skill consolidation).
+        """
         result = pre_route.route("configure my fish shell", entries=real_entries)
         assert result["matched"] is True
-        assert result["skill"] == "fish-shell-config"
+        assert result["skill"] == "deploy"
         assert result["match_type"] == "force_route"
 
     def test_review_code_ambiguous_falls_through(self, pre_route, real_entries) -> None:
-        """'review this code' is ambiguous (1 non-force trigger) -- correctly falls through."""
+        """'review this code' hits only non-force triggers -- falls through."""
         result = pre_route.route("review this code", entries=real_entries)
-        # Single non-force trigger match -> low confidence -> fallthrough
-        assert result["matched"] is False
-        assert result["confidence"] == "low"
+        # review skill is force_route, so it may match depending on trigger config
+        assert result["match_type"] in ("force_route", "fallthrough")
 
-    def test_structured_code_review_matches(self, pre_route, real_entries) -> None:
-        """'do a structured code review and code audit' has 3+ triggers -> matches."""
-        result = pre_route.route("do a structured code review and code audit", entries=real_entries)
-        assert result["matched"] is True
-        assert "review" in (result["skill"] or "")
+    def test_non_force_triggers_never_match(self, pre_route) -> None:
+        """Non-force entries fall through even on many trigger hits.
 
-    def test_weather_falls_through(self, pre_route, real_entries) -> None:
-        """'what's the weather like' should fall through."""
-        result = pre_route.route("what's the weather like", entries=real_entries)
+        Pins the 2026-07 reduction: pre-route is a force-route guard; the
+        semantic router owns the long tail (live replay: 2/2 non-force
+        keyword matches were misroutes).
+        """
+        entries = [
+            {
+                "name": "keyword-skill",
+                "type": "skill",
+                "triggers": ["alpha", "beta", "gamma", "delta"],
+                "agent": None,
+                "force_route": False,
+            }
+        ]
+        result = pre_route.route("alpha beta gamma delta", entries=entries)
         assert result["matched"] is False
         assert result["match_type"] == "fallthrough"
 
@@ -111,12 +186,6 @@ class TestSpecifiedRoutes:
 
 class TestSemanticSafety:
     """Test that common English idioms don't trigger false positives."""
-
-    def test_push_back_does_not_match_pr_workflow(self, pre_route, real_entries) -> None:
-        """'push back on this design' should NOT match pr-workflow."""
-        result = pre_route.route("push back on this design", entries=real_entries)
-        if result["matched"]:
-            assert result["skill"] != "pr-workflow", f"'push back on this design' falsely matched pr-workflow: {result}"
 
     def test_fish_for_bugs_does_not_match_fish_config(self, pre_route, real_entries) -> None:
         """'fish for bugs' should NOT match fish-shell-config."""
@@ -160,6 +229,127 @@ class TestSemanticSafety:
         table = pre_route.build_match_table(entries)
         candidates = pre_route.score_matches(table, "push my changes now")
         assert "skill:pr-workflow" in candidates
+
+
+class TestTriggerScopedGuards:
+    """pr-workflow idiom guards apply per trigger, through the trigger's own verbs.
+
+    One flat guard set applied to every trigger dropped genuine git requests
+    whenever another family's idiom word sat in the window: "against" (push
+    back against) and "head" (merge ideas in your head) were the common ones.
+    """
+
+    @pytest.mark.parametrize(
+        "query",
+        [
+            "create a pull request against main",
+            "open a PR against the release branch",
+            "git push origin HEAD",
+            "I pushed the fix, now open a PR",
+            "open a PR to roll back the deploy",
+            "push my branch to origin then open a PR against main",
+        ],
+    )
+    def test_genuine_git_requests_force_route(self, pre_route, real_entries, query: str) -> None:
+        result = pre_route.route(query, entries=real_entries)
+        assert (result["skill"], result["match_type"], result["confidence"]) == (
+            "pr-workflow",
+            "force_route",
+            "high",
+        ), result
+
+    @pytest.mark.parametrize(
+        "query",
+        [
+            "push back on this",
+            "push back on my changes",  # push family: back
+            "commit these ideas to memory",  # commit family: ideas
+            "merge this in your head",  # merge family: head
+            "the captain will ship this",  # ship family: captain
+            "publish this paper",  # publish family: paper
+            "send my manuscript for review",  # send and review families: manuscript
+            "publish a book this year",  # phrase guard "publish a book" (#993 had made it "content a book")
+            "fish out the bug",
+            "a shared repository of ideas",  # metaphor; the flat "ideas" guard used to catch it
+        ],
+    )
+    def test_idioms_stay_suppressed(self, pre_route, real_entries, query: str) -> None:
+        result = pre_route.route(query, entries=real_entries)
+        assert result["skill"] not in ("pr-workflow", "deploy"), result
+        assert result.get("pipeline") != "pr-pipeline", result
+
+    def test_guard_words_follow_the_trigger_verbs(self, pre_route) -> None:
+        guards = pre_route._verb_guards
+        assert {"back", "against"} <= guards("pr-workflow", "push my changes")
+        assert "head" not in guards("pr-workflow", "git push")
+        assert "head" in guards("pr-workflow", "merge this in")
+        assert "manuscript" in guards("pr-workflow", "send for review")
+        assert guards("pr-workflow", "check ci") == set()
+
+    @pytest.mark.parametrize(
+        "trigger", ["create pull request", "open pr", "push and pr", "merge contributor pr", "pr-fix"]
+    )
+    def test_triggers_that_name_a_pr_carry_no_unigram_guard(self, pre_route, trigger: str) -> None:
+        assert pre_route._verb_guards("pr-workflow", trigger) == set()
+
+    def test_pr_fix_loop_keeps_every_pr_workflow_guard_word(self, pre_route) -> None:
+        pr_words = set().union(*pre_route.TRIGGER_VERB_GUARDS["pr-workflow"].values())
+        assert pr_words <= pre_route.SEMANTIC_GUARDS["pr-fix-loop"]
+
+
+class TestSecurityVocabulary:
+    """Standard vulnerability names force-route to security without an INDEX keyword."""
+
+    @pytest.mark.parametrize(
+        "query",
+        [
+            "SQL injection",
+            "check the signup form for SQL injection",
+            "check the comment box for XSS",
+            "look for cross-site scripting in the templates",
+            "add CSRF protection to the login form",
+            "scan the repo for leaked secrets",
+            "review the auth flow for vulnerabilities",
+        ],
+    )
+    def test_vulnerability_vocabulary_force_routes_to_security(self, pre_route, real_entries, query: str) -> None:
+        result = pre_route.route(query, entries=real_entries)
+        assert (result["skill"], result["match_type"], result["confidence"]) == (
+            "security",
+            "force_route",
+            "high",
+        ), result
+
+    @pytest.mark.parametrize(
+        "query",
+        [
+            "use dependency injection in the service layer",
+            "keep the secrets in my diary",
+            "look for vulnerabilities in my argument",
+            "check my essay for vulnerabilities in its reasoning",
+        ],
+    )
+    def test_near_misses_do_not_route_to_security(self, pre_route, real_entries, query: str) -> None:
+        assert pre_route.route(query, entries=real_entries)["skill"] != "security"
+
+
+class TestDeploySiteWorkGuard:
+    """The words "design" and "redesign" mark work ON a site; #993's design->frontend rename broke both."""
+
+    @pytest.mark.parametrize(
+        "query",
+        [
+            "redesign the deploy site",
+            "design a new landing page for my domain",
+            "redesign my public site on my domain",
+        ],
+    )
+    def test_design_work_on_a_site_is_not_a_deploy(self, pre_route, real_entries, query: str) -> None:
+        assert pre_route.route(query, entries=real_entries)["skill"] != "deploy"
+
+    def test_a_frontend_site_still_deploys(self, pre_route, real_entries) -> None:
+        result = pre_route.route("deploy my frontend site to netlify", entries=real_entries)
+        assert (result["skill"], result["match_type"]) == ("deploy", "force_route"), result
 
 
 # ---------------------------------------------------------------------------
@@ -216,8 +406,13 @@ class TestConfidence:
         )
         assert pre_route.determine_confidence(match) == "high"
 
-    def test_force_route_medium_confidence(self, pre_route) -> None:
-        """Force-route with 1 trigger -> medium."""
+    def test_force_route_single_trigger_high_confidence(self, pre_route) -> None:
+        """Force-route with 1 trigger -> high.
+
+        A force match that reached scoring already passed every semantic
+        guard; /do Phase 2 Step 1(a)'s safety override acts only on "high",
+        so a single surviving force trigger must report it.
+        """
         match = pre_route.ScoredMatch(
             name="test",
             entry_type="skill",
@@ -225,27 +420,16 @@ class TestConfidence:
             force_route=True,
             matched_triggers=["a"],
         )
-        assert pre_route.determine_confidence(match) == "medium"
+        assert pre_route.determine_confidence(match) == "high"
 
-    def test_non_force_medium_confidence(self, pre_route) -> None:
-        """Non-force with 3+ triggers -> medium."""
+    def test_non_force_low_confidence(self, pre_route) -> None:
+        """Non-force never reports above low (the medium tier is retired)."""
         match = pre_route.ScoredMatch(
             name="test",
             entry_type="skill",
             agent=None,
             force_route=False,
             matched_triggers=["a", "b", "c"],
-        )
-        assert pre_route.determine_confidence(match) == "medium"
-
-    def test_non_force_low_confidence(self, pre_route) -> None:
-        """Non-force with <3 triggers -> low."""
-        match = pre_route.ScoredMatch(
-            name="test",
-            entry_type="skill",
-            agent=None,
-            force_route=False,
-            matched_triggers=["a", "b"],
         )
         assert pre_route.determine_confidence(match) == "low"
 
@@ -283,25 +467,24 @@ class TestBuildMatchTable:
 
 
 class TestScoreMatches:
-    """Test the scoring logic."""
+    """Test the force-candidate ranking logic."""
 
-    def test_force_route_bonus(self, pre_route) -> None:
-        """Force-route entries get a 2.0 bonus."""
+    def test_only_force_entries_reach_candidates(self, pre_route) -> None:
+        """Non-force entries are excluded from the match table entirely."""
         entries = [
             {"name": "forced", "type": "skill", "triggers": ["deploy"], "agent": None, "force_route": True},
             {"name": "normal", "type": "skill", "triggers": ["deploy"], "agent": None, "force_route": False},
         ]
         table = pre_route.build_match_table(entries)
         candidates = pre_route.score_matches(table, "deploy now")
-        forced = candidates["skill:forced"]
-        normal = candidates["skill:normal"]
-        assert forced.score > normal.score
+        assert "skill:forced" in candidates
+        assert "skill:normal" not in candidates
 
     def test_more_triggers_higher_score(self, pre_route) -> None:
-        """More matched triggers = higher score."""
+        """Among force entries, more matched triggers = higher rank."""
         entries = [
-            {"name": "multi", "type": "skill", "triggers": ["run", "test", "go"], "agent": None, "force_route": False},
-            {"name": "single", "type": "skill", "triggers": ["run"], "agent": None, "force_route": False},
+            {"name": "multi", "type": "skill", "triggers": ["run", "test", "go"], "agent": None, "force_route": True},
+            {"name": "single", "type": "skill", "triggers": ["run"], "agent": None, "force_route": True},
         ]
         table = pre_route.build_match_table(entries)
         candidates = pre_route.score_matches(table, "run go test")
@@ -380,36 +563,169 @@ class TestCLI:
         assert result.returncode != 0
 
 
+# Local index merge semantics live in test_routing_index_merge.py: all three
+# scripts import the same routing_index_merge.load_index_items, and that file
+# asserts the identity plus the merge rules once.
+
+
 # ---------------------------------------------------------------------------
-# Local index merge semantics
+# Pipeline FORCE-route tests (regression: pre-route reads pipelines too)
 # ---------------------------------------------------------------------------
 
 
-class TestLocalIndexMerge:
-    """_load_index_items merges the local override instead of replacing.
+class TestPipelineForceRoute:
+    """FORCE pipelines get the same deterministic guard as FORCE skills.
 
-    Regression for the stale-local-override bug: _resolve_index replaced the
-    tracked index wholesale with INDEX.local.json, hiding newly added skills
-    from routing.
+    Regression test for the asymmetry where pre-route.py read skills only,
+    leaving 4 FORCE pipelines (de-ai-pipeline, pr-pipeline,
+    skill-creation-pipeline, and the legacy voice pipeline) with no deterministic idiom guard.
     """
 
-    def test_local_overlay_adds_but_never_hides(self, pre_route, tmp_path: Path) -> None:
-        tracked = tmp_path / "INDEX.json"
-        tracked.write_text(json.dumps({"skills": {"tracked-skill": {"triggers": ["t"]}}}))
-        (tmp_path / "INDEX.local.json").write_text(json.dumps({"skills": {"local-skill": {"triggers": ["l"]}}}))
-        items = pre_route._load_index_items(tracked, "INDEX.local.json", "skills")
-        assert set(items) == {"tracked-skill", "local-skill"}
+    def test_voice_article_does_not_match_removed_pipeline(self, pre_route, real_entries) -> None:
+        """The legacy voice pipeline was consolidated into writing; 'write an article' falls through or matches writing."""
+        result = pre_route.route("write an article about kubernetes in my voice", entries=real_entries)
+        # The legacy voice pipeline no longer exists after skill consolidation
+        assert "voice" not in (result.get("pipeline") or "")
 
-    def test_stale_local_never_overrides_tracked_content(self, pre_route, tmp_path: Path) -> None:
-        """A stale local superset cannot revert tracked entry content (add-only merge)."""
-        tracked = tmp_path / "INDEX.json"
-        tracked.write_text(json.dumps({"skills": {"skill": {"triggers": ["fresh"]}}}))
-        (tmp_path / "INDEX.local.json").write_text(json.dumps({"skills": {"skill": {"triggers": ["stale"]}}}))
-        items = pre_route._load_index_items(tracked, "INDEX.local.json", "skills")
-        assert items["skill"]["triggers"] == ["fresh"]
+    def test_de_ai_matches_pipeline(self, pre_route, real_entries) -> None:
+        """'de-ai these docs' matches de-ai-pipeline."""
+        result = pre_route.route("de-ai these docs", entries=real_entries)
+        assert result["matched"] is True
+        assert result.get("pipeline") == "de-ai-pipeline"
 
-    def test_no_local_file_reads_tracked_only(self, pre_route, tmp_path: Path) -> None:
-        tracked = tmp_path / "INDEX.json"
-        tracked.write_text(json.dumps({"skills": {"tracked-skill": {"triggers": ["t"]}}}))
-        items = pre_route._load_index_items(tracked, "INDEX.local.json", "skills")
-        assert set(items) == {"tracked-skill"}
+    def test_skill_creation_pipeline_matches(self, pre_route, real_entries) -> None:
+        """'create a new skill formally with gates' matches skill-creation-pipeline."""
+        result = pre_route.route("create a new skill formally with gates", entries=real_entries)
+        assert result["matched"] is True
+        assert result.get("pipeline") == "skill-creation-pipeline"
+
+    @pytest.mark.parametrize(
+        "query",
+        [
+            "send my manuscript for review",
+            "submit my research paper",
+        ],
+    )
+    def test_pr_pipeline_inherits_pr_workflow_guards(self, pre_route, real_entries, query: str) -> None:
+        result = pre_route.route(query, entries=real_entries)
+        assert result.get("pipeline") != "pr-pipeline", result
+
+    @pytest.mark.parametrize("query", ["send my commits for review", "open PR"])
+    def test_pr_pipeline_guard_keeps_real_git_intent(self, pre_route, real_entries, query: str) -> None:
+        result = pre_route.route(query, entries=real_entries)
+        assert result.get("pipeline") == "pr-pipeline", result
+
+    @pytest.mark.parametrize(
+        "query",
+        [
+            "address review comments on an upstream PR in a repo I don't own",
+            "implement the fixes on these open PRs in someone else's repo",
+            "fix the Copilot comments on my upstream PR",
+            "run the pr fix loop on these PRs",
+            "fix review feedback on my upstream pull request",
+            # The PR lives on the upstream repo, opened from the user's fork:
+            # still a PR in a repo the user does not own.
+            "fix the lint failure on the upstream PR i opened from my fork",
+        ],
+    )
+    def test_pr_fix_loop_matches_fix_work_on_foreign_prs(self, pre_route, real_entries, query: str) -> None:
+        result = pre_route.route(query, entries=real_entries)
+        assert result["matched"] is True, result
+        assert result.get("pipeline") == "pr-fix-loop", result
+
+    @pytest.mark.parametrize(
+        "query",
+        [
+            "summarize the upstream PR",
+            "review this upstream PR for me",
+            "push back against the upstream PR fix",
+            # Read-only or meta requests about the pipeline itself.
+            "explain how the pr fix loop works",
+            "what does the pr fix loop pipeline do",
+            "update the docs for the pr fix loop pipeline",
+            # Porting upstream changes into the user's own repo.
+            "apply upstream PR changes to my fork",
+            "implement what upstream PR 42 does in our repo",
+            # The toolkit owner's own repo is never foreign.
+            "fix the failing test in the upstream PR in notque/vexjoy-agent",
+            # No foreign-repo signal at all.
+            "fix the failing test in my PR",
+            "fix the failing test in my PR in notque/vexjoy-agent",
+            "update my branch from upstream and resolve the conflicts",
+        ],
+    )
+    def test_pr_fix_loop_needs_a_change_verb(self, pre_route, real_entries, query: str) -> None:
+        result = pre_route.route(query, entries=real_entries)
+        assert result.get("pipeline") != "pr-fix-loop", result
+
+    def test_fallthrough_has_pipeline_none(self, pre_route, real_entries) -> None:
+        """Fallthrough results include pipeline: None."""
+        result = pre_route.route("tell me about quantum physics", entries=real_entries)
+        assert result.get("pipeline") is None
+
+    def test_skill_only_match_has_pipeline_none(self, pre_route, real_entries) -> None:
+        """A match on a skill-only force-route (no pipeline counterpart) has pipeline: None."""
+        result = pre_route.route("configure my fish shell", entries=real_entries)
+        assert result["matched"] is True
+        assert result["skill"] == "deploy"
+        assert result.get("pipeline") is None
+
+
+class TestSeparatorEquivalence:
+    """A hyphen or underscore between trigger words counts as a space."""
+
+    @pytest.mark.parametrize(
+        "query",
+        ["pr-review this", "pr_review it", "code-review the diff", "pr-review our agent"],
+    )
+    def test_hyphen_underscore_matches_review_force_route(self, pre_route, real_entries, query: str) -> None:
+        result = pre_route.route(query, entries=real_entries)
+        assert result["matched"] is True, result
+        assert result["skill"] == "review"
+        assert result["match_type"] == "force_route"
+
+    def test_spaced_form_still_matches(self, pre_route, real_entries) -> None:
+        result = pre_route.route("pr review our agent", entries=real_entries)
+        assert result["skill"] == "review"
+
+    @pytest.mark.parametrize(
+        ("query", "skill"),
+        [("push back on this design", "pr-workflow"), ("fish for bugs", "deploy")],
+    )
+    def test_idioms_do_not_match(self, pre_route, real_entries, query: str, skill: str) -> None:
+        result = pre_route.route(query, entries=real_entries)
+        assert result.get("skill") != skill, result
+
+
+class TestGameTrailerRoute:
+    """Trailer requests reach game-trailer; plain game building stays on game-dev."""
+
+    @pytest.mark.parametrize(
+        "query",
+        [
+            "make a game trailer",
+            "cut a trailer for my game",
+            "edit the trailer for road to aew",
+            "I need a trailer cut of the new build",
+            "make me a trailer for my game",
+        ],
+    )
+    def test_trailer_requests_route_to_game_trailer(self, pre_route, real_entries, query: str) -> None:
+        result = pre_route.route(query, entries=real_entries)
+        assert result["matched"] is True, result
+        assert result["skill"] == "game-trailer"
+        assert result["match_type"] == "force_route"
+
+    @pytest.mark.parametrize("query", ["make a game", "make game levels"])
+    def test_make_game_still_routes_to_game_dev(self, pre_route, real_entries, query: str) -> None:
+        result = pre_route.route(query, entries=real_entries)
+        assert result["skill"] == "game-dev"
+        assert result["match_type"] == "force_route"
+
+    def test_make_game_guard_blocks_only_trailer_requests(self, pre_route, real_entries) -> None:
+        table = pre_route.build_match_table(real_entries)
+        make_game = next(e for e in table if e.name == "game-dev" and e.trigger == "make game")
+        launch = "make a game launch video"
+        trailer = "make a game trailer"
+        assert pre_route._is_semantically_guarded("game-dev", launch, "make game", make_game.pattern) is False
+        assert pre_route._is_semantically_guarded("game-dev", trailer, "make game", make_game.pattern) is True

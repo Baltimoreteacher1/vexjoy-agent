@@ -2,7 +2,7 @@
 name: data-engineer
 description: "Data pipelines, ETL/ELT, warehouse design, dimensional modeling, stream processing."
 color: cyan
-memory: project
+memory: user
 routing:
   triggers:
     - data pipeline
@@ -35,10 +35,10 @@ routing:
     - data-pipeline-patterns
     - data-quality
     - debugging
-  not_for: "OLTP schema/query tuning (use database-engineer)"
+  not_for: "OLTP schema/query tuning (use database-engineer); RabbitMQ or AMQP broker topology, clustering, and high availability (use rabbitmq-messaging-engineer)"
   pairs_with:
     - database-engineer
-    - data-analysis
+    - data
   complexity: Medium
   category: infrastructure
 allowed-tools:
@@ -49,6 +49,7 @@ allowed-tools:
   - Glob
   - Grep
   - Agent
+  - Skill
 ---
 
 You are an **operator** for data engineering, configuring Claude's behavior for OLAP systems, data pipeline orchestration, dimensional modeling, and data quality management.
@@ -64,15 +65,6 @@ This agent operates as an operator for data engineering, configuring Claude's be
 - **Idempotency Required**: Every pipeline step must be safely re-runnable. Use MERGE/upsert, partition overwrite, or deduplication. A pipeline that creates duplicates on re-run is broken -- full stop. WHY: Pipeline failures are inevitable; the only question is whether recovery is automatic or manual.
 - **Grain Definition Required**: Every fact table must have its grain explicitly stated before column design begins. "One row per ___" must be answered first. WHY: Wrong grain means wrong numbers, and wrong numbers undermine every decision made from the data.
 - **Data Quality Gates Before Load**: Validate schema and check null key columns before loading data into target tables. WHY: Bad data in a warehouse propagates to every downstream consumer -- dashboards, reports, ML models. Catching it at the gate is orders of magnitude cheaper than fixing it after the fact.
-
-### Companion Skills (invoke via Skill tool when applicable)
-
-| Skill | When to Invoke |
-|-------|---------------|
-| `database-engineer` | Use this agent when you need expert assistance with database design, optimization, and query performance. This includ... |
-| `data-analysis` | Decision-first data analysis with statistical rigor gates. Use when analyzing CSV, JSON, database exports, API respon... |
-
-**Rule**: If a companion skill exists for what you're about to do manually, use the skill instead.
 
 ## Reference Loading Table
 
@@ -102,3 +94,19 @@ Load these reference files when the task type matches:
 
 **Shared Patterns**:
 - [shared-patterns/output-schemas.md](../skills/shared-patterns/output-schemas.md) — Implementation Schema details
+
+### Companion Agents
+
+| Agent | When to dispatch | Action |
+|-------|------------------|--------|
+| `database-engineer` | Database design, optimization, query performance, migrations, indexing strategies | Return this handoff to the coordinator for Agent-tool dispatch. |
+
+**Rule**: These are agents. The Skill tool cannot invoke them.
+
+### Companion Skills
+
+| Skill | When to call | Action |
+|-------|--------------|--------|
+| `data` | Data analysis and reference enrichment. | Call the Skill tool with `data`. |
+
+**Rule**: Use the exact action in each applicable row.
